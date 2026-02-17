@@ -2,38 +2,47 @@ import { useEffect, useRef } from "react";
 
 /*
  * ============================================================
- *  2D Futsal Autoplay Mockup — Clean Broadcast / Sports TV
+ *  2D 11v11 Soccer Autoplay — Clean Broadcast / Sports TV
+ *  Formation: 4-4-2 for both teams
  * ============================================================
  */
 
 // ── Tunable Parameters ──────────────────────────────────────
 const P = {
-  matchDuration: 90,
-  goalResetDelay: 1.5,
+  matchDuration: 120,        // seconds
+  goalResetDelay: 2.0,
 
-  courtHalfW: 8.0,
-  courtHalfH: 5.0,
-  goalHalfH: 1.5,
+  // FIFA pitch proportions (scaled): 105m x 68m → 21 x 13.6
+  pitchHalfW: 10.5,
+  pitchHalfH: 6.8,
+  goalHalfH: 1.22,          // ~7.32m → 1.22 units
   goalDepth: 0.4,
+  penAreaW: 2.75,            // ~16.5m
+  penAreaH: 3.35,            // ~40.3m half
+  goalAreaW: 0.92,           // ~5.5m
+  goalAreaH: 1.55,           // ~18.3m half
+  centreCircleR: 1.53,       // ~9.15m
+  penSpotDist: 1.83,         // ~11m
+  cornerArcR: 0.17,          // ~1m
 
-  moveSpeed: 4.5,
-  dribbleSpeed: 3.5,
-  passSpeed: 11,
-  shotSpeed: 16,
-  passAccuracy: 0.82,
-  shotAccuracy: 0.65,
-  dribbleControl: 0.93,
-  interceptRadius: 0.9,
-  decisionInterval: 0.18,
-  shotRange: 5.0,
-  shotAngle: 50,
+  moveSpeed: 4.8,
+  dribbleSpeed: 3.8,
+  passSpeed: 12,
+  shotSpeed: 18,
+  passAccuracy: 0.80,
+  shotAccuracy: 0.60,
+  dribbleControl: 0.90,
+  interceptRadius: 0.75,
+  decisionInterval: 0.20,
+  shotRange: 5.5,
+  shotAngle: 55,
 
-  looseBallDrag: 4.0,
-  deadBallTime: 0.8,
+  looseBallDrag: 3.5,
+  deadBallTime: 0.7,
 
-  trailDuration: 0.3,
-  playerRadius: 0.35,
-  ballRadius: 0.15,
+  trailDuration: 0.35,
+  playerRadius: 0.30,
+  ballRadius: 0.13,
 };
 
 // ── Vec2 ────────────────────────────────────────────────────
@@ -58,23 +67,36 @@ const vmove = (from: V, to: V, d: number): V => {
 };
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 const rng = (a: number, b: number) => a + Math.random() * (b - a);
-const courtClamp = (p: V): V => v(clamp(p.x, -P.courtHalfW, P.courtHalfW), clamp(p.y, -P.courtHalfH, P.courtHalfH));
+const pitchClamp = (p: V): V => v(
+  clamp(p.x, -P.pitchHalfW, P.pitchHalfW),
+  clamp(p.y, -P.pitchHalfH, P.pitchHalfH)
+);
 
 // ── Types ───────────────────────────────────────────────────
 interface Trail { start: V; end: V; shot: boolean; t: number }
 
+// Roles: GK=0, LB=1, CB=2, CB=3, RB=4, LM=5, CM=6, CM=7, RM=8, ST=9, ST=10
+type Role = "GK" | "DEF" | "MID" | "FWD";
+function slotRole(slot: number): Role {
+  if (slot === 0) return "GK";
+  if (slot <= 4) return "DEF";
+  if (slot <= 8) return "MID";
+  return "FWD";
+}
+
 interface Player {
   pos: V; team: number; num: number; home: V;
   face: V; act: "idle" | "dribble" | "move"; tgt: V;
-  dt: number; // decision timer
+  dt: number;
   isGK: boolean;
-  slot: number; // 0=GK,1=DEF,2=DEF,3=MID,4=FWD
+  slot: number; // 0-10
+  role: Role;
 }
 
 interface Ball {
   pos: V; vel: V; owner: number | null;
   free: boolean; shot: boolean; dead: number;
-  cooldown: number; // time before ball can be intercepted after possession change
+  cooldown: number;
 }
 
 interface State {
@@ -85,31 +107,40 @@ interface State {
   flash: number; flashTxt: string; restartT: number;
 }
 
-// ── Formation ───────────────────────────────────────────────
-// Left team (team=-1): GK far left, FWD near centre
-const FORM: V[] = [
-  v(-7.2, 0),     // GK
-  v(-5.0, -2.0),  // DEF
-  v(-5.0, 2.0),   // DEF
-  v(-2.5, 0),     // MID
-  v(-0.8, 0),     // FWD
+// ── 4-4-2 Formation (team=-1, attacks right) ────────────────
+// Positions for left team: GK far left, strikers near centre
+const FORM_442: V[] = [
+  v(-9.8, 0),       // 0  GK
+  v(-7.5, -4.5),    // 1  LB
+  v(-7.5, -1.5),    // 2  CB
+  v(-7.5, 1.5),     // 3  CB
+  v(-7.5, 4.5),     // 4  RB
+  v(-4.5, -5.0),    // 5  LM
+  v(-4.5, -1.5),    // 6  CM
+  v(-4.5, 1.5),     // 7  CM
+  v(-4.5, 5.0),     // 8  RM
+  v(-1.5, -1.8),    // 9  ST
+  v(-1.5, 1.8),     // 10 ST
 ];
-const NUMS = [1, 2, 3, 5, 9];
+
+// Squad numbers
+const NUMS_11 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 
 // ── Init ────────────────────────────────────────────────────
 function mkPlayers(): Player[] {
   const out: Player[] = [];
   for (let t = 0; t < 2; t++) {
     const s = t === 0 ? -1 : 1;
-    for (let i = 0; i < 5; i++) {
-      const f = { ...FORM[i] };
+    for (let i = 0; i < 11; i++) {
+      const f = { ...FORM_442[i] };
       if (s === 1) { f.x = -f.x; f.y = -f.y; }
       out.push({
-        pos: { ...f }, team: s, num: NUMS[i], home: { ...f },
+        pos: { ...f }, team: s, num: NUMS_11[i], home: { ...f },
         face: v(-s, 0), act: "idle", tgt: { ...f },
         dt: Math.random() * P.decisionInterval,
         isGK: i === 0,
         slot: i,
+        role: slotRole(i),
       });
     }
   }
@@ -129,14 +160,14 @@ function mkState(): State {
 
 // ── Helpers ─────────────────────────────────────────────────
 function checkGoal(pos: V): number {
-  if (pos.x >= P.courtHalfW - 0.05 && Math.abs(pos.y) <= P.goalHalfH) return 1;
-  if (pos.x <= -P.courtHalfW + 0.05 && Math.abs(pos.y) <= P.goalHalfH) return -1;
+  if (pos.x >= P.pitchHalfW - 0.05 && Math.abs(pos.y) <= P.goalHalfH) return 1;
+  if (pos.x <= -P.pitchHalfW + 0.05 && Math.abs(pos.y) <= P.goalHalfH) return -1;
   return 0;
 }
 
 function give(ball: Ball, idx: number) {
   ball.owner = idx; ball.free = false; ball.shot = false;
-  ball.vel = v(0, 0); ball.dead = 0; ball.cooldown = 0.4;
+  ball.vel = v(0, 0); ball.dead = 0; ball.cooldown = 0.35;
 }
 
 function kick(st: State, dir: V, spd: number, shot: boolean, tgt: V) {
@@ -157,7 +188,6 @@ function nearest(st: State, pos: V, teamFilter?: number): number {
 }
 
 // ── AI ──────────────────────────────────────────────────────
-
 function openness(st: State, p: Player): number {
   let mn = Infinity;
   for (const q of st.pl) {
@@ -176,120 +206,24 @@ function laneBlocked(st: State, from: V, to: V, team: number): boolean {
     const proj = vdot(tp, d);
     if (proj < 0.5 || proj > dist - 0.5) continue;
     const cl = vadd(from, vscl(d, proj));
-    if (vdist(cl, p.pos) < 0.9) return true;
+    if (vdist(cl, p.pos) < 1.0) return true;
   }
   return false;
 }
 
-function bestPass(st: State, idx: number): number | null {
+function bestPass(st: State, idx: number, relaxed: boolean = false): number | null {
   const me = st.pl[idx];
   let bi: number | null = null, bs = -Infinity;
   for (let i = 0; i < st.pl.length; i++) {
     const p = st.pl[i];
     if (p.team !== me.team || i === idx) continue;
     const d = vdist(me.pos, p.pos);
-    if (d < 1.0 || d > 14) continue;
-    const op = openness(st, p);
-    const gp = -me.team * p.pos.x;
-    let sc = op * 2 + gp * 0.5 - d * 0.15;
-    if (laneBlocked(st, me.pos, p.pos, me.team)) sc -= 4;
-    if (sc > bs) { bs = sc; bi = i; }
-  }
-  return bi;
-}
-
-function doDribble(st: State, idx: number) {
-  const me = st.pl[idx];
-  if (Math.random() > P.dribbleControl) {
-    const fd = vnorm(v(rng(-1, 1), rng(-1, 1)));
-    kick(st, fd, 3, false, vadd(me.pos, vscl(fd, 2)));
-    return;
-  }
-  // Goal direction + avoid nearest opponent + avoid walls
-  const gd = vnorm(v(-me.team, 0));
-  let avoid = v(0, 0);
-  let cd = Infinity;
-  for (const p of st.pl) {
-    if (p.team === me.team) continue;
-    const d = vdist(me.pos, p.pos);
-    if (d < cd && d < 3) { cd = d; avoid = vnorm(vsub(me.pos, p.pos)); }
-  }
-  // Wall avoidance — stronger when near edges
-  let wa = v(0, 0);
-  const edgeY = P.courtHalfH - 0.8;
-  const edgeX = P.courtHalfW - 1.0;
-  if (me.pos.y > edgeY) wa.y = -(me.pos.y - edgeY) * 1.5;
-  if (me.pos.y < -edgeY) wa.y = -(-edgeY - me.pos.y) * -1.5;
-  if (me.pos.x > edgeX) wa.x = -(me.pos.x - edgeX) * 1.2;
-  if (me.pos.x < -edgeX) wa.x = -(-edgeX - me.pos.x) * -1.2;
-
-  // Add lateral jink to avoid being predictable
-  const jink = v(0, rng(-0.3, 0.3));
-
-  const desired = vnorm(vadd(vadd(vadd(vscl(gd, 0.55), vscl(avoid, 0.3)), wa), jink));
-  me.tgt = courtClamp(vadd(me.pos, vscl(desired, 3.5)));
-  me.act = "dribble";
-  me.face = desired;
-}
-
-function decideHasBall(st: State, idx: number) {
-  const me = st.pl[idx];
-  const gc = v(-me.team * P.courtHalfW, 0);
-  const dg = vdist(me.pos, gc);
-  const tg = vnorm(vsub(gc, me.pos));
-  const ag = vang(me.face, tg);
-
-  // Is player in own defensive third?
-  const inOwnThird = me.team * me.pos.x > P.courtHalfW * 0.33;
-
-  // GK or deep defender: ALWAYS try to pass first
-  if (me.isGK || inOwnThird) {
-    const bp = bestPassRelaxed(st, idx);
-    if (bp !== null) {
-      doPassTo(st, idx, bp);
-      return;
-    }
-    // Safety clearance: kick forward
-    const fwd = vnorm(v(-me.team + rng(-0.3, 0.3), rng(-0.5, 0.5)));
-    me.face = fwd;
-    kick(st, fwd, P.passSpeed * 0.8, false, vadd(me.pos, vscl(fwd, 6)));
-    return;
-  }
-
-  // 1) SHOT
-  if (dg < P.shotRange && ag < P.shotAngle) {
-    const err = (1 - P.shotAccuracy) * 2.5;
-    const t = v(gc.x, gc.y + rng(-err, err));
-    me.face = vnorm(vsub(t, me.pos));
-    kick(st, me.face, P.shotSpeed, true, t);
-    return;
-  }
-
-  // 2) PASS
-  const bp = bestPass(st, idx);
-  if (bp !== null) {
-    doPassTo(st, idx, bp);
-    return;
-  }
-
-  // 3) DRIBBLE
-  doDribble(st, idx);
-}
-
-// Relaxed pass finder — ignores lane blocking in own half
-function bestPassRelaxed(st: State, idx: number): number | null {
-  const me = st.pl[idx];
-  let bi: number | null = null, bs = -Infinity;
-  for (let i = 0; i < st.pl.length; i++) {
-    const p = st.pl[i];
-    if (p.team !== me.team || i === idx) continue;
-    const d = vdist(me.pos, p.pos);
-    if (d < 0.8 || d > 14) continue;
+    if (d < 1.0 || d > 18) continue;
     const op = openness(st, p);
     const gp = -me.team * p.pos.x; // progress toward opponent goal
-    let sc = op * 1.5 + gp * 0.8 - d * 0.1;
-    // Slight penalty for blocked lanes but don't eliminate
-    if (laneBlocked(st, me.pos, p.pos, me.team)) sc -= 1.5;
+    let sc = op * 2 + gp * 0.5 - d * 0.12;
+    if (!relaxed && laneBlocked(st, me.pos, p.pos, me.team)) sc -= 4;
+    else if (relaxed && laneBlocked(st, me.pos, p.pos, me.team)) sc -= 1.5;
     if (sc > bs) { bs = sc; bi = i; }
   }
   return bi;
@@ -302,12 +236,78 @@ function doPassTo(st: State, idx: number, targetIdx: number) {
   if (tm.act !== "idle") {
     const lead = vnorm(vsub(tm.tgt, tm.pos));
     const pd = vdist(me.pos, tm.pos);
-    tp = vadd(tp, vscl(lead, Math.min(pd * 0.1, 1.0)));
+    tp = vadd(tp, vscl(lead, Math.min(pd * 0.1, 1.2)));
   }
   const err = (1 - P.passAccuracy) * 1.5;
   tp.x += rng(-err, err); tp.y += rng(-err, err);
   me.face = vnorm(vsub(tp, me.pos));
   kick(st, me.face, P.passSpeed, false, tp);
+}
+
+function doDribble(st: State, idx: number) {
+  const me = st.pl[idx];
+  if (Math.random() > P.dribbleControl) {
+    const fd = vnorm(v(rng(-1, 1), rng(-1, 1)));
+    kick(st, fd, 3, false, vadd(me.pos, vscl(fd, 2)));
+    return;
+  }
+  const gd = vnorm(v(-me.team, 0));
+  let avoid = v(0, 0);
+  let cd = Infinity;
+  for (const p of st.pl) {
+    if (p.team === me.team) continue;
+    const d = vdist(me.pos, p.pos);
+    if (d < cd && d < 3.5) { cd = d; avoid = vnorm(vsub(me.pos, p.pos)); }
+  }
+  let wa = v(0, 0);
+  const edgeY = P.pitchHalfH - 0.8;
+  const edgeX = P.pitchHalfW - 1.0;
+  if (me.pos.y > edgeY) wa.y = -(me.pos.y - edgeY) * 1.5;
+  if (me.pos.y < -edgeY) wa.y = (-edgeY - me.pos.y) * 1.5;
+  if (me.pos.x > edgeX) wa.x = -(me.pos.x - edgeX) * 1.2;
+  if (me.pos.x < -edgeX) wa.x = (-edgeX - me.pos.x) * 1.2;
+  const jink = v(0, rng(-0.4, 0.4));
+  const desired = vnorm(vadd(vadd(vadd(vscl(gd, 0.55), vscl(avoid, 0.3)), wa), jink));
+  me.tgt = pitchClamp(vadd(me.pos, vscl(desired, 4.0)));
+  me.act = "dribble";
+  me.face = desired;
+}
+
+function decideHasBall(st: State, idx: number) {
+  const me = st.pl[idx];
+  const gc = v(-me.team * P.pitchHalfW, 0);
+  const dg = vdist(me.pos, gc);
+  const tg = vnorm(vsub(gc, me.pos));
+  const ag = vang(me.face, tg);
+
+  // In own defensive third?
+  const inOwnThird = me.team * me.pos.x > P.pitchHalfW * 0.33;
+
+  // GK or deep defender: ALWAYS try to pass first
+  if (me.isGK || inOwnThird) {
+    const bp = bestPass(st, idx, true);
+    if (bp !== null) { doPassTo(st, idx, bp); return; }
+    const fwd = vnorm(v(-me.team + rng(-0.3, 0.3), rng(-0.5, 0.5)));
+    me.face = fwd;
+    kick(st, fwd, P.passSpeed * 0.8, false, vadd(me.pos, vscl(fwd, 8)));
+    return;
+  }
+
+  // 1) SHOT
+  if (dg < P.shotRange && ag < P.shotAngle) {
+    const err = (1 - P.shotAccuracy) * 3.0;
+    const t = v(gc.x, gc.y + rng(-err, err));
+    me.face = vnorm(vsub(t, me.pos));
+    kick(st, me.face, P.shotSpeed, true, t);
+    return;
+  }
+
+  // 2) PASS
+  const bp = bestPass(st, idx);
+  if (bp !== null) { doPassTo(st, idx, bp); return; }
+
+  // 3) DRIBBLE
+  doDribble(st, idx);
 }
 
 function decideNoBall(st: State, idx: number) {
@@ -317,27 +317,25 @@ function decideNoBall(st: State, idx: number) {
 
   // GK: stay near goal, track ball Y
   if (me.isGK) {
-    const gx = me.team * (P.courtHalfW - 0.8);
-    const gy = clamp(ballPos.y * 0.6, -P.goalHalfH + 0.3, P.goalHalfH - 0.3);
+    const gx = me.team * (P.pitchHalfW - 0.6);
+    const gy = clamp(ballPos.y * 0.5, -P.goalHalfH + 0.2, P.goalHalfH - 0.2);
     me.tgt = v(gx, gy);
     me.act = "move";
-    // Chase ball if very close
     if (b.free && vdist(me.pos, ballPos) < 2.5) {
       me.tgt = { ...ballPos };
     }
     return;
   }
 
-  // Chase loose ball — nearest 2 players on team should chase
+  // Chase loose ball — nearest 2 outfield players on team
   if (b.free || (b.owner === null && !b.free)) {
     const d = vdist(me.pos, ballPos);
-    // Check if I'm one of the 2 nearest on my team
     let rank = 0;
     for (let i = 0; i < st.pl.length; i++) {
       if (i === idx || st.pl[i].team !== me.team || st.pl[i].isGK) continue;
       if (vdist(st.pl[i].pos, ballPos) < d) rank++;
     }
-    if (rank < 2 && d < 10) {
+    if (rank < 2 && d < 12) {
       me.tgt = { ...ballPos };
       me.act = "move";
       return;
@@ -347,30 +345,34 @@ function decideNoBall(st: State, idx: number) {
   // Team has ball — make attacking runs
   const teamHasBall = b.owner !== null && st.pl[b.owner].team === me.team;
   if (teamHasBall) {
-    // Run toward opponent half, spread out
-    const oppGoalX = -me.team * P.courtHalfW;
+    const oppGoalX = -me.team * P.pitchHalfW;
     const carrier = st.pl[b.owner!];
-
-    // Calculate a good support position
-    const teamIdx = me.slot; // 0=GK,1=DEF,2=DEF,3=MID,4=FWD
-
+    const role = me.role;
     let targetX: number, targetY: number;
 
-    if (teamIdx <= 2) {
-      // Defenders: push up but stay behind ball
-      targetX = carrier.pos.x + me.team * 2; // stay behind carrier
-      targetY = me.home.y + clamp(ballPos.y * 0.3, -1.5, 1.5);
-    } else if (teamIdx === 3) {
-      // MID: support carrier, move to open space
-      targetX = (carrier.pos.x + oppGoalX) * 0.4;
-      targetY = ballPos.y + (me.pos.y > ballPos.y ? 2.5 : -2.5);
+    if (role === "DEF") {
+      // Push up but stay behind ball
+      targetX = carrier.pos.x + me.team * 3;
+      targetX = clamp(targetX, me.team < 0 ? -P.pitchHalfW : -P.pitchHalfW * 0.3,
+                                me.team < 0 ? P.pitchHalfW * 0.3 : P.pitchHalfW);
+      targetY = me.home.y + clamp(ballPos.y * 0.25, -2.0, 2.0);
+    } else if (role === "MID") {
+      // Support carrier, spread wide or central
+      const isWide = me.slot === 5 || me.slot === 8;
+      if (isWide) {
+        targetX = (carrier.pos.x + oppGoalX) * 0.35;
+        targetY = me.home.y * 0.8 + ballPos.y * 0.2;
+      } else {
+        targetX = (carrier.pos.x + oppGoalX) * 0.4;
+        targetY = ballPos.y + (me.home.y > 0 ? rng(1.5, 3.5) : rng(-3.5, -1.5));
+      }
     } else {
-      // FWD: make runs toward goal
-      targetX = oppGoalX * 0.6;
-      targetY = rng(-2, 2);
+      // FWD: make runs toward goal, stay onside-ish
+      targetX = oppGoalX * 0.65 + rng(-1, 1);
+      targetY = me.home.y + rng(-2, 2);
     }
 
-    me.tgt = courtClamp(v(targetX, targetY));
+    me.tgt = pitchClamp(v(targetX, targetY));
     me.act = "move";
     return;
   }
@@ -378,19 +380,34 @@ function decideNoBall(st: State, idx: number) {
   // Opponent has ball — defend
   if (b.owner !== null && st.pl[b.owner].team !== me.team) {
     const carrier = st.pl[b.owner];
-    const myGoal = v(me.team * P.courtHalfW, 0);
+    const myGoal = v(me.team * P.pitchHalfW, 0);
     const dc = vdist(me.pos, carrier.pos);
+    const role = me.role;
 
-    if (dc < 4) {
-      // Press the carrier
-      me.tgt = courtClamp(vlerp(carrier.pos, myGoal, 0.15));
+    if (role === "FWD") {
+      // Light press or drop to midfield
+      if (dc < 5) {
+        me.tgt = pitchClamp(vlerp(carrier.pos, myGoal, 0.1));
+      } else {
+        me.tgt = pitchClamp(v(me.home.x + (ballPos.x - me.home.x) * 0.3, me.home.y));
+      }
+    } else if (role === "MID") {
+      if (dc < 4.5) {
+        me.tgt = pitchClamp(vlerp(carrier.pos, myGoal, 0.15));
+      } else {
+        const shift = v(
+          clamp((ballPos.x - me.home.x) * 0.4, -3.5, 3.5),
+          clamp((ballPos.y - me.home.y) * 0.45, -3, 3)
+        );
+        me.tgt = pitchClamp(vadd(me.home, shift));
+      }
     } else {
-      // Fall back toward formation, shifted toward ball
+      // DEF: hold line, shift toward ball
       const shift = v(
-        clamp((ballPos.x - me.home.x) * 0.35, -3, 3),
-        clamp((ballPos.y - me.home.y) * 0.45, -2.5, 2.5)
+        clamp((ballPos.x - me.home.x) * 0.25, -2.5, 2.5),
+        clamp((ballPos.y - me.home.y) * 0.5, -3, 3)
       );
-      me.tgt = courtClamp(vadd(me.home, shift));
+      me.tgt = pitchClamp(vadd(me.home, shift));
     }
     me.act = "move";
     return;
@@ -398,10 +415,10 @@ function decideNoBall(st: State, idx: number) {
 
   // Default: drift toward shifted formation
   const shift = v(
-    clamp((ballPos.x - me.home.x) * 0.3, -2.5, 2.5),
-    clamp((ballPos.y - me.home.y) * 0.4, -2, 2)
+    clamp((ballPos.x - me.home.x) * 0.25, -2.5, 2.5),
+    clamp((ballPos.y - me.home.y) * 0.35, -2, 2)
   );
-  me.tgt = courtClamp(vadd(me.home, shift));
+  me.tgt = pitchClamp(vadd(me.home, shift));
   me.act = "move";
 }
 
@@ -435,16 +452,16 @@ function update(st: State, dt: number) {
 
   st.time += dt;
   if (st.time >= P.matchDuration) {
-    st.over = true; st.restartT = 4; st.flashTxt = "FULL TIME"; st.flash = 2;
+    st.over = true; st.restartT = 5; st.flashTxt = "FULL TIME"; st.flash = 2.5;
     return;
   }
 
   const b = st.ball;
 
-  // ── Cooldown tick ─────────────────────────────────────
+  // Cooldown tick
   if (b.cooldown > 0) b.cooldown -= dt;
 
-  // ── Dead ball recovery ────────────────────────────────
+  // Dead ball recovery
   if (b.owner === null && !b.free) { b.free = true; b.dead = 0; }
   if (b.free && vlen(b.vel) < 0.5) {
     b.dead += dt;
@@ -455,29 +472,29 @@ function update(st: State, dt: number) {
     b.dead = 0;
   }
 
-  // ── Ball physics ──────────────────────────────────────
+  // Ball physics
   if (b.owner !== null && !b.free) {
     const o = st.pl[b.owner];
-    b.pos = vadd(o.pos, vscl(o.face, 0.25));
+    b.pos = vadd(o.pos, vscl(o.face, 0.22));
   } else if (b.free) {
     b.pos = vadd(b.pos, vscl(b.vel, dt));
 
-    if (Math.abs(b.pos.y) > P.courtHalfH) {
-      b.pos.y = clamp(b.pos.y, -P.courtHalfH, P.courtHalfH);
-      b.vel.y *= -0.5;
+    if (Math.abs(b.pos.y) > P.pitchHalfH) {
+      b.pos.y = clamp(b.pos.y, -P.pitchHalfH, P.pitchHalfH);
+      b.vel.y *= -0.4;
     }
 
     const gs = checkGoal(b.pos);
     if (gs !== 0) {
       if (gs > 0) st.sL++; else st.sR++;
       st.koSide = -gs; st.paused = true; st.pauseT = P.goalResetDelay;
-      st.flash = 1.5; st.flashTxt = "GOAL!";
+      st.flash = 1.8; st.flashTxt = "GOAL!";
       return;
     }
 
-    if (Math.abs(b.pos.x) > P.courtHalfW) {
-      b.pos.x = clamp(b.pos.x, -P.courtHalfW, P.courtHalfW);
-      b.vel.x *= -0.5;
+    if (Math.abs(b.pos.x) > P.pitchHalfW) {
+      b.pos.x = clamp(b.pos.x, -P.pitchHalfW, P.pitchHalfW);
+      b.vel.x *= -0.4;
     }
 
     const spd = vlen(b.vel);
@@ -488,21 +505,20 @@ function update(st: State, dt: number) {
     }
   }
 
-  // ── Trail ─────────────────────────────────────────────
+  // Trail
   if (st.trail) { st.trail.t -= dt; if (st.trail.t <= 0) st.trail = null; }
 
-  // ── Players ───────────────────────────────────────────
+  // Players
   for (let i = 0; i < st.pl.length; i++) {
     const p = st.pl[i];
 
     // Intercept (only if no cooldown)
-    if (b.cooldown > 0) { /* skip intercept during cooldown */ }
+    if (b.cooldown > 0) { /* skip */ }
     else if (b.owner !== i && b.free && vdist(p.pos, b.pos) < P.interceptRadius) {
       give(b, i);
     }
-    // Also allow stealing from dribbler if very close
     else if (b.owner !== null && b.owner !== i && !b.free && b.cooldown <= 0
-      && st.pl[b.owner].team !== p.team && vdist(p.pos, b.pos) < P.interceptRadius * 0.7) {
+      && st.pl[b.owner].team !== p.team && vdist(p.pos, b.pos) < P.interceptRadius * 0.65) {
       give(b, i);
     }
 
@@ -518,10 +534,10 @@ function update(st: State, dt: number) {
     if (p.act !== "idle") {
       const spd = p.act === "dribble" ? P.dribbleSpeed : P.moveSpeed;
       const d = vsub(p.tgt, p.pos);
-      if (vlen(d) < 0.1) { p.act = "idle"; }
+      if (vlen(d) < 0.08) { p.act = "idle"; }
       else {
         p.face = vnorm(d);
-        p.pos = courtClamp(vmove(p.pos, p.tgt, spd * dt));
+        p.pos = pitchClamp(vmove(p.pos, p.tgt, spd * dt));
       }
     }
   }
@@ -529,15 +545,18 @@ function update(st: State, dt: number) {
 
 // ── Render ──────────────────────────────────────────────────
 const COL = {
-  bg: "#0a0a10", court: "#1a6b3a", courtDk: "#145e30", line: "rgba(255,255,255,0.75)",
-  tA: "#2563eb", tAL: "#60a5fa", tB: "#dc2626", tBL: "#f87171",
-  hBg: "rgba(10,10,20,0.85)", hTxt: "#fff", hTime: "#aabbcc",
+  bg: "#0a0a10",
+  pitch: "#1a6b3a", pitchDk: "#145e30",
+  line: "rgba(255,255,255,0.75)",
+  tA: "#2563eb", tAL: "#60a5fa",
+  tB: "#dc2626", tBL: "#f87171",
+  hBg: "rgba(10,10,20,0.88)", hTxt: "#fff", hTime: "#aabbcc",
   rA: "rgba(37,99,235,0.5)", rB: "rgba(220,38,38,0.5)",
 };
 
 function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State) {
   const W = c.width, H = c.height;
-  const cW = P.courtHalfW * 2 + 2, cH = P.courtHalfH * 2 + 3.5;
+  const cW = P.pitchHalfW * 2 + 2.5, cH = P.pitchHalfH * 2 + 3.5;
   const sc = Math.min(W / cW, H / cH);
   const ox = W / 2, oy = H / 2 + 0.75 * sc;
   const w2s = (p: V): V => v(ox + p.x * sc, oy - p.y * sc);
@@ -546,48 +565,96 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State) 
   // BG
   ctx.fillStyle = COL.bg; ctx.fillRect(0, 0, W, H);
 
-  // Court
-  const tl = w2s(v(-P.courtHalfW, P.courtHalfH));
-  const cSz = v(s(P.courtHalfW * 2), s(P.courtHalfH * 2));
-  const grd = ctx.createLinearGradient(tl.x, tl.y, tl.x, tl.y + cSz.y);
-  grd.addColorStop(0, COL.court); grd.addColorStop(0.5, COL.courtDk); grd.addColorStop(1, COL.court);
-  ctx.fillStyle = grd; ctx.fillRect(tl.x, tl.y, cSz.x, cSz.y);
+  // Pitch
+  const tl = w2s(v(-P.pitchHalfW, P.pitchHalfH));
+  const pSz = v(s(P.pitchHalfW * 2), s(P.pitchHalfH * 2));
+  const grd = ctx.createLinearGradient(tl.x, tl.y, tl.x, tl.y + pSz.y);
+  grd.addColorStop(0, COL.pitch); grd.addColorStop(0.5, COL.pitchDk); grd.addColorStop(1, COL.pitch);
+  ctx.fillStyle = grd; ctx.fillRect(tl.x, tl.y, pSz.x, pSz.y);
 
   // Stripes
-  ctx.fillStyle = "rgba(255,255,255,0.03)";
-  const sw = s(P.courtHalfW * 2) / 8;
-  for (let i = 0; i < 8; i += 2) ctx.fillRect(tl.x + i * sw, tl.y, sw, cSz.y);
+  ctx.fillStyle = "rgba(255,255,255,0.025)";
+  const sw = pSz.x / 12;
+  for (let i = 0; i < 12; i += 2) ctx.fillRect(tl.x + i * sw, tl.y, sw, pSz.y);
 
-  // Lines
-  ctx.strokeStyle = COL.line; ctx.lineWidth = Math.max(1, s(0.04));
-  ctx.strokeRect(tl.x, tl.y, cSz.x, cSz.y);
+  // Pitch outline
+  ctx.strokeStyle = COL.line; ctx.lineWidth = Math.max(1, s(0.035));
+  ctx.strokeRect(tl.x, tl.y, pSz.x, pSz.y);
 
-  // Centre
-  const ct = w2s(v(0, P.courtHalfH)), cb = w2s(v(0, -P.courtHalfH)), cc = w2s(v(0, 0));
+  // Centre line
+  const ct = w2s(v(0, P.pitchHalfH)), cb = w2s(v(0, -P.pitchHalfH));
   ctx.beginPath(); ctx.moveTo(ct.x, ct.y); ctx.lineTo(cb.x, cb.y); ctx.stroke();
-  ctx.beginPath(); ctx.arc(cc.x, cc.y, s(1.5), 0, Math.PI * 2); ctx.stroke();
-  ctx.fillStyle = COL.line; ctx.beginPath(); ctx.arc(cc.x, cc.y, s(0.08), 0, Math.PI * 2); ctx.fill();
+
+  // Centre circle
+  const cc = w2s(v(0, 0));
+  ctx.beginPath(); ctx.arc(cc.x, cc.y, s(P.centreCircleR), 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = COL.line;
+  ctx.beginPath(); ctx.arc(cc.x, cc.y, s(0.06), 0, Math.PI * 2); ctx.fill();
 
   // Penalty areas
-  const paW = 2, paH = 2.5;
-  ctx.strokeStyle = COL.line; ctx.lineWidth = Math.max(1, s(0.04));
-  const pl = w2s(v(-P.courtHalfW, paH)); ctx.strokeRect(pl.x, pl.y, s(paW), s(paH * 2));
-  const pr = w2s(v(P.courtHalfW - paW, paH)); ctx.strokeRect(pr.x, pr.y, s(paW), s(paH * 2));
+  ctx.strokeStyle = COL.line; ctx.lineWidth = Math.max(1, s(0.035));
+  // Left
+  const paL = w2s(v(-P.pitchHalfW, P.penAreaH));
+  ctx.strokeRect(paL.x, paL.y, s(P.penAreaW), s(P.penAreaH * 2));
+  // Right
+  const paR = w2s(v(P.pitchHalfW - P.penAreaW, P.penAreaH));
+  ctx.strokeRect(paR.x, paR.y, s(P.penAreaW), s(P.penAreaH * 2));
+
+  // Goal areas
+  const gaL = w2s(v(-P.pitchHalfW, P.goalAreaH));
+  ctx.strokeRect(gaL.x, gaL.y, s(P.goalAreaW), s(P.goalAreaH * 2));
+  const gaR = w2s(v(P.pitchHalfW - P.goalAreaW, P.goalAreaH));
+  ctx.strokeRect(gaR.x, gaR.y, s(P.goalAreaW), s(P.goalAreaH * 2));
+
+  // Penalty spots
+  ctx.fillStyle = COL.line;
+  const psL = w2s(v(-P.pitchHalfW + P.penSpotDist, 0));
+  ctx.beginPath(); ctx.arc(psL.x, psL.y, s(0.06), 0, Math.PI * 2); ctx.fill();
+  const psR = w2s(v(P.pitchHalfW - P.penSpotDist, 0));
+  ctx.beginPath(); ctx.arc(psR.x, psR.y, s(0.06), 0, Math.PI * 2); ctx.fill();
+
+  // Penalty arcs (D)
+  ctx.strokeStyle = COL.line; ctx.lineWidth = Math.max(1, s(0.035));
+  // Left D
+  const dL = w2s(v(-P.pitchHalfW + P.penSpotDist, 0));
+  ctx.beginPath();
+  ctx.arc(dL.x, dL.y, s(P.centreCircleR), -0.85, 0.85); ctx.stroke();
+  // Right D
+  const dR = w2s(v(P.pitchHalfW - P.penSpotDist, 0));
+  ctx.beginPath();
+  ctx.arc(dR.x, dR.y, s(P.centreCircleR), Math.PI - 0.85, Math.PI + 0.85); ctx.stroke();
+
+  // Corner arcs
+  ctx.strokeStyle = COL.line; ctx.lineWidth = Math.max(1, s(0.03));
+  const corners = [
+    { pos: v(-P.pitchHalfW, P.pitchHalfH), sa: -Math.PI / 2, ea: 0 },
+    { pos: v(P.pitchHalfW, P.pitchHalfH), sa: Math.PI, ea: Math.PI * 1.5 },
+    { pos: v(-P.pitchHalfW, -P.pitchHalfH), sa: 0, ea: Math.PI / 2 },
+    { pos: v(P.pitchHalfW, -P.pitchHalfH), sa: Math.PI / 2, ea: Math.PI },
+  ];
+  for (const cn of corners) {
+    const cp = w2s(cn.pos);
+    ctx.beginPath(); ctx.arc(cp.x, cp.y, s(P.cornerArcR), cn.sa, cn.ea); ctx.stroke();
+  }
 
   // Goals
-  ctx.fillStyle = "rgba(255,255,255,0.15)";
-  const gl = w2s(v(-P.courtHalfW - P.goalDepth, P.goalHalfH));
+  ctx.fillStyle = "rgba(255,255,255,0.12)";
+  const gl = w2s(v(-P.pitchHalfW - P.goalDepth, P.goalHalfH));
   ctx.fillRect(gl.x, gl.y, s(P.goalDepth), s(P.goalHalfH * 2));
-  ctx.strokeStyle = "rgba(255,255,255,0.5)";
+  ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = Math.max(1, s(0.03));
   ctx.strokeRect(gl.x, gl.y, s(P.goalDepth), s(P.goalHalfH * 2));
-  const gr = w2s(v(P.courtHalfW, P.goalHalfH));
+  const gr = w2s(v(P.pitchHalfW, P.goalHalfH));
   ctx.fillRect(gr.x, gr.y, s(P.goalDepth), s(P.goalHalfH * 2));
   ctx.strokeRect(gr.x, gr.y, s(P.goalDepth), s(P.goalHalfH * 2));
 
   // Posts
   ctx.fillStyle = "#fff";
-  for (const pp of [v(-P.courtHalfW, P.goalHalfH), v(-P.courtHalfW, -P.goalHalfH), v(P.courtHalfW, P.goalHalfH), v(P.courtHalfW, -P.goalHalfH)]) {
-    const ps = w2s(pp); ctx.beginPath(); ctx.arc(ps.x, ps.y, s(0.08), 0, Math.PI * 2); ctx.fill();
+  for (const pp of [
+    v(-P.pitchHalfW, P.goalHalfH), v(-P.pitchHalfW, -P.goalHalfH),
+    v(P.pitchHalfW, P.goalHalfH), v(P.pitchHalfW, -P.goalHalfH)
+  ]) {
+    const ps = w2s(pp);
+    ctx.beginPath(); ctx.arc(ps.x, ps.y, s(0.06), 0, Math.PI * 2); ctx.fill();
   }
 
   // Trail
@@ -596,11 +663,11 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State) 
     const ts = w2s(tr.start), te = w2s(tr.end);
     if (tr.shot) {
       ctx.strokeStyle = `rgba(255,100,30,${(0.65 * a).toFixed(2)})`;
-      ctx.lineWidth = Math.max(2, s(0.1));
+      ctx.lineWidth = Math.max(2, s(0.08));
     } else {
       ctx.strokeStyle = `rgba(255,255,255,${(0.45 * a).toFixed(2)})`;
-      ctx.lineWidth = Math.max(1, s(0.04));
-      ctx.setLineDash([s(0.15), s(0.15)]);
+      ctx.lineWidth = Math.max(1, s(0.035));
+      ctx.setLineDash([s(0.12), s(0.12)]);
     }
     ctx.beginPath(); ctx.moveTo(ts.x, ts.y); ctx.lineTo(te.x, te.y); ctx.stroke();
     ctx.setLineDash([]); ctx.lineWidth = 1;
@@ -611,21 +678,24 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State) 
     const p = st.pl[i], ps = w2s(p.pos), r = s(P.playerRadius);
     const isA = p.team < 0, col = isA ? COL.tA : COL.tB, colL = isA ? COL.tAL : COL.tBL;
 
+    // Possession ring
     if (st.ball.owner === i) {
       ctx.strokeStyle = isA ? COL.rA : COL.rB;
-      ctx.lineWidth = Math.max(2, s(0.06));
+      ctx.lineWidth = Math.max(2, s(0.05));
       ctx.beginPath(); ctx.arc(ps.x, ps.y, r * 1.6, 0, Math.PI * 2); ctx.stroke();
-      ctx.shadowColor = col; ctx.shadowBlur = s(0.3);
+      ctx.shadowColor = col; ctx.shadowBlur = s(0.25);
     }
 
+    // Player circle
     const pg = ctx.createRadialGradient(ps.x - r * 0.3, ps.y - r * 0.3, r * 0.1, ps.x, ps.y, r);
     pg.addColorStop(0, colL); pg.addColorStop(1, col);
-    ctx.fillStyle = pg; ctx.beginPath(); ctx.arc(ps.x, ps.y, r, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = "rgba(0,0,0,0.4)"; ctx.lineWidth = Math.max(1, s(0.03)); ctx.stroke();
+    ctx.fillStyle = pg;
+    ctx.beginPath(); ctx.arc(ps.x, ps.y, r, 0, Math.PI * 2); ctx.fill();
     ctx.shadowColor = "transparent"; ctx.shadowBlur = 0;
 
+    // Number
     ctx.fillStyle = "#fff";
-    ctx.font = `bold ${Math.max(10, r * 1.1 | 0)}px "Roboto Condensed","Arial Narrow",sans-serif`;
+    ctx.font = `bold ${Math.max(8, r * 1.0 | 0)}px "Roboto Condensed","Arial Narrow",sans-serif`;
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(String(p.num), ps.x, ps.y + 1);
   }
@@ -633,21 +703,21 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State) 
   // Ball
   {
     const bs = w2s(st.ball.pos), br = s(P.ballRadius);
-    ctx.fillStyle = "rgba(0,0,0,0.3)";
-    ctx.beginPath(); ctx.ellipse(bs.x + s(0.05), bs.y + s(0.05), br, br * 0.7, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.beginPath(); ctx.ellipse(bs.x + s(0.04), bs.y + s(0.04), br, br * 0.7, 0, 0, Math.PI * 2); ctx.fill();
     const bg = ctx.createRadialGradient(bs.x - br * 0.3, bs.y - br * 0.3, br * 0.1, bs.x, bs.y, br);
     bg.addColorStop(0, "#fff"); bg.addColorStop(1, "#ccc");
     ctx.fillStyle = bg; ctx.beginPath(); ctx.arc(bs.x, bs.y, br, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = "rgba(0,0,0,0.3)"; ctx.lineWidth = Math.max(1, s(0.02)); ctx.stroke();
+    ctx.strokeStyle = "rgba(0,0,0,0.3)"; ctx.lineWidth = Math.max(1, s(0.015)); ctx.stroke();
   }
 
   // Flash
   if (st.flash > 0) {
-    const a = Math.min(1, st.flash) * 0.25;
+    const a = Math.min(1, st.flash) * 0.22;
     ctx.fillStyle = `rgba(255,255,200,${a.toFixed(2)})`; ctx.fillRect(0, 0, W, H);
     if (st.flashTxt) {
       ctx.fillStyle = `rgba(255,255,255,${Math.min(1, st.flash).toFixed(2)})`;
-      ctx.font = `bold ${s(1.2)}px "Roboto Condensed","Arial Narrow",sans-serif`;
+      ctx.font = `bold ${s(1.1)}px "Roboto Condensed","Arial Narrow",sans-serif`;
       ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.shadowColor = "rgba(0,0,0,0.5)"; ctx.shadowBlur = s(0.3);
       ctx.fillText(st.flashTxt, W / 2, H / 2);
@@ -656,9 +726,9 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State) 
   }
 
   // HUD
-  const hH = s(1.0), hY = s(0.3), hW = Math.min(W * 0.6, s(10)), hX = (W - hW) / 2;
+  const hH = s(0.9), hY = s(0.25), hW = Math.min(W * 0.55, s(9)), hX = (W - hW) / 2;
   ctx.fillStyle = COL.hBg;
-  const hR = s(0.15);
+  const hR = s(0.12);
   ctx.beginPath();
   ctx.moveTo(hX + hR, hY); ctx.lineTo(hX + hW - hR, hY);
   ctx.quadraticCurveTo(hX + hW, hY, hX + hW, hY + hR);
@@ -670,23 +740,23 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State) 
   ctx.quadraticCurveTo(hX, hY, hX + hR, hY);
   ctx.closePath(); ctx.fill();
 
-  ctx.strokeStyle = "rgba(255,255,255,0.15)"; ctx.lineWidth = 1;
+  ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(hX, hY + hH); ctx.lineTo(hX + hW, hY + hH); ctx.stroke();
 
   const hCY = hY + hH / 2;
-  ctx.fillStyle = COL.tA; ctx.fillRect(hX, hY, s(0.15), hH);
-  ctx.fillStyle = COL.tB; ctx.fillRect(hX + hW - s(0.15), hY, s(0.15), hH);
+  ctx.fillStyle = COL.tA; ctx.fillRect(hX, hY, s(0.12), hH);
+  ctx.fillStyle = COL.tB; ctx.fillRect(hX + hW - s(0.12), hY, s(0.12), hH);
 
   ctx.fillStyle = COL.tAL;
-  ctx.font = `bold ${Math.max(11, s(0.32))}px "Roboto Condensed","Arial Narrow",sans-serif`;
+  ctx.font = `bold ${Math.max(10, s(0.28))}px "Roboto Condensed","Arial Narrow",sans-serif`;
   ctx.textAlign = "left"; ctx.textBaseline = "middle";
-  ctx.fillText("BLUE", hX + s(0.4), hCY);
+  ctx.fillText("BLUE", hX + s(0.35), hCY);
 
   ctx.fillStyle = COL.tBL; ctx.textAlign = "right";
-  ctx.fillText("RED", hX + hW - s(0.4), hCY);
+  ctx.fillText("RED", hX + hW - s(0.35), hCY);
 
   ctx.fillStyle = COL.hTxt;
-  ctx.font = `bold ${Math.max(14, s(0.45))}px "Roboto Condensed","Arial Narrow",sans-serif`;
+  ctx.font = `bold ${Math.max(13, s(0.4))}px "Roboto Condensed","Arial Narrow",sans-serif`;
   ctx.textAlign = "center";
   ctx.fillText(`${st.sL}  -  ${st.sR}`, W / 2, hCY);
 
@@ -694,15 +764,15 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State) 
   const rem = Math.max(0, P.matchDuration - st.time);
   const mn = Math.floor(rem / 60), sc2 = Math.floor(rem % 60);
   const ts = `${String(mn).padStart(2, "0")}:${String(sc2).padStart(2, "0")}`;
-  const tbH = s(0.45), tbW = s(1.6), tbX = (W - tbW) / 2, tbY = hY + hH;
-  ctx.fillStyle = "rgba(10,10,20,0.75)";
+  const tbH = s(0.38), tbW = s(1.4), tbX = (W - tbW) / 2, tbY = hY + hH;
+  ctx.fillStyle = "rgba(10,10,20,0.72)";
   ctx.beginPath();
   ctx.moveTo(tbX, tbY); ctx.lineTo(tbX + tbW, tbY);
-  ctx.lineTo(tbX + tbW - s(0.1), tbY + tbH); ctx.lineTo(tbX + s(0.1), tbY + tbH);
+  ctx.lineTo(tbX + tbW - s(0.08), tbY + tbH); ctx.lineTo(tbX + s(0.08), tbY + tbH);
   ctx.closePath(); ctx.fill();
 
   ctx.fillStyle = COL.hTime;
-  ctx.font = `bold ${Math.max(10, s(0.28))}px "Roboto Mono","Courier New",monospace`;
+  ctx.font = `bold ${Math.max(9, s(0.24))}px "Roboto Mono","Courier New",monospace`;
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   ctx.fillText(ts, W / 2, tbY + tbH / 2);
 }
