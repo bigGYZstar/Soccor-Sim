@@ -3,852 +3,747 @@ import { useEffect, useRef } from "react";
 /*
  * ============================================================
  *  2D Futsal Autoplay Mockup — Clean Broadcast / Sports TV
- *  Design: ESPN/DAZN-style sports broadcast with deep green
- *  court, royal blue vs crimson red teams, broadcast HUD.
  * ============================================================
  */
 
 // ── Tunable Parameters ──────────────────────────────────────
-const PARAMS = {
-  // Match
-  matchDuration: 90,        // seconds
-  goalResetDelay: 1.5,      // seconds pause after goal
+const P = {
+  matchDuration: 90,
+  goalResetDelay: 1.5,
 
-  // Court (world units)
   courtHalfW: 8.0,
   courtHalfH: 5.0,
   goalHalfH: 1.5,
   goalDepth: 0.4,
 
-  // Player
-  moveSpeed: 4.0,
-  dribbleSpeed: 3.2,
-  passSpeed: 12,
-  shotSpeed: 18,
-  passAccuracy: 0.85,
-  shotAccuracy: 0.70,
-  dribbleControl: 0.90,
-  interceptRadius: 0.7,
-  decisionInterval: 0.20,
-  shotRange: 4.0,
-  shotAngle: 40,            // degrees
+  moveSpeed: 4.5,
+  dribbleSpeed: 3.5,
+  passSpeed: 11,
+  shotSpeed: 16,
+  passAccuracy: 0.82,
+  shotAccuracy: 0.65,
+  dribbleControl: 0.93,
+  interceptRadius: 0.9,
+  decisionInterval: 0.18,
+  shotRange: 5.0,
+  shotAngle: 50,
 
-  // Ball
-  looseBallDrag: 3.0,
+  looseBallDrag: 4.0,
+  deadBallTime: 0.8,
 
-  // Visual
   trailDuration: 0.3,
   playerRadius: 0.35,
   ballRadius: 0.15,
 };
 
+// ── Vec2 ────────────────────────────────────────────────────
+interface V { x: number; y: number }
+const v = (x: number, y: number): V => ({ x, y });
+const vadd = (a: V, b: V): V => ({ x: a.x + b.x, y: a.y + b.y });
+const vsub = (a: V, b: V): V => ({ x: a.x - b.x, y: a.y - b.y });
+const vscl = (a: V, s: number): V => ({ x: a.x * s, y: a.y * s });
+const vlen = (a: V): number => Math.sqrt(a.x * a.x + a.y * a.y);
+const vnorm = (a: V): V => { const l = vlen(a); return l < 1e-4 ? v(1, 0) : v(a.x / l, a.y / l); };
+const vdist = (a: V, b: V): number => vlen(vsub(a, b));
+const vdot = (a: V, b: V): number => a.x * b.x + a.y * b.y;
+const vlerp = (a: V, b: V, t: number): V => v(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+const vang = (a: V, b: V): number => {
+  const la = vlen(a), lb = vlen(b);
+  if (la < 0.001 || lb < 0.001) return 0;
+  return Math.acos(Math.max(-1, Math.min(1, vdot(a, b) / (la * lb)))) * 180 / Math.PI;
+};
+const vmove = (from: V, to: V, d: number): V => {
+  const diff = vsub(to, from); const l = vlen(diff);
+  return l <= d ? { ...to } : vadd(from, vscl(vnorm(diff), d));
+};
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+const rng = (a: number, b: number) => a + Math.random() * (b - a);
+const courtClamp = (p: V): V => v(clamp(p.x, -P.courtHalfW, P.courtHalfW), clamp(p.y, -P.courtHalfH, P.courtHalfH));
+
 // ── Types ───────────────────────────────────────────────────
-interface Vec2 { x: number; y: number; }
-
-function v2(x: number, y: number): Vec2 { return { x, y }; }
-function v2add(a: Vec2, b: Vec2): Vec2 { return { x: a.x + b.x, y: a.y + b.y }; }
-function v2sub(a: Vec2, b: Vec2): Vec2 { return { x: a.x - b.x, y: a.y - b.y }; }
-function v2scale(a: Vec2, s: number): Vec2 { return { x: a.x * s, y: a.y * s }; }
-function v2len(a: Vec2): number { return Math.sqrt(a.x * a.x + a.y * a.y); }
-function v2norm(a: Vec2): Vec2 { const l = v2len(a); return l < 0.0001 ? v2(0, 0) : v2(a.x / l, a.y / l); }
-function v2dist(a: Vec2, b: Vec2): number { return v2len(v2sub(a, b)); }
-function v2dot(a: Vec2, b: Vec2): number { return a.x * b.x + a.y * b.y; }
-function v2lerp(a: Vec2, b: Vec2, t: number): Vec2 { return v2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t); }
-function v2angle(a: Vec2, b: Vec2): number {
-  const d = v2dot(a, b) / (v2len(a) * v2len(b) + 0.0001);
-  return Math.acos(Math.max(-1, Math.min(1, d))) * 180 / Math.PI;
-}
-function v2moveToward(from: Vec2, to: Vec2, maxDist: number): Vec2 {
-  const d = v2sub(to, from);
-  const l = v2len(d);
-  if (l <= maxDist) return { ...to };
-  return v2add(from, v2scale(v2norm(d), maxDist));
-}
-function clamp(v: number, min: number, max: number) { return Math.max(min, Math.min(max, v)); }
-function randRange(a: number, b: number) { return a + Math.random() * (b - a); }
-
-type ActionType = "idle" | "dribble" | "moveTo";
-
-interface Trail {
-  start: Vec2;
-  end: Vec2;
-  isShot: boolean;
-  timer: number;
-}
+interface Trail { start: V; end: V; shot: boolean; t: number }
 
 interface Player {
-  pos: Vec2;
-  teamSide: number;        // -1 left, +1 right
-  number: number;
-  formationPos: Vec2;
-  facingDir: Vec2;
-  action: ActionType;
-  moveTarget: Vec2;
-  decisionTimer: number;
+  pos: V; team: number; num: number; home: V;
+  face: V; act: "idle" | "dribble" | "move"; tgt: V;
+  dt: number; // decision timer
+  isGK: boolean;
+  slot: number; // 0=GK,1=DEF,2=DEF,3=MID,4=FWD
 }
 
 interface Ball {
-  pos: Vec2;
-  velocity: Vec2;
-  possessorIdx: number | null;  // index into players[]
-  isFree: boolean;
-  isShot: boolean;
+  pos: V; vel: V; owner: number | null;
+  free: boolean; shot: boolean; dead: number;
+  cooldown: number; // time before ball can be intercepted after possession change
 }
 
-interface GameState {
-  players: Player[];
-  ball: Ball;
-  scoreLeft: number;
-  scoreRight: number;
-  elapsed: number;
-  matchOver: boolean;
-  resetting: boolean;
-  resetTimer: number;
-  kickOffSide: number;
-  trail: Trail | null;
-  goalFlash: number;       // >0 means flash active
-  goalText: string;
-  restartTimer: number;
+interface State {
+  pl: Player[]; ball: Ball;
+  sL: number; sR: number; time: number;
+  over: boolean; paused: boolean; pauseT: number;
+  koSide: number; trail: Trail | null;
+  flash: number; flashTxt: string; restartT: number;
 }
 
-// ── Formation (from centre, for left team side=-1) ──────────
-const FORMATION: Vec2[] = [
-  v2(-7.2, 0),      // GK
-  v2(-5.0, -1.8),   // DEF left
-  v2(-5.0, 1.8),    // DEF right
-  v2(-2.0, 0),      // MID
-  v2(-0.5, 0),      // FWD
+// ── Formation ───────────────────────────────────────────────
+// Left team (team=-1): GK far left, FWD near centre
+const FORM: V[] = [
+  v(-7.2, 0),     // GK
+  v(-5.0, -2.0),  // DEF
+  v(-5.0, 2.0),   // DEF
+  v(-2.5, 0),     // MID
+  v(-0.8, 0),     // FWD
 ];
-const SHIRT_NUMBERS = [1, 2, 3, 5, 9];
+const NUMS = [1, 2, 3, 5, 9];
 
-// ── Colours ─────────────────────────────────────────────────
-const COL = {
-  bg: "#0a0a10",
-  court: "#1a6b3a",
-  courtDark: "#145e30",
-  line: "rgba(255,255,255,0.75)",
-  teamA: "#2563eb",       // royal blue
-  teamALight: "#60a5fa",
-  teamB: "#dc2626",       // crimson red
-  teamBLight: "#f87171",
-  ball: "#ffffff",
-  ballOutline: "#cccccc",
-  passTrail: "rgba(255,255,255,0.45)",
-  shotTrail: "rgba(255,100,30,0.65)",
-  hudBg: "rgba(10,10,20,0.85)",
-  hudText: "#ffffff",
-  hudTime: "#aabbcc",
-  goalFlash: "rgba(255,255,200,0.25)",
-  numberText: "#ffffff",
-  ringA: "rgba(37,99,235,0.5)",
-  ringB: "rgba(220,38,38,0.5)",
-};
-
-// ── Init State ──────────────────────────────────────────────
-function createPlayers(): Player[] {
-  const players: Player[] = [];
+// ── Init ────────────────────────────────────────────────────
+function mkPlayers(): Player[] {
+  const out: Player[] = [];
   for (let t = 0; t < 2; t++) {
-    const side = t === 0 ? -1 : 1;
+    const s = t === 0 ? -1 : 1;
     for (let i = 0; i < 5; i++) {
-      let fpos = { ...FORMATION[i] };
-      if (side === 1) { fpos.x = -fpos.x; fpos.y = -fpos.y; }
-      players.push({
-        pos: { ...fpos },
-        teamSide: side,
-        number: SHIRT_NUMBERS[i],
-        formationPos: { ...fpos },
-        facingDir: v2(-side, 0),
-        action: "idle",
-        moveTarget: { ...fpos },
-        decisionTimer: Math.random() * PARAMS.decisionInterval,
+      const f = { ...FORM[i] };
+      if (s === 1) { f.x = -f.x; f.y = -f.y; }
+      out.push({
+        pos: { ...f }, team: s, num: NUMS[i], home: { ...f },
+        face: v(-s, 0), act: "idle", tgt: { ...f },
+        dt: Math.random() * P.decisionInterval,
+        isGK: i === 0,
+        slot: i,
       });
     }
   }
-  return players;
+  return out;
 }
 
-function initState(): GameState {
+function mkState(): State {
   return {
-    players: createPlayers(),
-    ball: { pos: v2(0, 0), velocity: v2(0, 0), possessorIdx: null, isFree: false, isShot: false },
-    scoreLeft: 0,
-    scoreRight: 0,
-    elapsed: 0,
-    matchOver: false,
-    resetting: false,
-    resetTimer: 0,
-    kickOffSide: 1,
-    trail: null,
-    goalFlash: 0,
-    goalText: "",
-    restartTimer: 0,
+    pl: mkPlayers(),
+    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: false, shot: false, dead: 0, cooldown: 0 },
+    sL: 0, sR: 0, time: 0,
+    over: false, paused: false, pauseT: 0,
+    koSide: 1, trail: null,
+    flash: 0, flashTxt: "", restartT: 0,
   };
 }
 
-// ── Game Logic ──────────────────────────────────────────────
-
-function clampToCourt(pos: Vec2): Vec2 {
-  return v2(clamp(pos.x, -PARAMS.courtHalfW, PARAMS.courtHalfW),
-            clamp(pos.y, -PARAMS.courtHalfH, PARAMS.courtHalfH));
-}
-
-function checkGoal(pos: Vec2): number {
-  if (pos.x >= PARAMS.courtHalfW - 0.05 && Math.abs(pos.y) <= PARAMS.goalHalfH) return 1;
-  if (pos.x <= -PARAMS.courtHalfW + 0.05 && Math.abs(pos.y) <= PARAMS.goalHalfH) return -1;
+// ── Helpers ─────────────────────────────────────────────────
+function checkGoal(pos: V): number {
+  if (pos.x >= P.courtHalfW - 0.05 && Math.abs(pos.y) <= P.goalHalfH) return 1;
+  if (pos.x <= -P.courtHalfW + 0.05 && Math.abs(pos.y) <= P.goalHalfH) return -1;
   return 0;
 }
 
-function kickBall(state: GameState, dir: Vec2, speed: number, isShot: boolean, target: Vec2) {
-  const ball = state.ball;
-  state.trail = {
-    start: { ...ball.pos },
-    end: { ...target },
-    isShot,
-    timer: PARAMS.trailDuration,
-  };
-  ball.possessorIdx = null;
-  ball.isFree = true;
-  ball.isShot = isShot;
-  ball.velocity = v2scale(v2norm(dir), speed);
+function give(ball: Ball, idx: number) {
+  ball.owner = idx; ball.free = false; ball.shot = false;
+  ball.vel = v(0, 0); ball.dead = 0; ball.cooldown = 0.4;
 }
 
-function getOpenness(state: GameState, teammate: Player): number {
-  let minDist = Infinity;
-  for (const p of state.players) {
-    if (p.teamSide === teammate.teamSide) continue;
-    const d = v2dist(teammate.pos, p.pos);
-    if (d < minDist) minDist = d;
+function kick(st: State, dir: V, spd: number, shot: boolean, tgt: V) {
+  const b = st.ball;
+  st.trail = { start: { ...b.pos }, end: { ...tgt }, shot, t: P.trailDuration };
+  b.owner = null; b.free = true; b.shot = shot;
+  b.vel = vscl(vnorm(dir), spd); b.dead = 0;
+}
+
+function nearest(st: State, pos: V, teamFilter?: number): number {
+  let bi = 0, bd = Infinity;
+  for (let i = 0; i < st.pl.length; i++) {
+    if (teamFilter !== undefined && st.pl[i].team !== teamFilter) continue;
+    const d = vdist(st.pl[i].pos, pos);
+    if (d < bd) { bd = d; bi = i; }
   }
-  return minDist;
+  return bi;
 }
 
-function isPassLaneBlocked(state: GameState, from: Vec2, to: Vec2, teamSide: number): boolean {
-  const dir = v2norm(v2sub(to, from));
-  const dist = v2dist(from, to);
-  for (const p of state.players) {
-    if (p.teamSide === teamSide) continue;
-    const toP = v2sub(p.pos, from);
-    const proj = v2dot(toP, dir);
+// ── AI ──────────────────────────────────────────────────────
+
+function openness(st: State, p: Player): number {
+  let mn = Infinity;
+  for (const q of st.pl) {
+    if (q.team === p.team) continue;
+    mn = Math.min(mn, vdist(p.pos, q.pos));
+  }
+  return mn;
+}
+
+function laneBlocked(st: State, from: V, to: V, team: number): boolean {
+  const d = vnorm(vsub(to, from));
+  const dist = vdist(from, to);
+  for (const p of st.pl) {
+    if (p.team === team) continue;
+    const tp = vsub(p.pos, from);
+    const proj = vdot(tp, d);
     if (proj < 0.5 || proj > dist - 0.5) continue;
-    const closest = v2add(from, v2scale(dir, proj));
-    if (v2dist(closest, p.pos) < 0.8) return true;
+    const cl = vadd(from, vscl(d, proj));
+    if (vdist(cl, p.pos) < 0.9) return true;
   }
   return false;
 }
 
-function findBestPassTarget(state: GameState, playerIdx: number): number | null {
-  const me = state.players[playerIdx];
-  let bestIdx: number | null = null;
-  let bestScore = -Infinity;
-  for (let i = 0; i < state.players.length; i++) {
-    const p = state.players[i];
-    if (p.teamSide !== me.teamSide || i === playerIdx) continue;
-    const dist = v2dist(me.pos, p.pos);
-    if (dist < 1 || dist > 14) continue;
-    const openness = getOpenness(state, p);
-    const goalProgress = -me.teamSide * p.pos.x;
-    let score = openness * 2 + goalProgress * 0.5 - dist * 0.1;
-    if (isPassLaneBlocked(state, me.pos, p.pos, me.teamSide)) score -= 5;
-    if (score > bestScore) { bestScore = score; bestIdx = i; }
+function bestPass(st: State, idx: number): number | null {
+  const me = st.pl[idx];
+  let bi: number | null = null, bs = -Infinity;
+  for (let i = 0; i < st.pl.length; i++) {
+    const p = st.pl[i];
+    if (p.team !== me.team || i === idx) continue;
+    const d = vdist(me.pos, p.pos);
+    if (d < 1.0 || d > 14) continue;
+    const op = openness(st, p);
+    const gp = -me.team * p.pos.x;
+    let sc = op * 2 + gp * 0.5 - d * 0.15;
+    if (laneBlocked(st, me.pos, p.pos, me.team)) sc -= 4;
+    if (sc > bs) { bs = sc; bi = i; }
   }
-  return bestIdx;
+  return bi;
 }
 
-function decideWithBall(state: GameState, idx: number, dt: number) {
-  const me = state.players[idx];
-  const goalCenter = v2(-me.teamSide * PARAMS.courtHalfW, 0);
-  const distToGoal = v2dist(me.pos, goalCenter);
-  const toGoal = v2norm(v2sub(goalCenter, me.pos));
-  const angleToGoal = v2angle(me.facingDir, toGoal);
+function doDribble(st: State, idx: number) {
+  const me = st.pl[idx];
+  if (Math.random() > P.dribbleControl) {
+    const fd = vnorm(v(rng(-1, 1), rng(-1, 1)));
+    kick(st, fd, 3, false, vadd(me.pos, vscl(fd, 2)));
+    return;
+  }
+  // Goal direction + avoid nearest opponent + avoid walls
+  const gd = vnorm(v(-me.team, 0));
+  let avoid = v(0, 0);
+  let cd = Infinity;
+  for (const p of st.pl) {
+    if (p.team === me.team) continue;
+    const d = vdist(me.pos, p.pos);
+    if (d < cd && d < 3) { cd = d; avoid = vnorm(vsub(me.pos, p.pos)); }
+  }
+  // Wall avoidance — stronger when near edges
+  let wa = v(0, 0);
+  const edgeY = P.courtHalfH - 0.8;
+  const edgeX = P.courtHalfW - 1.0;
+  if (me.pos.y > edgeY) wa.y = -(me.pos.y - edgeY) * 1.5;
+  if (me.pos.y < -edgeY) wa.y = -(-edgeY - me.pos.y) * -1.5;
+  if (me.pos.x > edgeX) wa.x = -(me.pos.x - edgeX) * 1.2;
+  if (me.pos.x < -edgeX) wa.x = -(-edgeX - me.pos.x) * -1.2;
+
+  // Add lateral jink to avoid being predictable
+  const jink = v(0, rng(-0.3, 0.3));
+
+  const desired = vnorm(vadd(vadd(vadd(vscl(gd, 0.55), vscl(avoid, 0.3)), wa), jink));
+  me.tgt = courtClamp(vadd(me.pos, vscl(desired, 3.5)));
+  me.act = "dribble";
+  me.face = desired;
+}
+
+function decideHasBall(st: State, idx: number) {
+  const me = st.pl[idx];
+  const gc = v(-me.team * P.courtHalfW, 0);
+  const dg = vdist(me.pos, gc);
+  const tg = vnorm(vsub(gc, me.pos));
+  const ag = vang(me.face, tg);
+
+  // Is player in own defensive third?
+  const inOwnThird = me.team * me.pos.x > P.courtHalfW * 0.33;
+
+  // GK or deep defender: ALWAYS try to pass first
+  if (me.isGK || inOwnThird) {
+    const bp = bestPassRelaxed(st, idx);
+    if (bp !== null) {
+      doPassTo(st, idx, bp);
+      return;
+    }
+    // Safety clearance: kick forward
+    const fwd = vnorm(v(-me.team + rng(-0.3, 0.3), rng(-0.5, 0.5)));
+    me.face = fwd;
+    kick(st, fwd, P.passSpeed * 0.8, false, vadd(me.pos, vscl(fwd, 6)));
+    return;
+  }
 
   // 1) SHOT
-  if (distToGoal < PARAMS.shotRange && angleToGoal < PARAMS.shotAngle) {
-    const err = (1 - PARAMS.shotAccuracy) * 2;
-    const target = v2(goalCenter.x, goalCenter.y + randRange(-err, err));
-    const dir = v2norm(v2sub(target, me.pos));
-    me.facingDir = dir;
-    kickBall(state, dir, PARAMS.shotSpeed, true, target);
+  if (dg < P.shotRange && ag < P.shotAngle) {
+    const err = (1 - P.shotAccuracy) * 2.5;
+    const t = v(gc.x, gc.y + rng(-err, err));
+    me.face = vnorm(vsub(t, me.pos));
+    kick(st, me.face, P.shotSpeed, true, t);
     return;
   }
 
   // 2) PASS
-  const bestTarget = findBestPassTarget(state, idx);
-  if (bestTarget !== null) {
-    const teammate = state.players[bestTarget];
-    const passDist = v2dist(me.pos, teammate.pos);
-    if (passDist > 1.5) {
-      let targetPos = { ...teammate.pos };
-      const tmDir = v2norm(v2sub(teammate.moveTarget, teammate.pos));
-      targetPos = v2add(targetPos, v2scale(tmDir, 0.3));
-      const err = (1 - PARAMS.passAccuracy) * 1.5;
-      targetPos.x += randRange(-err, err);
-      targetPos.y += randRange(-err, err);
-      const dir = v2norm(v2sub(targetPos, me.pos));
-      me.facingDir = dir;
-      kickBall(state, dir, PARAMS.passSpeed, false, targetPos);
-      return;
-    }
+  const bp = bestPass(st, idx);
+  if (bp !== null) {
+    doPassTo(st, idx, bp);
+    return;
   }
 
   // 3) DRIBBLE
-  if (Math.random() > PARAMS.dribbleControl) {
-    const fumbleDir = v2norm(v2(randRange(-1, 1), randRange(-1, 1)));
-    kickBall(state, fumbleDir, 3, false, v2add(me.pos, v2scale(fumbleDir, 2)));
-    return;
-  }
-  const goalDir = v2norm(v2(-me.teamSide, 0));
-  let avoidDir = v2(0, 0);
-  let closestOpp = Infinity;
-  for (const p of state.players) {
-    if (p.teamSide === me.teamSide) continue;
-    const d = v2dist(me.pos, p.pos);
-    if (d < closestOpp && d < 3) {
-      closestOpp = d;
-      avoidDir = v2norm(v2sub(me.pos, p.pos));
-    }
-  }
-  const desired = v2norm(v2add(v2scale(goalDir, 0.7), v2scale(avoidDir, 0.3)));
-  me.moveTarget = clampToCourt(v2add(me.pos, v2scale(desired, 2)));
-  me.action = "dribble";
-  me.facingDir = desired;
+  doDribble(st, idx);
 }
 
-function decideWithoutBall(state: GameState, idx: number) {
-  const me = state.players[idx];
-  const ball = state.ball;
+// Relaxed pass finder — ignores lane blocking in own half
+function bestPassRelaxed(st: State, idx: number): number | null {
+  const me = st.pl[idx];
+  let bi: number | null = null, bs = -Infinity;
+  for (let i = 0; i < st.pl.length; i++) {
+    const p = st.pl[i];
+    if (p.team !== me.team || i === idx) continue;
+    const d = vdist(me.pos, p.pos);
+    if (d < 0.8 || d > 14) continue;
+    const op = openness(st, p);
+    const gp = -me.team * p.pos.x; // progress toward opponent goal
+    let sc = op * 1.5 + gp * 0.8 - d * 0.1;
+    // Slight penalty for blocked lanes but don't eliminate
+    if (laneBlocked(st, me.pos, p.pos, me.team)) sc -= 1.5;
+    if (sc > bs) { bs = sc; bi = i; }
+  }
+  return bi;
+}
 
-  if (ball.isFree) {
-    const d = v2dist(me.pos, ball.pos);
-    if (d < 5) {
-      me.moveTarget = { ...ball.pos };
-      me.action = "moveTo";
+function doPassTo(st: State, idx: number, targetIdx: number) {
+  const me = st.pl[idx];
+  const tm = st.pl[targetIdx];
+  let tp = { ...tm.pos };
+  if (tm.act !== "idle") {
+    const lead = vnorm(vsub(tm.tgt, tm.pos));
+    const pd = vdist(me.pos, tm.pos);
+    tp = vadd(tp, vscl(lead, Math.min(pd * 0.1, 1.0)));
+  }
+  const err = (1 - P.passAccuracy) * 1.5;
+  tp.x += rng(-err, err); tp.y += rng(-err, err);
+  me.face = vnorm(vsub(tp, me.pos));
+  kick(st, me.face, P.passSpeed, false, tp);
+}
+
+function decideNoBall(st: State, idx: number) {
+  const me = st.pl[idx];
+  const b = st.ball;
+  const ballPos = b.pos;
+
+  // GK: stay near goal, track ball Y
+  if (me.isGK) {
+    const gx = me.team * (P.courtHalfW - 0.8);
+    const gy = clamp(ballPos.y * 0.6, -P.goalHalfH + 0.3, P.goalHalfH - 0.3);
+    me.tgt = v(gx, gy);
+    me.act = "move";
+    // Chase ball if very close
+    if (b.free && vdist(me.pos, ballPos) < 2.5) {
+      me.tgt = { ...ballPos };
+    }
+    return;
+  }
+
+  // Chase loose ball — nearest 2 players on team should chase
+  if (b.free || (b.owner === null && !b.free)) {
+    const d = vdist(me.pos, ballPos);
+    // Check if I'm one of the 2 nearest on my team
+    let rank = 0;
+    for (let i = 0; i < st.pl.length; i++) {
+      if (i === idx || st.pl[i].team !== me.team || st.pl[i].isGK) continue;
+      if (vdist(st.pl[i].pos, ballPos) < d) rank++;
+    }
+    if (rank < 2 && d < 10) {
+      me.tgt = { ...ballPos };
+      me.act = "move";
       return;
     }
   }
 
-  const home = me.formationPos;
-  const xShift = clamp((ball.pos.x - home.x) * 0.25, -2, 2);
-  const yShift = clamp((ball.pos.y - home.y) * 0.35, -1.5, 1.5);
-  me.moveTarget = clampToCourt(v2add(home, v2(xShift, yShift)));
-  me.action = "moveTo";
-}
+  // Team has ball — make attacking runs
+  const teamHasBall = b.owner !== null && st.pl[b.owner].team === me.team;
+  if (teamHasBall) {
+    // Run toward opponent half, spread out
+    const oppGoalX = -me.team * P.courtHalfW;
+    const carrier = st.pl[b.owner!];
 
-function doKickOff(state: GameState) {
-  state.resetting = false;
-  state.ball.pos = v2(0, 0);
-  state.ball.velocity = v2(0, 0);
-  state.ball.possessorIdx = null;
-  state.ball.isFree = false;
-  state.ball.isShot = false;
-  state.trail = null;
+    // Calculate a good support position
+    const teamIdx = me.slot; // 0=GK,1=DEF,2=DEF,3=MID,4=FWD
 
-  for (const p of state.players) {
-    p.pos = { ...p.formationPos };
-    p.action = "idle";
-    p.moveTarget = { ...p.formationPos };
-    p.facingDir = v2(-p.teamSide, 0);
-  }
+    let targetX: number, targetY: number;
 
-  // Give ball to kick-off team's centre player (closest to centre)
-  let bestIdx = 0;
-  let bestDist = Infinity;
-  for (let i = 0; i < state.players.length; i++) {
-    const p = state.players[i];
-    if (p.teamSide !== state.kickOffSide) continue;
-    const d = v2dist(p.pos, v2(0, 0));
-    if (d < bestDist) { bestDist = d; bestIdx = i; }
-  }
-  state.ball.possessorIdx = bestIdx;
-  state.ball.isFree = false;
-}
-
-function update(state: GameState, dt: number) {
-  // Goal flash decay
-  if (state.goalFlash > 0) state.goalFlash -= dt;
-
-  // Match restart after game over
-  if (state.matchOver) {
-    state.restartTimer -= dt;
-    if (state.restartTimer <= 0) {
-      Object.assign(state, initState());
-      doKickOff(state);
-    }
-    return;
-  }
-
-  // Goal reset pause
-  if (state.resetting) {
-    state.resetTimer -= dt;
-    if (state.resetTimer <= 0) doKickOff(state);
-    return;
-  }
-
-  // Timer
-  state.elapsed += dt;
-  if (state.elapsed >= PARAMS.matchDuration) {
-    state.matchOver = true;
-    state.restartTimer = 4;
-    state.goalText = "FULL TIME";
-    state.goalFlash = 2;
-    return;
-  }
-
-  const ball = state.ball;
-
-  // ── Ball update ───────────────────────────────────────
-  if (ball.possessorIdx !== null && !ball.isFree) {
-    const owner = state.players[ball.possessorIdx];
-    const offset = v2scale(owner.facingDir, 0.25);
-    ball.pos = v2add(owner.pos, offset);
-  } else if (ball.isFree) {
-    ball.pos = v2add(ball.pos, v2scale(ball.velocity, dt));
-
-    // Bounce top/bottom
-    if (Math.abs(ball.pos.y) > PARAMS.courtHalfH) {
-      ball.pos.y = clamp(ball.pos.y, -PARAMS.courtHalfH, PARAMS.courtHalfH);
-      ball.velocity.y = -ball.velocity.y * 0.5;
-    }
-
-    // Goal check
-    const goalSide = checkGoal(ball.pos);
-    if (goalSide !== 0) {
-      if (goalSide > 0) state.scoreLeft++;
-      else state.scoreRight++;
-      state.kickOffSide = -goalSide;
-      state.resetting = true;
-      state.resetTimer = PARAMS.goalResetDelay;
-      state.goalFlash = 1.5;
-      state.goalText = "GOAL!";
-      return;
-    }
-
-    // Side walls (not goal mouth)
-    if (Math.abs(ball.pos.x) > PARAMS.courtHalfW) {
-      ball.pos.x = clamp(ball.pos.x, -PARAMS.courtHalfW, PARAMS.courtHalfW);
-      ball.velocity.x = -ball.velocity.x * 0.5;
-    }
-
-    // Drag
-    const speed = v2len(ball.velocity);
-    if (speed > 0.3) {
-      const newSpeed = Math.max(0, speed - PARAMS.looseBallDrag * dt);
-      ball.velocity = v2scale(v2norm(ball.velocity), newSpeed);
+    if (teamIdx <= 2) {
+      // Defenders: push up but stay behind ball
+      targetX = carrier.pos.x + me.team * 2; // stay behind carrier
+      targetY = me.home.y + clamp(ballPos.y * 0.3, -1.5, 1.5);
+    } else if (teamIdx === 3) {
+      // MID: support carrier, move to open space
+      targetX = (carrier.pos.x + oppGoalX) * 0.4;
+      targetY = ballPos.y + (me.pos.y > ballPos.y ? 2.5 : -2.5);
     } else {
-      ball.velocity = v2(0, 0);
-      ball.isShot = false;
+      // FWD: make runs toward goal
+      targetX = oppGoalX * 0.6;
+      targetY = rng(-2, 2);
     }
+
+    me.tgt = courtClamp(v(targetX, targetY));
+    me.act = "move";
+    return;
   }
 
-  // ── Trail decay ───────────────────────────────────────
-  if (state.trail) {
-    state.trail.timer -= dt;
-    if (state.trail.timer <= 0) state.trail = null;
+  // Opponent has ball — defend
+  if (b.owner !== null && st.pl[b.owner].team !== me.team) {
+    const carrier = st.pl[b.owner];
+    const myGoal = v(me.team * P.courtHalfW, 0);
+    const dc = vdist(me.pos, carrier.pos);
+
+    if (dc < 4) {
+      // Press the carrier
+      me.tgt = courtClamp(vlerp(carrier.pos, myGoal, 0.15));
+    } else {
+      // Fall back toward formation, shifted toward ball
+      const shift = v(
+        clamp((ballPos.x - me.home.x) * 0.35, -3, 3),
+        clamp((ballPos.y - me.home.y) * 0.45, -2.5, 2.5)
+      );
+      me.tgt = courtClamp(vadd(me.home, shift));
+    }
+    me.act = "move";
+    return;
   }
 
-  // ── Player update ─────────────────────────────────────
-  for (let i = 0; i < state.players.length; i++) {
-    const p = state.players[i];
-    const hasBall = ball.possessorIdx === i;
-
-    // Interception
-    if (!hasBall && ball.isFree) {
-      if (v2dist(p.pos, ball.pos) < PARAMS.interceptRadius) {
-        ball.possessorIdx = i;
-        ball.isFree = false;
-        ball.isShot = false;
-        ball.velocity = v2(0, 0);
-      }
-    }
-
-    // Decision tick
-    p.decisionTimer -= dt;
-    if (p.decisionTimer <= 0) {
-      p.decisionTimer = PARAMS.decisionInterval;
-      if (ball.possessorIdx === i) {
-        decideWithBall(state, i, dt);
-      } else {
-        decideWithoutBall(state, i);
-      }
-    }
-
-    // Movement
-    if (p.action !== "idle") {
-      const speed = p.action === "dribble" ? PARAMS.dribbleSpeed : PARAMS.moveSpeed;
-      const dir = v2sub(p.moveTarget, p.pos);
-      if (v2len(dir) < 0.1) {
-        p.action = "idle";
-      } else {
-        p.facingDir = v2norm(dir);
-        p.pos = clampToCourt(v2moveToward(p.pos, p.moveTarget, speed * dt));
-      }
-    }
-  }
+  // Default: drift toward shifted formation
+  const shift = v(
+    clamp((ballPos.x - me.home.x) * 0.3, -2.5, 2.5),
+    clamp((ballPos.y - me.home.y) * 0.4, -2, 2)
+  );
+  me.tgt = courtClamp(vadd(me.home, shift));
+  me.act = "move";
 }
 
-// ── Rendering ───────────────────────────────────────────────
-
-function worldToScreen(pos: Vec2, canvas: HTMLCanvasElement, scale: number, offsetX: number, offsetY: number): Vec2 {
-  return v2(offsetX + pos.x * scale, offsetY - pos.y * scale);
+// ── Kick-off ────────────────────────────────────────────────
+function doKickOff(st: State) {
+  st.paused = false;
+  st.ball = { pos: v(0, 0), vel: v(0, 0), owner: null, free: false, shot: false, dead: 0, cooldown: 0 };
+  st.trail = null;
+  for (const p of st.pl) {
+    p.pos = { ...p.home }; p.act = "idle"; p.tgt = { ...p.home };
+    p.face = v(-p.team, 0); p.dt = Math.random() * P.decisionInterval;
+  }
+  const ki = nearest(st, v(0, 0), st.koSide);
+  give(st.ball, ki);
 }
 
-function render(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, state: GameState) {
-  const W = canvas.width;
-  const H = canvas.height;
+// ── Update ──────────────────────────────────────────────────
+function update(st: State, dt: number) {
+  if (st.flash > 0) st.flash -= dt;
 
-  // Calculate scale to fit court
-  const courtW = PARAMS.courtHalfW * 2 + 2;
-  const courtH = PARAMS.courtHalfH * 2 + 3.5; // extra for HUD
-  const scaleX = W / courtW;
-  const scaleY = H / courtH;
-  const scale = Math.min(scaleX, scaleY);
-  const offsetX = W / 2;
-  const offsetY = H / 2 + 0.75 * scale; // shift down slightly for HUD
-
-  const w2s = (p: Vec2) => worldToScreen(p, canvas, scale, offsetX, offsetY);
-  const s = (v: number) => v * scale;
-
-  // ── Background ────────────────────────────────────────
-  ctx.fillStyle = COL.bg;
-  ctx.fillRect(0, 0, W, H);
-
-  // ── Court ─────────────────────────────────────────────
-  const courtTL = w2s(v2(-PARAMS.courtHalfW, PARAMS.courtHalfH));
-  const courtSize = v2(s(PARAMS.courtHalfW * 2), s(PARAMS.courtHalfH * 2));
-
-  // Court gradient
-  const grd = ctx.createLinearGradient(courtTL.x, courtTL.y, courtTL.x, courtTL.y + courtSize.y);
-  grd.addColorStop(0, COL.court);
-  grd.addColorStop(0.5, COL.courtDark);
-  grd.addColorStop(1, COL.court);
-  ctx.fillStyle = grd;
-  ctx.fillRect(courtTL.x, courtTL.y, courtSize.x, courtSize.y);
-
-  // Pitch stripes (subtle)
-  ctx.fillStyle = "rgba(255,255,255,0.03)";
-  const stripeW = s(PARAMS.courtHalfW * 2) / 8;
-  for (let i = 0; i < 8; i += 2) {
-    ctx.fillRect(courtTL.x + i * stripeW, courtTL.y, stripeW, courtSize.y);
+  if (st.over) {
+    st.restartT -= dt;
+    if (st.restartT <= 0) { Object.assign(st, mkState()); doKickOff(st); }
+    return;
+  }
+  if (st.paused) {
+    st.pauseT -= dt;
+    if (st.pauseT <= 0) doKickOff(st);
+    return;
   }
 
-  // ── Court Lines ───────────────────────────────────────
-  ctx.strokeStyle = COL.line;
-  ctx.lineWidth = Math.max(1, s(0.04));
+  st.time += dt;
+  if (st.time >= P.matchDuration) {
+    st.over = true; st.restartT = 4; st.flashTxt = "FULL TIME"; st.flash = 2;
+    return;
+  }
 
-  // Outline
-  ctx.strokeRect(courtTL.x, courtTL.y, courtSize.x, courtSize.y);
+  const b = st.ball;
 
-  // Centre line
-  const centreTop = w2s(v2(0, PARAMS.courtHalfH));
-  const centreBot = w2s(v2(0, -PARAMS.courtHalfH));
-  ctx.beginPath();
-  ctx.moveTo(centreTop.x, centreTop.y);
-  ctx.lineTo(centreBot.x, centreBot.y);
-  ctx.stroke();
+  // ── Cooldown tick ─────────────────────────────────────
+  if (b.cooldown > 0) b.cooldown -= dt;
 
-  // Centre circle
-  const centreS = w2s(v2(0, 0));
-  ctx.beginPath();
-  ctx.arc(centreS.x, centreS.y, s(1.5), 0, Math.PI * 2);
-  ctx.stroke();
+  // ── Dead ball recovery ────────────────────────────────
+  if (b.owner === null && !b.free) { b.free = true; b.dead = 0; }
+  if (b.free && vlen(b.vel) < 0.5) {
+    b.dead += dt;
+    if (b.dead > P.deadBallTime) {
+      give(b, nearest(st, b.pos));
+    }
+  } else if (!b.free) {
+    b.dead = 0;
+  }
 
-  // Centre dot
-  ctx.fillStyle = COL.line;
-  ctx.beginPath();
-  ctx.arc(centreS.x, centreS.y, s(0.08), 0, Math.PI * 2);
-  ctx.fill();
+  // ── Ball physics ──────────────────────────────────────
+  if (b.owner !== null && !b.free) {
+    const o = st.pl[b.owner];
+    b.pos = vadd(o.pos, vscl(o.face, 0.25));
+  } else if (b.free) {
+    b.pos = vadd(b.pos, vscl(b.vel, dt));
 
-  // Penalty areas
-  const paW = 2.0, paH = 2.5;
-  // Left
-  const paLTL = w2s(v2(-PARAMS.courtHalfW, paH));
-  ctx.strokeRect(paLTL.x, paLTL.y, s(paW), s(paH * 2));
-  // Right
-  const paRTL = w2s(v2(PARAMS.courtHalfW - paW, paH));
-  ctx.strokeRect(paRTL.x, paRTL.y, s(paW), s(paH * 2));
+    if (Math.abs(b.pos.y) > P.courtHalfH) {
+      b.pos.y = clamp(b.pos.y, -P.courtHalfH, P.courtHalfH);
+      b.vel.y *= -0.5;
+    }
 
-  // ── Goals ─────────────────────────────────────────────
-  ctx.fillStyle = "rgba(255,255,255,0.15)";
-  // Left goal
-  const glTL = w2s(v2(-PARAMS.courtHalfW - PARAMS.goalDepth, PARAMS.goalHalfH));
-  ctx.fillRect(glTL.x, glTL.y, s(PARAMS.goalDepth), s(PARAMS.goalHalfH * 2));
-  ctx.strokeStyle = "rgba(255,255,255,0.5)";
-  ctx.strokeRect(glTL.x, glTL.y, s(PARAMS.goalDepth), s(PARAMS.goalHalfH * 2));
-  // Right goal
-  const grTL = w2s(v2(PARAMS.courtHalfW, PARAMS.goalHalfH));
-  ctx.fillRect(grTL.x, grTL.y, s(PARAMS.goalDepth), s(PARAMS.goalHalfH * 2));
-  ctx.strokeRect(grTL.x, grTL.y, s(PARAMS.goalDepth), s(PARAMS.goalHalfH * 2));
+    const gs = checkGoal(b.pos);
+    if (gs !== 0) {
+      if (gs > 0) st.sL++; else st.sR++;
+      st.koSide = -gs; st.paused = true; st.pauseT = P.goalResetDelay;
+      st.flash = 1.5; st.flashTxt = "GOAL!";
+      return;
+    }
 
-  // Goal posts
-  ctx.fillStyle = "#ffffff";
-  const posts = [
-    v2(-PARAMS.courtHalfW, PARAMS.goalHalfH),
-    v2(-PARAMS.courtHalfW, -PARAMS.goalHalfH),
-    v2(PARAMS.courtHalfW, PARAMS.goalHalfH),
-    v2(PARAMS.courtHalfW, -PARAMS.goalHalfH),
-  ];
-  for (const post of posts) {
-    const ps = w2s(post);
-    ctx.beginPath();
-    ctx.arc(ps.x, ps.y, s(0.08), 0, Math.PI * 2);
-    ctx.fill();
+    if (Math.abs(b.pos.x) > P.courtHalfW) {
+      b.pos.x = clamp(b.pos.x, -P.courtHalfW, P.courtHalfW);
+      b.vel.x *= -0.5;
+    }
+
+    const spd = vlen(b.vel);
+    if (spd > 0.1) {
+      b.vel = vscl(vnorm(b.vel), Math.max(0, spd - P.looseBallDrag * dt));
+    } else {
+      b.vel = v(0, 0); b.shot = false;
+    }
   }
 
   // ── Trail ─────────────────────────────────────────────
-  if (state.trail) {
-    const t = state.trail;
-    const alpha = t.timer / PARAMS.trailDuration;
-    const startS = w2s(t.start);
-    const endS = w2s(t.end);
-
-    if (t.isShot) {
-      ctx.strokeStyle = `rgba(255,100,30,${0.65 * alpha})`;
-      ctx.lineWidth = Math.max(2, s(0.1));
-      ctx.beginPath();
-      ctx.moveTo(startS.x, startS.y);
-      ctx.lineTo(endS.x, endS.y);
-      ctx.stroke();
-    } else {
-      ctx.strokeStyle = `rgba(255,255,255,${0.45 * alpha})`;
-      ctx.lineWidth = Math.max(1, s(0.04));
-      ctx.setLineDash([s(0.15), s(0.15)]);
-      ctx.beginPath();
-      ctx.moveTo(startS.x, startS.y);
-      ctx.lineTo(endS.x, endS.y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    ctx.lineWidth = 1;
-  }
+  if (st.trail) { st.trail.t -= dt; if (st.trail.t <= 0) st.trail = null; }
 
   // ── Players ───────────────────────────────────────────
-  for (let i = 0; i < state.players.length; i++) {
-    const p = state.players[i];
-    const ps = w2s(p.pos);
-    const r = s(PARAMS.playerRadius);
-    const isA = p.teamSide < 0;
-    const col = isA ? COL.teamA : COL.teamB;
-    const colLight = isA ? COL.teamALight : COL.teamBLight;
+  for (let i = 0; i < st.pl.length; i++) {
+    const p = st.pl[i];
 
-    // Possession ring
-    if (state.ball.possessorIdx === i) {
-      ctx.strokeStyle = isA ? COL.ringA : COL.ringB;
-      ctx.lineWidth = Math.max(2, s(0.06));
-      ctx.beginPath();
-      ctx.arc(ps.x, ps.y, r * 1.6, 0, Math.PI * 2);
-      ctx.stroke();
-
-      // Glow
-      ctx.shadowColor = col;
-      ctx.shadowBlur = s(0.3);
+    // Intercept (only if no cooldown)
+    if (b.cooldown > 0) { /* skip intercept during cooldown */ }
+    else if (b.owner !== i && b.free && vdist(p.pos, b.pos) < P.interceptRadius) {
+      give(b, i);
+    }
+    // Also allow stealing from dribbler if very close
+    else if (b.owner !== null && b.owner !== i && !b.free && b.cooldown <= 0
+      && st.pl[b.owner].team !== p.team && vdist(p.pos, b.pos) < P.interceptRadius * 0.7) {
+      give(b, i);
     }
 
-    // Player circle
-    const grad = ctx.createRadialGradient(ps.x - r * 0.3, ps.y - r * 0.3, r * 0.1, ps.x, ps.y, r);
-    grad.addColorStop(0, colLight);
-    grad.addColorStop(1, col);
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(ps.x, ps.y, r, 0, Math.PI * 2);
-    ctx.fill();
+    // Decision
+    p.dt -= dt;
+    if (p.dt <= 0) {
+      p.dt = P.decisionInterval;
+      if (b.owner === i) decideHasBall(st, i);
+      else decideNoBall(st, i);
+    }
 
-    // Outline
-    ctx.strokeStyle = "rgba(0,0,0,0.4)";
-    ctx.lineWidth = Math.max(1, s(0.03));
-    ctx.stroke();
-
-    ctx.shadowColor = "transparent";
-    ctx.shadowBlur = 0;
-
-    // Number
-    ctx.fillStyle = COL.numberText;
-    ctx.font = `bold ${Math.max(10, r * 1.1 | 0)}px "Roboto Condensed", "Arial Narrow", sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(String(p.number), ps.x, ps.y + 1);
-  }
-
-  // ── Ball ──────────────────────────────────────────────
-  {
-    const bs = w2s(state.ball.pos);
-    const br = s(PARAMS.ballRadius);
-
-    // Shadow
-    ctx.fillStyle = "rgba(0,0,0,0.3)";
-    ctx.beginPath();
-    ctx.ellipse(bs.x + s(0.05), bs.y + s(0.05), br, br * 0.7, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Ball
-    const bGrad = ctx.createRadialGradient(bs.x - br * 0.3, bs.y - br * 0.3, br * 0.1, bs.x, bs.y, br);
-    bGrad.addColorStop(0, "#ffffff");
-    bGrad.addColorStop(1, "#cccccc");
-    ctx.fillStyle = bGrad;
-    ctx.beginPath();
-    ctx.arc(bs.x, bs.y, br, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = "rgba(0,0,0,0.3)";
-    ctx.lineWidth = Math.max(1, s(0.02));
-    ctx.stroke();
-  }
-
-  // ── Goal Flash ────────────────────────────────────────
-  if (state.goalFlash > 0) {
-    const alpha = Math.min(1, state.goalFlash) * 0.25;
-    ctx.fillStyle = `rgba(255,255,200,${alpha})`;
-    ctx.fillRect(0, 0, W, H);
-
-    // Goal text
-    if (state.goalText) {
-      ctx.fillStyle = `rgba(255,255,255,${Math.min(1, state.goalFlash)})`;
-      ctx.font = `bold ${s(1.2)}px "Roboto Condensed", "Arial Narrow", sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.shadowColor = "rgba(0,0,0,0.5)";
-      ctx.shadowBlur = s(0.3);
-      ctx.fillText(state.goalText, W / 2, H / 2);
-      ctx.shadowColor = "transparent";
-      ctx.shadowBlur = 0;
+    // Move
+    if (p.act !== "idle") {
+      const spd = p.act === "dribble" ? P.dribbleSpeed : P.moveSpeed;
+      const d = vsub(p.tgt, p.pos);
+      if (vlen(d) < 0.1) { p.act = "idle"; }
+      else {
+        p.face = vnorm(d);
+        p.pos = courtClamp(vmove(p.pos, p.tgt, spd * dt));
+      }
     }
   }
-
-  // ── HUD (Broadcast bar) ───────────────────────────────
-  const hudH = s(1.0);
-  const hudY = s(0.3);
-  const hudW = Math.min(W * 0.6, s(10));
-  const hudX = (W - hudW) / 2;
-
-  // Background
-  ctx.fillStyle = COL.hudBg;
-  const hudR = s(0.15);
-  ctx.beginPath();
-  ctx.moveTo(hudX + hudR, hudY);
-  ctx.lineTo(hudX + hudW - hudR, hudY);
-  ctx.quadraticCurveTo(hudX + hudW, hudY, hudX + hudW, hudY + hudR);
-  ctx.lineTo(hudX + hudW, hudY + hudH - hudR);
-  ctx.quadraticCurveTo(hudX + hudW, hudY + hudH, hudX + hudW - hudR, hudY + hudH);
-  ctx.lineTo(hudX + hudR, hudY + hudH);
-  ctx.quadraticCurveTo(hudX, hudY + hudH, hudX, hudY + hudH - hudR);
-  ctx.lineTo(hudX, hudY + hudR);
-  ctx.quadraticCurveTo(hudX, hudY, hudX + hudR, hudY);
-  ctx.closePath();
-  ctx.fill();
-
-  // Bottom border accent
-  ctx.strokeStyle = "rgba(255,255,255,0.15)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(hudX, hudY + hudH);
-  ctx.lineTo(hudX + hudW, hudY + hudH);
-  ctx.stroke();
-
-  const hudCY = hudY + hudH / 2;
-
-  // Team A colour bar
-  ctx.fillStyle = COL.teamA;
-  ctx.fillRect(hudX, hudY, s(0.15), hudH);
-
-  // Team B colour bar
-  ctx.fillStyle = COL.teamB;
-  ctx.fillRect(hudX + hudW - s(0.15), hudY, s(0.15), hudH);
-
-  // Team names
-  ctx.fillStyle = COL.teamALight;
-  ctx.font = `bold ${Math.max(11, s(0.32))}px "Roboto Condensed", "Arial Narrow", sans-serif`;
-  ctx.textAlign = "left";
-  ctx.textBaseline = "middle";
-  ctx.fillText("BLUE", hudX + s(0.4), hudCY);
-
-  ctx.fillStyle = COL.teamBLight;
-  ctx.textAlign = "right";
-  ctx.fillText("RED", hudX + hudW - s(0.4), hudCY);
-
-  // Score
-  ctx.fillStyle = COL.hudText;
-  ctx.font = `bold ${Math.max(14, s(0.45))}px "Roboto Condensed", "Arial Narrow", sans-serif`;
-  ctx.textAlign = "center";
-  ctx.fillText(`${state.scoreLeft}  -  ${state.scoreRight}`, W / 2, hudCY);
-
-  // Time (below main bar)
-  const remaining = Math.max(0, PARAMS.matchDuration - state.elapsed);
-  const min = Math.floor(remaining / 60);
-  const sec = Math.floor(remaining % 60);
-  const timeStr = `${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
-
-  const timeBgH = s(0.45);
-  const timeBgW = s(1.6);
-  const timeBgX = (W - timeBgW) / 2;
-  const timeBgY = hudY + hudH;
-  ctx.fillStyle = "rgba(10,10,20,0.75)";
-  ctx.beginPath();
-  ctx.moveTo(timeBgX, timeBgY);
-  ctx.lineTo(timeBgX + timeBgW, timeBgY);
-  ctx.lineTo(timeBgX + timeBgW - s(0.1), timeBgY + timeBgH);
-  ctx.lineTo(timeBgX + s(0.1), timeBgY + timeBgH);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.fillStyle = COL.hudTime;
-  ctx.font = `bold ${Math.max(10, s(0.28))}px "Roboto Mono", "Courier New", monospace`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(timeStr, W / 2, timeBgY + timeBgH / 2);
 }
 
-// ── React Component ─────────────────────────────────────────
+// ── Render ──────────────────────────────────────────────────
+const COL = {
+  bg: "#0a0a10", court: "#1a6b3a", courtDk: "#145e30", line: "rgba(255,255,255,0.75)",
+  tA: "#2563eb", tAL: "#60a5fa", tB: "#dc2626", tBL: "#f87171",
+  hBg: "rgba(10,10,20,0.85)", hTxt: "#fff", hTime: "#aabbcc",
+  rA: "rgba(37,99,235,0.5)", rB: "rgba(220,38,38,0.5)",
+};
 
+function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State) {
+  const W = c.width, H = c.height;
+  const cW = P.courtHalfW * 2 + 2, cH = P.courtHalfH * 2 + 3.5;
+  const sc = Math.min(W / cW, H / cH);
+  const ox = W / 2, oy = H / 2 + 0.75 * sc;
+  const w2s = (p: V): V => v(ox + p.x * sc, oy - p.y * sc);
+  const s = (n: number) => n * sc;
+
+  // BG
+  ctx.fillStyle = COL.bg; ctx.fillRect(0, 0, W, H);
+
+  // Court
+  const tl = w2s(v(-P.courtHalfW, P.courtHalfH));
+  const cSz = v(s(P.courtHalfW * 2), s(P.courtHalfH * 2));
+  const grd = ctx.createLinearGradient(tl.x, tl.y, tl.x, tl.y + cSz.y);
+  grd.addColorStop(0, COL.court); grd.addColorStop(0.5, COL.courtDk); grd.addColorStop(1, COL.court);
+  ctx.fillStyle = grd; ctx.fillRect(tl.x, tl.y, cSz.x, cSz.y);
+
+  // Stripes
+  ctx.fillStyle = "rgba(255,255,255,0.03)";
+  const sw = s(P.courtHalfW * 2) / 8;
+  for (let i = 0; i < 8; i += 2) ctx.fillRect(tl.x + i * sw, tl.y, sw, cSz.y);
+
+  // Lines
+  ctx.strokeStyle = COL.line; ctx.lineWidth = Math.max(1, s(0.04));
+  ctx.strokeRect(tl.x, tl.y, cSz.x, cSz.y);
+
+  // Centre
+  const ct = w2s(v(0, P.courtHalfH)), cb = w2s(v(0, -P.courtHalfH)), cc = w2s(v(0, 0));
+  ctx.beginPath(); ctx.moveTo(ct.x, ct.y); ctx.lineTo(cb.x, cb.y); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cc.x, cc.y, s(1.5), 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = COL.line; ctx.beginPath(); ctx.arc(cc.x, cc.y, s(0.08), 0, Math.PI * 2); ctx.fill();
+
+  // Penalty areas
+  const paW = 2, paH = 2.5;
+  ctx.strokeStyle = COL.line; ctx.lineWidth = Math.max(1, s(0.04));
+  const pl = w2s(v(-P.courtHalfW, paH)); ctx.strokeRect(pl.x, pl.y, s(paW), s(paH * 2));
+  const pr = w2s(v(P.courtHalfW - paW, paH)); ctx.strokeRect(pr.x, pr.y, s(paW), s(paH * 2));
+
+  // Goals
+  ctx.fillStyle = "rgba(255,255,255,0.15)";
+  const gl = w2s(v(-P.courtHalfW - P.goalDepth, P.goalHalfH));
+  ctx.fillRect(gl.x, gl.y, s(P.goalDepth), s(P.goalHalfH * 2));
+  ctx.strokeStyle = "rgba(255,255,255,0.5)";
+  ctx.strokeRect(gl.x, gl.y, s(P.goalDepth), s(P.goalHalfH * 2));
+  const gr = w2s(v(P.courtHalfW, P.goalHalfH));
+  ctx.fillRect(gr.x, gr.y, s(P.goalDepth), s(P.goalHalfH * 2));
+  ctx.strokeRect(gr.x, gr.y, s(P.goalDepth), s(P.goalHalfH * 2));
+
+  // Posts
+  ctx.fillStyle = "#fff";
+  for (const pp of [v(-P.courtHalfW, P.goalHalfH), v(-P.courtHalfW, -P.goalHalfH), v(P.courtHalfW, P.goalHalfH), v(P.courtHalfW, -P.goalHalfH)]) {
+    const ps = w2s(pp); ctx.beginPath(); ctx.arc(ps.x, ps.y, s(0.08), 0, Math.PI * 2); ctx.fill();
+  }
+
+  // Trail
+  if (st.trail) {
+    const tr = st.trail, a = tr.t / P.trailDuration;
+    const ts = w2s(tr.start), te = w2s(tr.end);
+    if (tr.shot) {
+      ctx.strokeStyle = `rgba(255,100,30,${(0.65 * a).toFixed(2)})`;
+      ctx.lineWidth = Math.max(2, s(0.1));
+    } else {
+      ctx.strokeStyle = `rgba(255,255,255,${(0.45 * a).toFixed(2)})`;
+      ctx.lineWidth = Math.max(1, s(0.04));
+      ctx.setLineDash([s(0.15), s(0.15)]);
+    }
+    ctx.beginPath(); ctx.moveTo(ts.x, ts.y); ctx.lineTo(te.x, te.y); ctx.stroke();
+    ctx.setLineDash([]); ctx.lineWidth = 1;
+  }
+
+  // Players
+  for (let i = 0; i < st.pl.length; i++) {
+    const p = st.pl[i], ps = w2s(p.pos), r = s(P.playerRadius);
+    const isA = p.team < 0, col = isA ? COL.tA : COL.tB, colL = isA ? COL.tAL : COL.tBL;
+
+    if (st.ball.owner === i) {
+      ctx.strokeStyle = isA ? COL.rA : COL.rB;
+      ctx.lineWidth = Math.max(2, s(0.06));
+      ctx.beginPath(); ctx.arc(ps.x, ps.y, r * 1.6, 0, Math.PI * 2); ctx.stroke();
+      ctx.shadowColor = col; ctx.shadowBlur = s(0.3);
+    }
+
+    const pg = ctx.createRadialGradient(ps.x - r * 0.3, ps.y - r * 0.3, r * 0.1, ps.x, ps.y, r);
+    pg.addColorStop(0, colL); pg.addColorStop(1, col);
+    ctx.fillStyle = pg; ctx.beginPath(); ctx.arc(ps.x, ps.y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.4)"; ctx.lineWidth = Math.max(1, s(0.03)); ctx.stroke();
+    ctx.shadowColor = "transparent"; ctx.shadowBlur = 0;
+
+    ctx.fillStyle = "#fff";
+    ctx.font = `bold ${Math.max(10, r * 1.1 | 0)}px "Roboto Condensed","Arial Narrow",sans-serif`;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(String(p.num), ps.x, ps.y + 1);
+  }
+
+  // Ball
+  {
+    const bs = w2s(st.ball.pos), br = s(P.ballRadius);
+    ctx.fillStyle = "rgba(0,0,0,0.3)";
+    ctx.beginPath(); ctx.ellipse(bs.x + s(0.05), bs.y + s(0.05), br, br * 0.7, 0, 0, Math.PI * 2); ctx.fill();
+    const bg = ctx.createRadialGradient(bs.x - br * 0.3, bs.y - br * 0.3, br * 0.1, bs.x, bs.y, br);
+    bg.addColorStop(0, "#fff"); bg.addColorStop(1, "#ccc");
+    ctx.fillStyle = bg; ctx.beginPath(); ctx.arc(bs.x, bs.y, br, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.3)"; ctx.lineWidth = Math.max(1, s(0.02)); ctx.stroke();
+  }
+
+  // Flash
+  if (st.flash > 0) {
+    const a = Math.min(1, st.flash) * 0.25;
+    ctx.fillStyle = `rgba(255,255,200,${a.toFixed(2)})`; ctx.fillRect(0, 0, W, H);
+    if (st.flashTxt) {
+      ctx.fillStyle = `rgba(255,255,255,${Math.min(1, st.flash).toFixed(2)})`;
+      ctx.font = `bold ${s(1.2)}px "Roboto Condensed","Arial Narrow",sans-serif`;
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.shadowColor = "rgba(0,0,0,0.5)"; ctx.shadowBlur = s(0.3);
+      ctx.fillText(st.flashTxt, W / 2, H / 2);
+      ctx.shadowColor = "transparent"; ctx.shadowBlur = 0;
+    }
+  }
+
+  // HUD
+  const hH = s(1.0), hY = s(0.3), hW = Math.min(W * 0.6, s(10)), hX = (W - hW) / 2;
+  ctx.fillStyle = COL.hBg;
+  const hR = s(0.15);
+  ctx.beginPath();
+  ctx.moveTo(hX + hR, hY); ctx.lineTo(hX + hW - hR, hY);
+  ctx.quadraticCurveTo(hX + hW, hY, hX + hW, hY + hR);
+  ctx.lineTo(hX + hW, hY + hH - hR);
+  ctx.quadraticCurveTo(hX + hW, hY + hH, hX + hW - hR, hY + hH);
+  ctx.lineTo(hX + hR, hY + hH);
+  ctx.quadraticCurveTo(hX, hY + hH, hX, hY + hH - hR);
+  ctx.lineTo(hX, hY + hR);
+  ctx.quadraticCurveTo(hX, hY, hX + hR, hY);
+  ctx.closePath(); ctx.fill();
+
+  ctx.strokeStyle = "rgba(255,255,255,0.15)"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(hX, hY + hH); ctx.lineTo(hX + hW, hY + hH); ctx.stroke();
+
+  const hCY = hY + hH / 2;
+  ctx.fillStyle = COL.tA; ctx.fillRect(hX, hY, s(0.15), hH);
+  ctx.fillStyle = COL.tB; ctx.fillRect(hX + hW - s(0.15), hY, s(0.15), hH);
+
+  ctx.fillStyle = COL.tAL;
+  ctx.font = `bold ${Math.max(11, s(0.32))}px "Roboto Condensed","Arial Narrow",sans-serif`;
+  ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  ctx.fillText("BLUE", hX + s(0.4), hCY);
+
+  ctx.fillStyle = COL.tBL; ctx.textAlign = "right";
+  ctx.fillText("RED", hX + hW - s(0.4), hCY);
+
+  ctx.fillStyle = COL.hTxt;
+  ctx.font = `bold ${Math.max(14, s(0.45))}px "Roboto Condensed","Arial Narrow",sans-serif`;
+  ctx.textAlign = "center";
+  ctx.fillText(`${st.sL}  -  ${st.sR}`, W / 2, hCY);
+
+  // Time
+  const rem = Math.max(0, P.matchDuration - st.time);
+  const mn = Math.floor(rem / 60), sc2 = Math.floor(rem % 60);
+  const ts = `${String(mn).padStart(2, "0")}:${String(sc2).padStart(2, "0")}`;
+  const tbH = s(0.45), tbW = s(1.6), tbX = (W - tbW) / 2, tbY = hY + hH;
+  ctx.fillStyle = "rgba(10,10,20,0.75)";
+  ctx.beginPath();
+  ctx.moveTo(tbX, tbY); ctx.lineTo(tbX + tbW, tbY);
+  ctx.lineTo(tbX + tbW - s(0.1), tbY + tbH); ctx.lineTo(tbX + s(0.1), tbY + tbH);
+  ctx.closePath(); ctx.fill();
+
+  ctx.fillStyle = COL.hTime;
+  ctx.font = `bold ${Math.max(10, s(0.28))}px "Roboto Mono","Courier New",monospace`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(ts, W / 2, tbY + tbH / 2);
+}
+
+// ── Component ───────────────────────────────────────────────
 export default function Home() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const stateRef = useRef<GameState>(initState());
-  const lastTimeRef = useRef<number>(0);
+  const ref = useRef<HTMLCanvasElement>(null);
+  const stRef = useRef<State>(mkState());
+  const ltRef = useRef(0);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const cv = ref.current; if (!cv) return;
+    const ctx = cv.getContext("2d"); if (!ctx) return;
 
-    // Init
-    doKickOff(stateRef.current);
+    doKickOff(stRef.current);
 
-    function resize() {
+    const resize = () => {
       const dpr = window.devicePixelRatio || 1;
-      canvas!.width = window.innerWidth * dpr;
-      canvas!.height = window.innerHeight * dpr;
-      canvas!.style.width = window.innerWidth + "px";
-      canvas!.style.height = window.innerHeight + "px";
-    }
+      cv.width = window.innerWidth * dpr;
+      cv.height = window.innerHeight * dpr;
+      cv.style.width = window.innerWidth + "px";
+      cv.style.height = window.innerHeight + "px";
+    };
     resize();
     window.addEventListener("resize", resize);
 
-    let animId: number;
-    function loop(timestamp: number) {
-      const dt = Math.min(0.05, (timestamp - lastTimeRef.current) / 1000);
-      lastTimeRef.current = timestamp;
-
-      update(stateRef.current, dt);
-      render(ctx!, canvas!, stateRef.current);
-
-      animId = requestAnimationFrame(loop);
-    }
-    lastTimeRef.current = performance.now();
-    animId = requestAnimationFrame(loop);
-
-    return () => {
-      cancelAnimationFrame(animId);
-      window.removeEventListener("resize", resize);
+    let id: number;
+    const loop = (t: number) => {
+      const dt = Math.min(0.05, (t - ltRef.current) / 1000);
+      ltRef.current = t;
+      if (dt > 0.001 && dt < 0.1) update(stRef.current, dt);
+      render(ctx, cv, stRef.current);
+      id = requestAnimationFrame(loop);
     };
+    ltRef.current = performance.now();
+    id = requestAnimationFrame(loop);
+
+    return () => { cancelAnimationFrame(id); window.removeEventListener("resize", resize); };
   }, []);
 
   return (
-    <canvas
-      ref={canvasRef}
-      style={{
-        display: "block",
-        width: "100vw",
-        height: "100vh",
-        background: "#0a0a10",
-        touchAction: "none",
-      }}
-    />
+    <canvas ref={ref} style={{ display: "block", width: "100vw", height: "100vh", background: "#0a0a10", touchAction: "none" }} />
   );
 }
