@@ -32,7 +32,7 @@ const P = {
   passSpeed: 12,
   shotSpeed: 18,
   longPassSpeed: 10,       // slower arc feel
-  passAccuracy: 0.80,
+  passAccuracy: 0.88,
   shotAccuracy: 0.60,
   longPassAccuracy: 0.65,
   dribbleControl: 0.90,
@@ -378,8 +378,34 @@ function doPassTo(st: State, idx: number, targetIdx: number) {
     const pd = vdist(me.pos, tm.pos);
     tp = vadd(tp, vscl(lead, Math.min(pd * 0.1, 1.2)));
   }
-  const err = (1 - P.passAccuracy) * 1.5;
-  tp.x += rng(-err, err); tp.y += rng(-err, err);
+
+  // ── Context-aware pass accuracy ──
+  // Base error from passAccuracy parameter
+  let baseErr = (1 - P.passAccuracy) * 1.5;
+
+  // Bonus 1: Nearest opponent distance — less pressure = more accurate
+  let nearestOppDist = Infinity;
+  for (const p of st.pl) {
+    if (p.team === me.team) continue;
+    const d = vdist(me.pos, p.pos);
+    if (d < nearestOppDist) nearestOppDist = d;
+  }
+  if (nearestOppDist > 5.0) baseErr *= 0.25;       // very open: almost no error
+  else if (nearestOppDist > 3.0) baseErr *= 0.45;   // comfortable space
+  else if (nearestOppDist > 2.0) baseErr *= 0.70;   // some pressure
+  // else: full error under tight pressure
+
+  // Bonus 2: Short pass distance — shorter = more accurate
+  const passDist = vdist(me.pos, tm.pos);
+  if (passDist < 4.0) baseErr *= 0.5;              // very short pass
+  else if (passDist < 7.0) baseErr *= 0.7;          // medium-short
+  // else: full distance penalty
+
+  // Bonus 3: Own half — safer build-up play
+  const inOwnHalf = me.team * me.pos.x > 0;
+  if (inOwnHalf) baseErr *= 0.6;
+
+  tp.x += rng(-baseErr, baseErr); tp.y += rng(-baseErr, baseErr);
   me.face = vnorm(vsub(tp, me.pos));
   kick(st, me.face, P.passSpeed, false, tp);
 }
