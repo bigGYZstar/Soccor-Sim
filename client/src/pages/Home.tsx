@@ -1,9 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 
 /*
  * ============================================================
  *  2D 11v11 Soccer Autoplay — Clean Broadcast / Sports TV
  *  Formation: 4-4-2 for both teams
+ *  Features: Offside, Out-of-play restarts, GK saves, Speed toggle
  * ============================================================
  */
 
@@ -43,6 +44,31 @@ const P = {
   trailDuration: 0.35,
   playerRadius: 0.30,
   ballRadius: 0.13,
+
+  // ── (1) Offside ──
+  offsideEnabled: true,
+  offsideMargin: 0.25,
+  offsidePause: 1.2,
+  restartNoIntercept: 0.5,
+
+  // ── (2) Out-of-play restarts ──
+  outEnabled: true,
+  outMargin: 0.02,
+  restartPause: 1.0,
+  throwInInset: 0.35,
+  cornerInset: 0.25,
+  goalKickX: 10.5 - 0.92 + 0.2, // pitchHalfW - goalAreaW + 0.2
+
+  // ── (3) GK saves ──
+  gkSaveEnabled: true,
+  gkSaveRadius: 0.9,
+  gkSaveBase: 0.55,
+  gkSaveAngleBonus: 0.20,
+  gkParryChance: 0.25,
+  gkHoldCooldown: 0.6,
+
+  // ── (4) Speed toggle ──
+  speedMult: { LOW: 0.75, MID: 1.0, FAST: 1.35 } as Record<string, number>,
 };
 
 // ── Vec2 ────────────────────────────────────────────────────
@@ -65,7 +91,8 @@ const vmove = (from: V, to: V, d: number): V => {
   const diff = vsub(to, from); const l = vlen(diff);
   return l <= d ? { ...to } : vadd(from, vscl(vnorm(diff), d));
 };
-const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+const clamp = (val: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, val));
+const clamp01 = (val: number) => Math.max(0, Math.min(1, val));
 const rng = (a: number, b: number) => a + Math.random() * (b - a);
 const pitchClamp = (p: V): V => v(
   clamp(p.x, -P.pitchHalfW, P.pitchHalfW),
@@ -75,7 +102,6 @@ const pitchClamp = (p: V): V => v(
 // ── Types ───────────────────────────────────────────────────
 interface Trail { start: V; end: V; shot: boolean; t: number }
 
-// Roles: GK=0, LB=1, CB=2, CB=3, RB=4, LM=5, CM=6, CM=7, RM=8, ST=9, ST=10
 type Role = "GK" | "DEF" | "MID" | "FWD";
 function slotRole(slot: number): Role {
   if (slot === 0) return "GK";
@@ -84,12 +110,14 @@ function slotRole(slot: number): Role {
   return "FWD";
 }
 
+type SpeedMode = "LOW" | "MID" | "FAST";
+
 interface Player {
   pos: V; team: number; num: number; home: V;
   face: V; act: "idle" | "dribble" | "move"; tgt: V;
   dt: number;
   isGK: boolean;
-  slot: number; // 0-10
+  slot: number;
   role: Role;
 }
 
@@ -97,6 +125,7 @@ interface Ball {
   pos: V; vel: V; owner: number | null;
   free: boolean; shot: boolean; dead: number;
   cooldown: number;
+  lastTouchTeam: number; // (2) track last touch
 }
 
 interface State {
@@ -105,10 +134,10 @@ interface State {
   over: boolean; paused: boolean; pauseT: number;
   koSide: number; trail: Trail | null;
   flash: number; flashTxt: string; restartT: number;
+  speed: SpeedMode; // (4)
 }
 
 // ── 4-4-2 Formation (team=-1, attacks right) ────────────────
-// Positions for left team: GK far left, strikers near centre
 const FORM_442: V[] = [
   v(-9.8, 0),       // 0  GK
   v(-7.5, -4.5),    // 1  LB
@@ -123,7 +152,6 @@ const FORM_442: V[] = [
   v(-1.5, 1.8),     // 10 ST
 ];
 
-// Squad numbers
 const NUMS_11 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 
 // ── Init ────────────────────────────────────────────────────
@@ -150,11 +178,12 @@ function mkPlayers(): Player[] {
 function mkState(): State {
   return {
     pl: mkPlayers(),
-    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: false, shot: false, dead: 0, cooldown: 0 },
+    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: false, shot: false, dead: 0, cooldown: 0, lastTouchTeam: -1 },
     sL: 0, sR: 0, time: 0,
     over: false, paused: false, pauseT: 0,
     koSide: 1, trail: null,
     flash: 0, flashTxt: "", restartT: 0,
+    speed: "MID",
   };
 }
 
@@ -165,13 +194,16 @@ function checkGoal(pos: V): number {
   return 0;
 }
 
-function give(ball: Ball, idx: number) {
+function give(ball: Ball, idx: number, pl: Player[]) {
   ball.owner = idx; ball.free = false; ball.shot = false;
   ball.vel = v(0, 0); ball.dead = 0; ball.cooldown = 0.35;
+  ball.lastTouchTeam = pl[idx].team; // (2)
 }
 
 function kick(st: State, dir: V, spd: number, shot: boolean, tgt: V) {
   const b = st.ball;
+  // (2) update lastTouchTeam from the kicker (current owner before release)
+  if (b.owner !== null) b.lastTouchTeam = st.pl[b.owner].team;
   st.trail = { start: { ...b.pos }, end: { ...tgt }, shot, t: P.trailDuration };
   b.owner = null; b.free = true; b.shot = shot;
   b.vel = vscl(vnorm(dir), spd); b.dead = 0;
@@ -185,6 +217,63 @@ function nearest(st: State, pos: V, teamFilter?: number): number {
     if (d < bd) { bd = d; bi = i; }
   }
   return bi;
+}
+
+// Find nearest outfield (non-GK) player of a team
+function nearestOutfield(st: State, pos: V, team: number): number {
+  let bi = -1, bd = Infinity;
+  for (let i = 0; i < st.pl.length; i++) {
+    if (st.pl[i].team !== team || st.pl[i].isGK) continue;
+    const d = vdist(st.pl[i].pos, pos);
+    if (d < bd) { bd = d; bi = i; }
+  }
+  if (bi === -1) return nearest(st, pos, team); // fallback
+  return bi;
+}
+
+// Find GK index for a team
+function findGK(st: State, team: number): number {
+  for (let i = 0; i < st.pl.length; i++) {
+    if (st.pl[i].team === team && st.pl[i].isGK) return i;
+  }
+  return nearest(st, v(team * P.pitchHalfW, 0), team);
+}
+
+// ── (1) Offside check ──────────────────────────────────────
+function isOffside(st: State, receiver: Player, ballPosAtKick: V): boolean {
+  if (!P.offsideEnabled) return false;
+  const rTeam = receiver.team;
+  const oppTeam = -rTeam;
+
+  // Receiver must be in opponent half
+  // For BLUE (team=-1) attacking +X: opponent half is x > 0, so -1 * x < 0 means x > 0 ✓
+  // For RED  (team=+1) attacking -X: opponent half is x < 0, so  1 * x < 0 means x < 0 ✓
+  if (rTeam * receiver.pos.x >= 0) return false; // not in opponent half
+
+  // Receiver must be ahead of ball at kick time
+  if (rTeam * receiver.pos.x >= rTeam * ballPosAtKick.x) return false;
+
+  // Compute second-last defender line (last = GK typically)
+  // Collect all opponent outfield x-positions along attack direction
+  const oppXvals: number[] = [];
+  for (const p of st.pl) {
+    if (p.team !== oppTeam || p.isGK) continue;
+    oppXvals.push(p.pos.x);
+  }
+  if (oppXvals.length < 1) return false;
+
+  // For BLUE attacking +X (rTeam=-1): defenders are at high x, last def line = second highest x
+  // Sort by team-relative position: rTeam * x ascending → most advanced defenders first
+  oppXvals.sort((a, b) => (rTeam * a) - (rTeam * b));
+  // oppXvals[0] is the most advanced opponent (smallest rTeam*x), which is closest to their own goal
+  // We want the second-last = index 1 (or 0 if only 1 outfield player)
+  const lastDefX = oppXvals.length >= 2 ? oppXvals[1] : oppXvals[0];
+
+  // Receiver ahead of lastDefX by margin?
+  if (rTeam * receiver.pos.x < rTeam * lastDefX - P.offsideMargin) {
+    return true;
+  }
+  return false;
 }
 
 // ── AI ──────────────────────────────────────────────────────
@@ -220,10 +309,12 @@ function bestPass(st: State, idx: number, relaxed: boolean = false): number | nu
     const d = vdist(me.pos, p.pos);
     if (d < 1.0 || d > 18) continue;
     const op = openness(st, p);
-    const gp = -me.team * p.pos.x; // progress toward opponent goal
+    const gp = -me.team * p.pos.x;
     let sc = op * 2 + gp * 0.5 - d * 0.12;
     if (!relaxed && laneBlocked(st, me.pos, p.pos, me.team)) sc -= 4;
     else if (relaxed && laneBlocked(st, me.pos, p.pos, me.team)) sc -= 1.5;
+    // (1) Penalize offside receivers
+    if (P.offsideEnabled && isOffside(st, p, st.ball.pos)) sc -= 10;
     if (sc > bs) { bs = sc; bi = i; }
   }
   return bi;
@@ -232,6 +323,28 @@ function bestPass(st: State, idx: number, relaxed: boolean = false): number | nu
 function doPassTo(st: State, idx: number, targetIdx: number) {
   const me = st.pl[idx];
   const tm = st.pl[targetIdx];
+
+  // (1) Offside check at kick time
+  if (P.offsideEnabled && isOffside(st, tm, st.ball.pos)) {
+    // Cancel pass → offside free kick
+    const oppTeam = -me.team;
+    st.paused = true;
+    st.pauseT = P.offsidePause;
+    st.flash = 1.2;
+    st.flashTxt = "OFFSIDE";
+    st.ball.pos = pitchClamp({ ...tm.pos });
+    st.ball.vel = v(0, 0);
+    st.ball.free = false;
+    st.ball.shot = false;
+    st.ball.owner = null;
+    // After pause, give to defending team nearest outfield player
+    // We store restart info by giving ball immediately to defender
+    const defIdx = nearestOutfield(st, tm.pos, oppTeam);
+    give(st.ball, defIdx, st.pl);
+    st.ball.cooldown = P.restartNoIntercept;
+    return;
+  }
+
   let tp = { ...tm.pos };
   if (tm.act !== "idle") {
     const lead = vnorm(vsub(tm.tgt, tm.pos));
@@ -280,10 +393,8 @@ function decideHasBall(st: State, idx: number) {
   const tg = vnorm(vsub(gc, me.pos));
   const ag = vang(me.face, tg);
 
-  // In own defensive third?
   const inOwnThird = me.team * me.pos.x > P.pitchHalfW * 0.33;
 
-  // GK or deep defender: ALWAYS try to pass first
   if (me.isGK || inOwnThird) {
     const bp = bestPass(st, idx, true);
     if (bp !== null) { doPassTo(st, idx, bp); return; }
@@ -327,7 +438,7 @@ function decideNoBall(st: State, idx: number) {
     return;
   }
 
-  // Chase loose ball — nearest 2 outfield players on team
+  // Chase loose ball
   if (b.free || (b.owner === null && !b.free)) {
     const d = vdist(me.pos, ballPos);
     let rank = 0;
@@ -342,7 +453,7 @@ function decideNoBall(st: State, idx: number) {
     }
   }
 
-  // Team has ball — make attacking runs
+  // Team has ball — attacking runs
   const teamHasBall = b.owner !== null && st.pl[b.owner].team === me.team;
   if (teamHasBall) {
     const oppGoalX = -me.team * P.pitchHalfW;
@@ -351,13 +462,11 @@ function decideNoBall(st: State, idx: number) {
     let targetX: number, targetY: number;
 
     if (role === "DEF") {
-      // Push up but stay behind ball
       targetX = carrier.pos.x + me.team * 3;
       targetX = clamp(targetX, me.team < 0 ? -P.pitchHalfW : -P.pitchHalfW * 0.3,
                                 me.team < 0 ? P.pitchHalfW * 0.3 : P.pitchHalfW);
       targetY = me.home.y + clamp(ballPos.y * 0.25, -2.0, 2.0);
     } else if (role === "MID") {
-      // Support carrier, spread wide or central
       const isWide = me.slot === 5 || me.slot === 8;
       if (isWide) {
         targetX = (carrier.pos.x + oppGoalX) * 0.35;
@@ -367,7 +476,6 @@ function decideNoBall(st: State, idx: number) {
         targetY = ballPos.y + (me.home.y > 0 ? rng(1.5, 3.5) : rng(-3.5, -1.5));
       }
     } else {
-      // FWD: make runs toward goal, stay onside-ish
       targetX = oppGoalX * 0.65 + rng(-1, 1);
       targetY = me.home.y + rng(-2, 2);
     }
@@ -385,7 +493,6 @@ function decideNoBall(st: State, idx: number) {
     const role = me.role;
 
     if (role === "FWD") {
-      // Light press or drop to midfield
       if (dc < 5) {
         me.tgt = pitchClamp(vlerp(carrier.pos, myGoal, 0.1));
       } else {
@@ -402,7 +509,6 @@ function decideNoBall(st: State, idx: number) {
         me.tgt = pitchClamp(vadd(me.home, shift));
       }
     } else {
-      // DEF: hold line, shift toward ball
       const shift = v(
         clamp((ballPos.x - me.home.x) * 0.25, -2.5, 2.5),
         clamp((ballPos.y - me.home.y) * 0.5, -3, 3)
@@ -413,7 +519,7 @@ function decideNoBall(st: State, idx: number) {
     return;
   }
 
-  // Default: drift toward shifted formation
+  // Default
   const shift = v(
     clamp((ballPos.x - me.home.x) * 0.25, -2.5, 2.5),
     clamp((ballPos.y - me.home.y) * 0.35, -2, 2)
@@ -425,32 +531,50 @@ function decideNoBall(st: State, idx: number) {
 // ── Kick-off ────────────────────────────────────────────────
 function doKickOff(st: State) {
   st.paused = false;
-  st.ball = { pos: v(0, 0), vel: v(0, 0), owner: null, free: false, shot: false, dead: 0, cooldown: 0 };
+  st.ball = { pos: v(0, 0), vel: v(0, 0), owner: null, free: false, shot: false, dead: 0, cooldown: 0, lastTouchTeam: st.koSide };
   st.trail = null;
   for (const p of st.pl) {
     p.pos = { ...p.home }; p.act = "idle"; p.tgt = { ...p.home };
     p.face = v(-p.team, 0); p.dt = Math.random() * P.decisionInterval;
   }
   const ki = nearest(st, v(0, 0), st.koSide);
-  give(st.ball, ki);
+  give(st.ball, ki, st.pl);
+}
+
+// ── (2) Out-of-play restart (no full reset) ─────────────────
+function doOutRestart(st: State) {
+  // This is called when pauseT expires for an out-of-play restart.
+  // Ball is already placed and given to the correct player during detection.
+  st.paused = false;
 }
 
 // ── Update ──────────────────────────────────────────────────
 function update(st: State, dt: number) {
-  if (st.flash > 0) st.flash -= dt;
+  // (4) Apply speed multiplier
+  const dtSim = dt * P.speedMult[st.speed];
+
+  if (st.flash > 0) st.flash -= dtSim;
 
   if (st.over) {
-    st.restartT -= dt;
+    st.restartT -= dtSim;
     if (st.restartT <= 0) { Object.assign(st, mkState()); doKickOff(st); }
     return;
   }
   if (st.paused) {
-    st.pauseT -= dt;
-    if (st.pauseT <= 0) doKickOff(st);
+    st.pauseT -= dtSim;
+    if (st.pauseT <= 0) {
+      // Check if this is a goal pause (needs full kickoff) or a restart pause
+      if (st.flashTxt === "GOAL!") {
+        doKickOff(st);
+      } else {
+        // Offside, throw-in, corner, goal kick — just unpause
+        doOutRestart(st);
+      }
+    }
     return;
   }
 
-  st.time += dt;
+  st.time += dtSim;
   if (st.time >= P.matchDuration) {
     st.over = true; st.restartT = 5; st.flashTxt = "FULL TIME"; st.flash = 2.5;
     return;
@@ -459,14 +583,14 @@ function update(st: State, dt: number) {
   const b = st.ball;
 
   // Cooldown tick
-  if (b.cooldown > 0) b.cooldown -= dt;
+  if (b.cooldown > 0) b.cooldown -= dtSim;
 
   // Dead ball recovery
   if (b.owner === null && !b.free) { b.free = true; b.dead = 0; }
   if (b.free && vlen(b.vel) < 0.5) {
-    b.dead += dt;
+    b.dead += dtSim;
     if (b.dead > P.deadBallTime) {
-      give(b, nearest(st, b.pos));
+      give(b, nearest(st, b.pos), st.pl);
     }
   } else if (!b.free) {
     b.dead = 0;
@@ -477,36 +601,156 @@ function update(st: State, dt: number) {
     const o = st.pl[b.owner];
     b.pos = vadd(o.pos, vscl(o.face, 0.22));
   } else if (b.free) {
-    b.pos = vadd(b.pos, vscl(b.vel, dt));
+    b.pos = vadd(b.pos, vscl(b.vel, dtSim));
 
-    if (Math.abs(b.pos.y) > P.pitchHalfH) {
-      b.pos.y = clamp(b.pos.y, -P.pitchHalfH, P.pitchHalfH);
-      b.vel.y *= -0.4;
+    // ── (3) GK save check ──
+    if (P.gkSaveEnabled && b.shot) {
+      for (let ti = 0; ti < 2; ti++) {
+        const gkTeam = ti === 0 ? -1 : 1;
+        // Only check GK defending against the shot (shot heading toward their goal)
+        const shotHeadingToGoal = (gkTeam === -1 && b.vel.x < -1) || (gkTeam === 1 && b.vel.x > 1);
+        if (!shotHeadingToGoal) continue;
+
+        const gkIdx = findGK(st, gkTeam);
+        const gk = st.pl[gkIdx];
+        const dist = vdist(gk.pos, b.pos);
+        if (dist < P.gkSaveRadius) {
+          // Compute save probability
+          const velDir = vnorm(b.vel);
+          const toGK = vnorm(vsub(gk.pos, b.pos));
+          const shotAngleToGK = vang(velDir, toGK);
+          const saveP = P.gkSaveBase + P.gkSaveAngleBonus * clamp01(1 - shotAngleToGK / 90);
+
+          if (Math.random() < saveP) {
+            // Save!
+            if (Math.random() > P.gkParryChance) {
+              // Catch
+              give(b, gkIdx, st.pl);
+              b.cooldown = P.gkHoldCooldown;
+              st.flash = 0.6; st.flashTxt = "SAVE!";
+            } else {
+              // Parry
+              const goalCenter = v(gkTeam * P.pitchHalfW, 0);
+              const parryDir = vnorm(vsub(b.pos, goalCenter));
+              b.vel = vscl(parryDir, 5 + Math.random() * 3);
+              b.shot = false;
+              b.cooldown = P.restartNoIntercept;
+              st.flash = 0.6; st.flashTxt = "SAVE!";
+            }
+            break;
+          }
+        }
+      }
     }
 
-    const gs = checkGoal(b.pos);
-    if (gs !== 0) {
-      if (gs > 0) st.sL++; else st.sR++;
-      st.koSide = -gs; st.paused = true; st.pauseT = P.goalResetDelay;
-      st.flash = 1.8; st.flashTxt = "GOAL!";
+    // ── (2) Out-of-play detection (replaces wall reflection) ──
+    const outY = Math.abs(b.pos.y) > P.pitchHalfH + P.outMargin;
+    const outX = Math.abs(b.pos.x) > P.pitchHalfW + P.outMargin;
+
+    if (P.outEnabled && (outY || outX)) {
+      // Check goal first
+      const gs = checkGoal(b.pos);
+      if (gs !== 0) {
+        if (gs > 0) st.sL++; else st.sR++;
+        st.koSide = -gs; st.paused = true; st.pauseT = P.goalResetDelay;
+        st.flash = 1.8; st.flashTxt = "GOAL!";
+        return;
+      }
+
+      // Out of play — determine type
+      st.paused = true;
+      st.pauseT = P.restartPause;
+      b.vel = v(0, 0);
+      b.free = false;
+      b.shot = false;
+      b.owner = null;
+
+      if (outY && !outX) {
+        // THROW-IN: ball went out via touchline (y boundary)
+        st.flashTxt = "THROW IN";
+        st.flash = 1.0;
+        const restartTeam = -b.lastTouchTeam; // opposite of last touch
+        const outSign = b.pos.y > 0 ? 1 : -1;
+        const restartY = outSign * (P.pitchHalfH - P.throwInInset);
+        const restartX = clamp(b.pos.x, -P.pitchHalfW + 0.5, P.pitchHalfW - 0.5);
+        b.pos = v(restartX, restartY);
+        const ri = nearestOutfield(st, b.pos, restartTeam);
+        give(b, ri, st.pl);
+        b.cooldown = P.restartNoIntercept;
+      } else if (outX) {
+        // Ball went out via goal line (x boundary)
+        const goalSide = b.pos.x > 0 ? 1 : -1; // which goal line: +1 = right, -1 = left
+        // Defending team is the one whose goal is on this side
+        // BLUE (team=-1) defends left goal (x=-10.5), RED (team=+1) defends right goal (x=+10.5)
+        const defendingTeam = goalSide; // +1 defends right, -1 defends left
+        const attackingTeam = -defendingTeam;
+
+        if (b.lastTouchTeam === defendingTeam) {
+          // CORNER: defending team last touched → corner for attacking team
+          st.flashTxt = "CORNER";
+          st.flash = 1.0;
+          const cornerX = goalSide * (P.pitchHalfW - P.cornerInset);
+          const cornerY = (b.pos.y > 0 ? 1 : -1) * (P.pitchHalfH - P.cornerInset);
+          b.pos = v(cornerX, cornerY);
+          const ri = nearestOutfield(st, b.pos, attackingTeam);
+          give(b, ri, st.pl);
+          b.cooldown = P.restartNoIntercept;
+        } else {
+          // GOAL KICK: attacking team last touched → goal kick for defending team
+          st.flashTxt = "GOAL KICK";
+          st.flash = 1.0;
+          const gkX = goalSide * P.goalKickX;
+          b.pos = v(gkX, 0);
+          const gkIdx = findGK(st, defendingTeam);
+          give(b, gkIdx, st.pl);
+          b.cooldown = P.restartNoIntercept;
+        }
+      }
       return;
     }
 
-    if (Math.abs(b.pos.x) > P.pitchHalfW) {
-      b.pos.x = clamp(b.pos.x, -P.pitchHalfW, P.pitchHalfW);
-      b.vel.x *= -0.4;
+    // Fallback wall handling (if outEnabled is false, keep old behavior)
+    if (!P.outEnabled) {
+      if (Math.abs(b.pos.y) > P.pitchHalfH) {
+        b.pos.y = clamp(b.pos.y, -P.pitchHalfH, P.pitchHalfH);
+        b.vel.y *= -0.4;
+      }
+
+      const gs = checkGoal(b.pos);
+      if (gs !== 0) {
+        if (gs > 0) st.sL++; else st.sR++;
+        st.koSide = -gs; st.paused = true; st.pauseT = P.goalResetDelay;
+        st.flash = 1.8; st.flashTxt = "GOAL!";
+        return;
+      }
+
+      if (Math.abs(b.pos.x) > P.pitchHalfW) {
+        b.pos.x = clamp(b.pos.x, -P.pitchHalfW, P.pitchHalfW);
+        b.vel.x *= -0.4;
+      }
+    } else {
+      // Even with outEnabled, check goal before out detection
+      // (already handled above, but also check in-bounds goal)
+      const gs = checkGoal(b.pos);
+      if (gs !== 0) {
+        if (gs > 0) st.sL++; else st.sR++;
+        st.koSide = -gs; st.paused = true; st.pauseT = P.goalResetDelay;
+        st.flash = 1.8; st.flashTxt = "GOAL!";
+        return;
+      }
     }
 
+    // Drag
     const spd = vlen(b.vel);
     if (spd > 0.1) {
-      b.vel = vscl(vnorm(b.vel), Math.max(0, spd - P.looseBallDrag * dt));
+      b.vel = vscl(vnorm(b.vel), Math.max(0, spd - P.looseBallDrag * dtSim));
     } else {
       b.vel = v(0, 0); b.shot = false;
     }
   }
 
   // Trail
-  if (st.trail) { st.trail.t -= dt; if (st.trail.t <= 0) st.trail = null; }
+  if (st.trail) { st.trail.t -= dtSim; if (st.trail.t <= 0) st.trail = null; }
 
   // Players
   for (let i = 0; i < st.pl.length; i++) {
@@ -515,15 +759,15 @@ function update(st: State, dt: number) {
     // Intercept (only if no cooldown)
     if (b.cooldown > 0) { /* skip */ }
     else if (b.owner !== i && b.free && vdist(p.pos, b.pos) < P.interceptRadius) {
-      give(b, i);
+      give(b, i, st.pl);
     }
     else if (b.owner !== null && b.owner !== i && !b.free && b.cooldown <= 0
       && st.pl[b.owner].team !== p.team && vdist(p.pos, b.pos) < P.interceptRadius * 0.65) {
-      give(b, i);
+      give(b, i, st.pl);
     }
 
     // Decision
-    p.dt -= dt;
+    p.dt -= dtSim;
     if (p.dt <= 0) {
       p.dt = P.decisionInterval;
       if (b.owner === i) decideHasBall(st, i);
@@ -537,7 +781,7 @@ function update(st: State, dt: number) {
       if (vlen(d) < 0.08) { p.act = "idle"; }
       else {
         p.face = vnorm(d);
-        p.pos = pitchClamp(vmove(p.pos, p.tgt, spd * dt));
+        p.pos = pitchClamp(vmove(p.pos, p.tgt, spd * dtSim));
       }
     }
   }
@@ -554,7 +798,7 @@ const COL = {
   rA: "rgba(37,99,235,0.5)", rB: "rgba(220,38,38,0.5)",
 };
 
-function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State) {
+function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State, speedBtnBounds: { x: number; y: number; w: number; h: number }) {
   const W = c.width, H = c.height;
   const cW = P.pitchHalfW * 2 + 2.5, cH = P.pitchHalfH * 2 + 3.5;
   const sc = Math.min(W / cW, H / cH);
@@ -593,10 +837,8 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State) 
 
   // Penalty areas
   ctx.strokeStyle = COL.line; ctx.lineWidth = Math.max(1, s(0.035));
-  // Left
   const paL = w2s(v(-P.pitchHalfW, P.penAreaH));
   ctx.strokeRect(paL.x, paL.y, s(P.penAreaW), s(P.penAreaH * 2));
-  // Right
   const paR = w2s(v(P.pitchHalfW - P.penAreaW, P.penAreaH));
   ctx.strokeRect(paR.x, paR.y, s(P.penAreaW), s(P.penAreaH * 2));
 
@@ -615,11 +857,9 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State) 
 
   // Penalty arcs (D)
   ctx.strokeStyle = COL.line; ctx.lineWidth = Math.max(1, s(0.035));
-  // Left D
   const dL = w2s(v(-P.pitchHalfW + P.penSpotDist, 0));
   ctx.beginPath();
   ctx.arc(dL.x, dL.y, s(P.centreCircleR), -0.85, 0.85); ctx.stroke();
-  // Right D
   const dR = w2s(v(P.pitchHalfW - P.penSpotDist, 0));
   ctx.beginPath();
   ctx.arc(dR.x, dR.y, s(P.centreCircleR), Math.PI - 0.85, Math.PI + 0.85); ctx.stroke();
@@ -775,6 +1015,47 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State) 
   ctx.font = `bold ${Math.max(9, s(0.24))}px "Roboto Mono","Courier New",monospace`;
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   ctx.fillText(ts, W / 2, tbY + tbH / 2);
+
+  // ── (4) Speed toggle HUD ──
+  const speedLabel = `SPEED: ${st.speed}`;
+  const spFontSize = Math.max(9, s(0.22));
+  ctx.font = `bold ${spFontSize}px "Roboto Condensed","Arial Narrow",sans-serif`;
+  const spMetrics = ctx.measureText(speedLabel);
+  const spPadX = s(0.2), spPadY = s(0.1);
+  const spW = spMetrics.width + spPadX * 2;
+  const spH = spFontSize + spPadY * 2;
+  const spX = W - spW - s(0.3);
+  const spY = s(0.3);
+
+  // Store bounds for click detection (in CSS pixels, not canvas pixels)
+  const dpr = window.devicePixelRatio || 1;
+  speedBtnBounds.x = spX / dpr;
+  speedBtnBounds.y = spY / dpr;
+  speedBtnBounds.w = spW / dpr;
+  speedBtnBounds.h = spH / dpr;
+
+  // Draw speed button
+  ctx.fillStyle = "rgba(10,10,20,0.75)";
+  ctx.beginPath();
+  const spR = s(0.08);
+  ctx.moveTo(spX + spR, spY); ctx.lineTo(spX + spW - spR, spY);
+  ctx.quadraticCurveTo(spX + spW, spY, spX + spW, spY + spR);
+  ctx.lineTo(spX + spW, spY + spH - spR);
+  ctx.quadraticCurveTo(spX + spW, spY + spH, spX + spW - spR, spY + spH);
+  ctx.lineTo(spX + spR, spY + spH);
+  ctx.quadraticCurveTo(spX, spY + spH, spX, spY + spH - spR);
+  ctx.lineTo(spX, spY + spR);
+  ctx.quadraticCurveTo(spX, spY, spX + spR, spY);
+  ctx.closePath(); ctx.fill();
+
+  ctx.strokeStyle = "rgba(255,255,255,0.2)"; ctx.lineWidth = 1; ctx.stroke();
+
+  // Highlight active speed
+  const speedColors: Record<string, string> = { LOW: "#60a5fa", MID: "#fbbf24", FAST: "#f87171" };
+  ctx.fillStyle = speedColors[st.speed] || "#fff";
+  ctx.font = `bold ${spFontSize}px "Roboto Condensed","Arial Narrow",sans-serif`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(speedLabel, spX + spW / 2, spY + spH / 2);
 }
 
 // ── Component ───────────────────────────────────────────────
@@ -782,6 +1063,26 @@ export default function Home() {
   const ref = useRef<HTMLCanvasElement>(null);
   const stRef = useRef<State>(mkState());
   const ltRef = useRef(0);
+  const speedBtnRef = useRef({ x: 0, y: 0, w: 0, h: 0 });
+
+  const handleClick = useCallback((e: MouseEvent | TouchEvent) => {
+    const bounds = speedBtnRef.current;
+    let cx: number, cy: number;
+    if ("touches" in e) {
+      cx = e.touches[0]?.clientX ?? (e as TouchEvent).changedTouches[0]?.clientX ?? 0;
+      cy = e.touches[0]?.clientY ?? (e as TouchEvent).changedTouches[0]?.clientY ?? 0;
+    } else {
+      cx = e.clientX;
+      cy = e.clientY;
+    }
+    if (cx >= bounds.x && cx <= bounds.x + bounds.w && cy >= bounds.y && cy <= bounds.y + bounds.h) {
+      const st = stRef.current;
+      const cycle: SpeedMode[] = ["LOW", "MID", "FAST"];
+      const idx = cycle.indexOf(st.speed);
+      st.speed = cycle[(idx + 1) % 3];
+      e.preventDefault();
+    }
+  }, []);
 
   useEffect(() => {
     const cv = ref.current; if (!cv) return;
@@ -798,20 +1099,27 @@ export default function Home() {
     };
     resize();
     window.addEventListener("resize", resize);
+    cv.addEventListener("click", handleClick);
+    cv.addEventListener("touchstart", handleClick, { passive: false });
 
     let id: number;
     const loop = (t: number) => {
       const dt = Math.min(0.05, (t - ltRef.current) / 1000);
       ltRef.current = t;
       if (dt > 0.001 && dt < 0.1) update(stRef.current, dt);
-      render(ctx, cv, stRef.current);
+      render(ctx, cv, stRef.current, speedBtnRef.current);
       id = requestAnimationFrame(loop);
     };
     ltRef.current = performance.now();
     id = requestAnimationFrame(loop);
 
-    return () => { cancelAnimationFrame(id); window.removeEventListener("resize", resize); };
-  }, []);
+    return () => {
+      cancelAnimationFrame(id);
+      window.removeEventListener("resize", resize);
+      cv.removeEventListener("click", handleClick);
+      cv.removeEventListener("touchstart", handleClick);
+    };
+  }, [handleClick]);
 
   return (
     <canvas ref={ref} style={{ display: "block", width: "100vw", height: "100vh", background: "#0a0a10", touchAction: "none" }} />
