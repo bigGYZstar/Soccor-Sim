@@ -78,6 +78,7 @@ const P = {
   longPassMaxDist: 22,
 
   // Throw-in / Corner animation
+  throwInMaxDist: 12,      // max throw-in distance (~half pitch width + a bit)
   throwInAnimDur: 0.5,     // seconds for throw-in animation
   cornerAnimDur: 0.4,      // seconds for corner kick wind-up
   headingContestRadius: 2.5, // players within this radius contest headers
@@ -468,6 +469,38 @@ function doDribble(st: State, idx: number) {
   me.face = desired;
 }
 
+// ── Cross into the box (winger special) ─────────────────────
+function doCross(st: State, idx: number) {
+  const me = st.pl[idx];
+  const oppGoalX = -me.team * P.pitchHalfW;
+  // Target: near post or far post area in the box
+  const nearPost = v(oppGoalX * 0.88, -P.goalHalfH * rng(0.3, 1.2));
+  const farPost = v(oppGoalX * 0.88, P.goalHalfH * rng(0.3, 1.2));
+  // Choose near or far post based on winger side
+  const isTopWinger = me.home.y < 0; // LM is top (negative y)
+  const crossTarget = isTopWinger ? farPost : nearPost;
+  // Find best teammate near the cross target
+  let bestIdx: number | null = null;
+  let bestDist = Infinity;
+  for (let i = 0; i < st.pl.length; i++) {
+    const p = st.pl[i];
+    if (p.team !== me.team || i === idx || p.isGK) continue;
+    if (p.role !== "FWD" && p.role !== "MID") continue;
+    const d = vdist(p.pos, crossTarget);
+    if (d < bestDist && d < 6) { bestDist = d; bestIdx = i; }
+  }
+  let tp = bestIdx !== null ? { ...st.pl[bestIdx].pos } : crossTarget;
+  // Lead the target slightly
+  if (bestIdx !== null && st.pl[bestIdx].act !== "idle") {
+    const lead = vnorm(vsub(st.pl[bestIdx].tgt, st.pl[bestIdx].pos));
+    tp = vadd(tp, vscl(lead, 1.0));
+  }
+  const err = 1.2;
+  tp.x += rng(-err * 0.5, err * 0.5); tp.y += rng(-err, err);
+  me.face = vnorm(vsub(tp, me.pos));
+  kick(st, me.face, P.longPassSpeed * 1.1, false, tp, true); // lob cross
+}
+
 function decideHasBall(st: State, idx: number) {
   const me = st.pl[idx];
   const gc = v(-me.team * P.pitchHalfW, 0);
@@ -476,6 +509,9 @@ function decideHasBall(st: State, idx: number) {
   const ag = vang(me.face, tg);
 
   const inOwnThird = me.team * me.pos.x > P.pitchHalfW * 0.33;
+  const inAttackingThird = -me.team * me.pos.x > P.pitchHalfW * 0.33;
+  const isWinger = me.slot === 5 || me.slot === 8;
+  const isWide = Math.abs(me.pos.y) > P.pitchHalfH * 0.45;
 
   // GK or deep defender: try pass first, consider long pass
   if (me.isGK || inOwnThird) {
@@ -491,6 +527,41 @@ function decideHasBall(st: State, idx: number) {
     me.face = fwd;
     kick(st, fwd, P.passSpeed * 0.8, false, vadd(me.pos, vscl(fwd, 8)));
     return;
+  }
+
+  // ── Winger in attacking third: dribble toward byline or cross ──
+  if (isWinger && inAttackingThird) {
+    // If near the byline and wide, cross into the box
+    const nearByline = Math.abs(me.pos.x) > P.pitchHalfW * 0.75;
+    if (nearByline && isWide) {
+      // 70% cross, 30% cut inside and shoot/pass
+      if (Math.random() < 0.70) {
+        doCross(st, idx); return;
+      }
+    }
+    // If wide but not at byline yet, dribble toward byline
+    if (isWide && !nearByline) {
+      // Dribble forward along the wing
+      const bylineDir = vnorm(v(-me.team, 0));
+      const wideKeep = v(0, me.pos.y > 0 ? 0.15 : -0.15); // stay wide
+      const desired = vnorm(vadd(bylineDir, wideKeep));
+      me.tgt = pitchClamp(vadd(me.pos, vscl(desired, 4.0)));
+      me.act = "dribble";
+      me.face = desired;
+      return;
+    }
+    // Winger cut inside: try shot or pass
+    if (dg < P.shotRange * 1.1 && ag < P.shotAngle * 1.2) {
+      const err = (1 - P.shotAccuracy) * 3.0;
+      const t = v(gc.x, gc.y + rng(-err, err));
+      me.face = vnorm(vsub(t, me.pos));
+      kick(st, me.face, P.shotSpeed, true, t);
+      return;
+    }
+    // Cross even if not super wide, if in attacking third
+    if (Math.random() < 0.40) {
+      doCross(st, idx); return;
+    }
   }
 
   // 1) SHOT
@@ -566,8 +637,18 @@ function decideNoBall(st: State, idx: number) {
     } else if (role === "MID") {
       const isWide = me.slot === 5 || me.slot === 8;
       if (isWide) {
-        targetX = (carrier.pos.x + oppGoalX) * 0.35;
-        targetY = me.home.y * 0.8 + ballPos.y * 0.2;
+        // Wingers: push wide and forward in attacking third
+        const teamAttacking = -me.team * carrier.pos.x > P.pitchHalfW * 0.15;
+        if (teamAttacking) {
+          // Run wide toward the byline for crossing opportunities
+          targetX = oppGoalX * rng(0.55, 0.75);
+          targetY = me.home.y > 0
+            ? P.pitchHalfH * rng(0.6, 0.85)   // stay wide on their side
+            : -P.pitchHalfH * rng(0.6, 0.85);
+        } else {
+          targetX = (carrier.pos.x + oppGoalX) * 0.35;
+          targetY = me.home.y * 0.8 + ballPos.y * 0.2;
+        }
       } else {
         targetX = (carrier.pos.x + oppGoalX) * 0.4;
         targetY = ballPos.y + (me.home.y > 0 ? rng(1.5, 3.5) : rng(-3.5, -1.5));
@@ -1008,13 +1089,22 @@ function update(st: State, dt: number) {
         st.pl[ri].pos = { ...b.pos };
         st.pl[ri].face = v(0, -outSign); // face infield
 
-        // Find a nearby teammate as throw target
+        // Find a nearby teammate as throw target (capped by throwInMaxDist)
         let throwTarget = vadd(b.pos, v(-restartTeam * 3, -outSign * 2));
-        let bestDist = Infinity;
+        let bestScore = -Infinity;
         for (let i = 0; i < st.pl.length; i++) {
           if (i === ri || st.pl[i].team !== restartTeam || st.pl[i].isGK) continue;
           const d = vdist(st.pl[i].pos, b.pos);
-          if (d < bestDist && d < 8) { bestDist = d; throwTarget = { ...st.pl[i].pos }; }
+          if (d > P.throwInMaxDist || d < 1.0) continue; // enforce max throw distance
+          const op = openness(st, st.pl[i]);
+          const sc = op * 2 - d * 0.3;
+          if (sc > bestScore) { bestScore = sc; throwTarget = { ...st.pl[i].pos }; }
+        }
+        // Final safety: clamp target distance to throwInMaxDist
+        const throwDist = vdist(b.pos, throwTarget);
+        if (throwDist > P.throwInMaxDist) {
+          const dir = vnorm(vsub(throwTarget, b.pos));
+          throwTarget = vadd(b.pos, vscl(dir, P.throwInMaxDist));
         }
 
         startThrowIn(st, ri, throwTarget);
