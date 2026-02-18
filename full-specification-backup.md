@@ -1,3 +1,873 @@
+# 11v11 サッカー自動試合シミュレーション — 統合仕様書
+
+> 本文書は、ブラウザ上で動作する11対11サッカー自動試合シミュレーションの**技術仕様**、**全チューナブルパラメータ**、および**完全なソースコード**を1つのファイルに統合したものである。
+
+---
+
+## 目次
+
+1. [プロジェクト概要](#1-プロジェクト概要)
+2. [技術スタックとファイル構成](#2-技術スタックとファイル構成)
+3. [座標系とピッチ寸法](#3-座標系とピッチ寸法)
+4. [データモデル](#4-データモデル)
+5. [フォーメーションとスロットシステム](#5-フォーメーションとスロットシステム)
+6. [全チューナブルパラメータ一覧](#6-全チューナブルパラメータ一覧)
+7. [AI意思決定システム](#7-ai意思決定システム)
+8. [ボール物理と状態遷移](#8-ボール物理と状態遷移)
+9. [オフサイド判定](#9-オフサイド判定)
+10. [アウトオブプレーとリスタート](#10-アウトオブプレーとリスタート)
+11. [GKセーブ機構](#11-gkセーブ機構)
+12. [ファウルとフリーキック](#12-ファウルとフリーキック)
+13. [攻撃参加レベルシステム](#13-攻撃参加レベルシステム)
+14. [ロングパスとクロス](#14-ロングパスとクロス)
+15. [試合フロー](#15-試合フロー)
+16. [更新ループ](#16-更新ループ)
+17. [描画仕様](#17-描画仕様)
+18. [UIコントロール](#18-uiコントロール)
+19. [Reactコンポーネント構造](#19-reactコンポーネント構造)
+20. [レスポンシブ対応](#20-レスポンシブ対応)
+21. [既知の制約と拡張可能性](#21-既知の制約と拡張可能性)
+22. [付録A: 全関数一覧](#付録a-全関数一覧)
+23. [付録B: パラメータ調整ガイド](#付録b-パラメータ調整ガイド)
+24. [付録C: 完全ソースコード](#付録c-完全ソースコード)
+
+---
+
+## 1. プロジェクト概要
+
+### 1.1 目的
+
+本プロジェクトは、ブラウザ上で動作する**非インタラクティブ（自動再生）の11対11サッカー試合モックアップ**を提供することを目的とする。ユーザーの操作を一切必要とせず、キックオフからフルタイムまで自律的にシミュレーションが進行し、試合終了後は自動的に再スタートする。ESPN/DAZN風のスポーツ中継を模したビジュアルデザインを採用し、iPhone等のモバイル端末でも快適に閲覧できるレスポンシブ設計となっている。
+
+### 1.2 主要機能一覧
+
+| 機能カテゴリ | 実装内容 |
+|-------------|---------|
+| 基本シミュレーション | 11v11、4-4-2フォーメーション、GK/DEF/MID/FWD役割別AI |
+| ボール保持表現 | 保持者リング（チームカラー半透明円）、ボール追従 |
+| パス | 短距離パス（白点線トレイル）、ロングパス（黄色弧線トレイル） |
+| シュート | 高速ボール移動（オレンジ太線トレイル）、精度誤差 |
+| ドリブル | ボール保持移動、敵回避、壁回避、ジンク |
+| クロス | ウインガー専用、アタッキングサードでのサイド攻撃 |
+| オフサイド | パス時の自動判定、フラッシュ表示、守備側フリーキック |
+| アウトオブプレー | スローイン（投げ入れアニメーション）、コーナーキック（ヘディング競り合い）、ゴールキック |
+| GKセーブ | シュート検知、角度ベースのセーブ確率、キャッチ/パリー |
+| ファウル/フリーキック | タックル時のファウル判定、壁構成、直接フリーキックシュート |
+| 攻撃参加レベル | 両チーム個別1-10段階調整、リアルタイムUI |
+| スピード切替 | LOW/MID/FASTの3段階 |
+| 試合管理 | 120秒試合、ゴール後リセット、自動リスタート |
+| HUD | ブロードキャスト風スコアバー、タイマー |
+
+---
+
+## 2. 技術スタックとファイル構成
+
+### 2.1 技術スタック
+
+| 項目 | 技術 |
+|------|------|
+| フレームワーク | React 19 + TypeScript |
+| ビルドツール | Vite 7 |
+| 描画エンジン | HTML5 Canvas 2D Context |
+| スタイリング | Tailwind CSS 4（Canvas外のリセットのみ） |
+| フォント | Roboto Condensed（HUD見出し）、Roboto Mono（タイマー） |
+| ループ制御 | `requestAnimationFrame` による可変フレームレート |
+
+全シミュレーションロジック、AI、描画処理は単一ファイル `client/src/pages/Home.tsx`（約1,885行）に集約されており、外部ライブラリへの依存は存在しない。
+
+### 2.2 ファイル構成
+
+```
+futsal-sim/
+├── client/
+│   ├── index.html              ← エントリHTML（Google Fonts読み込み）
+│   └── src/
+│       ├── main.tsx             ← Reactマウントポイント
+│       ├── App.tsx              ← ルーティング・テーマ設定（dark theme）
+│       ├── index.css            ← グローバルCSS（body margin/padding リセット）
+│       └── pages/
+│           └── Home.tsx         ← ★ 全シミュレーションコード（本仕様の対象）
+├── server/
+│   └── index.ts                ← 静的ファイル配信（本番用）
+├── specification.md            ← 旧仕様書
+└── full-specification.md       ← 本統合仕様書
+```
+
+---
+
+## 3. 座標系とピッチ寸法
+
+### 3.1 座標系の定義
+
+シミュレーションはワールド座標系（浮動小数点）で計算され、描画時にCanvas画素座標へ変換される。ワールド座標系の原点 `(0, 0)` はピッチの中心に位置し、X軸は水平方向（右が正）、Y軸は垂直方向（上が正）である。
+
+> **注意**: Canvas描画時にはY軸が反転する（画面上方向がCanvas座標では小さい値）。変換関数 `w2s` がこの反転を処理する。
+
+### 3.2 ピッチ寸法
+
+FIFA規格の105m × 68mピッチを、1ユニット ≈ 5mのスケールで縮小している。
+
+| パラメータ | 値 | 実寸換算 | 説明 |
+|-----------|-----|---------|------|
+| `pitchHalfW` | 10.5 | 52.5m | ピッチ半幅（中心から左右端まで） |
+| `pitchHalfH` | 6.8 | 34.0m | ピッチ半高（中心から上下端まで） |
+| `goalHalfH` | 1.22 | 3.66m | ゴール半高（中心からポストまで） |
+| `goalDepth` | 0.4 | 2.0m | ゴールネットの奥行き |
+| `penAreaW` | 2.75 | 16.5m | ペナルティエリアの幅（ゴールラインから） |
+| `penAreaH` | 3.35 | 20.15m | ペナルティエリアの半高 |
+| `goalAreaW` | 0.92 | 5.5m | ゴールエリアの幅 |
+| `goalAreaH` | 1.55 | 9.15m | ゴールエリアの半高 |
+| `centreCircleR` | 1.53 | 9.15m | センターサークル半径 |
+| `penSpotDist` | 1.83 | 11.0m | ペナルティスポット距離（ゴールラインから） |
+| `cornerArcR` | 0.17 | 1.0m | コーナーアーク半径 |
+
+ピッチ全体の有効範囲は `x ∈ [-10.5, 10.5]`、`y ∈ [-6.8, 6.8]` であり、すべてのプレイヤーとボールはこの範囲内にクランプされる。
+
+### 3.3 チーム方向
+
+| チーム | `team` 値 | 攻撃方向 | ゴール位置（X座標） |
+|--------|----------|---------|-------------------|
+| BLUE（左チーム） | -1 | 右方向（+X） | 守備: x = -10.5、攻撃目標: x = +10.5 |
+| RED（右チーム） | +1 | 左方向（-X） | 守備: x = +10.5、攻撃目標: x = -10.5 |
+
+---
+
+## 4. データモデル
+
+### 4.1 ベクトル型 `V`
+
+すべての位置・速度・方向は2次元ベクトル `V = { x: number, y: number }` で表現される。
+
+| 関数 | シグネチャ | 説明 |
+|------|----------|------|
+| `v` | `(x, y) → V` | ベクトル生成 |
+| `vadd` | `(a, b) → V` | 加算 |
+| `vsub` | `(a, b) → V` | 減算 |
+| `vscl` | `(a, s) → V` | スカラー倍 |
+| `vlen` | `(a) → number` | 長さ |
+| `vnorm` | `(a) → V` | 正規化（ゼロベクトルの場合は `(1, 0)` を返す） |
+| `vdist` | `(a, b) → number` | 2点間距離 |
+| `vdot` | `(a, b) → number` | 内積 |
+| `vlerp` | `(a, b, t) → V` | 線形補間 |
+| `vang` | `(a, b) → number` | 2ベクトル間の角度（度数法） |
+| `vmove` | `(from, to, d) → V` | `from` から `to` へ最大距離 `d` だけ移動 |
+| `vperp` | `(a) → V` | 垂直ベクトル（`(-y, x)`） |
+| `clamp` | `(v, lo, hi) → number` | 値の範囲制限 |
+| `clamp01` | `(v) → number` | 0〜1の範囲制限 |
+| `rng` | `(a, b) → number` | `[a, b)` の一様乱数 |
+| `pitchClamp` | `(p) → V` | ピッチ範囲内にクランプ |
+
+### 4.2 Player インターフェース
+
+各プレイヤーは以下のプロパティを持つ。配列 `State.pl` のインデックス 0〜10 が BLUE チーム、11〜21 が RED チームに対応する。
+
+| プロパティ | 型 | 説明 |
+|-----------|---|------|
+| `pos` | `V` | 現在位置（ワールド座標） |
+| `team` | `number` | 所属チーム（-1: BLUE、+1: RED） |
+| `num` | `number` | 背番号（1〜11） |
+| `home` | `V` | フォーメーション上のホームポジション |
+| `face` | `V` | 現在の向き（正規化ベクトル） |
+| `act` | `"idle" \| "dribble" \| "move"` | 現在のアクション状態 |
+| `tgt` | `V` | 移動目標位置 |
+| `dt` | `number` | 次の意思決定までの残り時間（秒） |
+| `isGK` | `boolean` | ゴールキーパーフラグ |
+| `slot` | `number` | フォーメーション内のスロット番号（0〜10） |
+| `role` | `Role` | 役割（`"GK"`, `"DEF"`, `"MID"`, `"FWD"`） |
+| `jumpY` | `number` | ジャンプ高さ（ヘディング競り合い時のアニメーション用） |
+
+### 4.3 Ball インターフェース
+
+| プロパティ | 型 | 説明 |
+|-----------|---|------|
+| `pos` | `V` | 現在位置 |
+| `vel` | `V` | 速度ベクトル（フリーボール時のみ有効） |
+| `owner` | `number \| null` | 保持者のプレイヤーインデックス |
+| `free` | `boolean` | フリーボール状態 |
+| `shot` | `boolean` | シュートフラグ |
+| `dead` | `number` | ボールが低速で停止している累積時間（秒） |
+| `cooldown` | `number` | インターセプト禁止時間（秒） |
+| `lastTouchTeam` | `number` | 最後にボールに触れたチーム（-1 or +1） |
+| `lob` | `number` | ロブ（空中）の高さ（0.0〜1.0、0=地上） |
+
+### 4.4 State インターフェース
+
+| プロパティ | 型 | 説明 |
+|-----------|---|------|
+| `pl` | `Player[]` | 全22人のプレイヤー配列 |
+| `ball` | `Ball` | ボール状態 |
+| `sL` | `number` | BLUE チームの得点 |
+| `sR` | `number` | RED チームの得点 |
+| `time` | `number` | 経過時間（秒） |
+| `over` | `boolean` | 試合終了フラグ |
+| `paused` | `boolean` | 一時停止フラグ |
+| `pauseT` | `number` | 一時停止の残り時間（秒） |
+| `koSide` | `number` | 次のキックオフを行うチーム |
+| `trail` | `Trail \| null` | パス/シュートの軌跡描画情報 |
+| `flash` | `number` | 画面フラッシュの残り時間（秒） |
+| `flashTxt` | `string` | フラッシュ時の表示テキスト |
+| `restartT` | `number` | 試合終了後の自動リスタートまでの残り時間 |
+| `speed` | `SpeedMode` | 現在のスピードモード（`"LOW"`, `"MID"`, `"FAST"`） |
+| `setPiece` | `SetPieceAnim \| null` | セットピースアニメーション状態 |
+| `atkLevelBlue` | `number` | BLUEチームの攻撃参加レベル（1〜10） |
+| `atkLevelRed` | `number` | REDチームの攻撃参加レベル（1〜10） |
+
+### 4.5 Trail インターフェース
+
+| プロパティ | 型 | 説明 |
+|-----------|---|------|
+| `start` | `V` | 軌跡の始点 |
+| `end` | `V` | 軌跡の終点 |
+| `shot` | `boolean` | シュートの軌跡か否か |
+| `longPass` | `boolean` | ロングパスの軌跡か否か |
+| `t` | `number` | 残り表示時間（秒） |
+
+### 4.6 SetPieceAnim インターフェース
+
+セットピース（スローイン、コーナーキック、フリーキック）のアニメーション状態を管理する。
+
+| プロパティ | 型 | 説明 |
+|-----------|---|------|
+| `type` | `SetPieceType` | `"throw-in"`, `"corner"`, `"free-kick"`, `null` |
+| `timer` | `number` | 現在のフェーズの残り時間 |
+| `duration` | `number` | 現在のフェーズの総時間 |
+| `throwerIdx` | `number` | キッカー/スローワーのプレイヤーインデックス |
+| `ballTarget` | `V` | ボールの目標位置 |
+| `phase` | `string` | 現在のフェーズ（`"windup"`, `"release"`, `"heading"`, `"wall-forming"`, `"fk-run"`） |
+| `headingTimer` | `number` | ヘディング競り合いの残り時間 |
+| `headingPlayers` | `number[]` | ヘディング競り合いに参加するプレイヤー |
+| `headingWinner` | `number` | ヘディング勝者のインデックス |
+| `wallPlayers` | `number[]` | 壁を構成するプレイヤーのインデックス |
+| `fkIsShot` | `boolean` | フリーキックがシュートかどうか |
+| `fkTeam` | `number` | フリーキックを蹴るチーム |
+
+---
+
+## 5. フォーメーションとスロットシステム
+
+### 5.1 4-4-2 フォーメーション
+
+両チームとも **4-4-2** フォーメーションを採用している。以下の表は BLUE チーム（`team = -1`、左側配置）のホームポジションを示す。RED チームはこれをX軸・Y軸ともに反転（`x = -x, y = -y`）した位置に配置される。
+
+| スロット | 背番号 | ポジション名 | 役割 | ホームポジション (x, y) |
+|---------|--------|------------|------|----------------------|
+| 0 | 1 | GK（ゴールキーパー） | GK | (-9.8, 0) |
+| 1 | 2 | LB（左サイドバック） | DEF | (-7.5, -4.5) |
+| 2 | 3 | CB（左センターバック） | DEF | (-7.5, -1.5) |
+| 3 | 4 | CB（右センターバック） | DEF | (-7.5, 1.5) |
+| 4 | 5 | RB（右サイドバック） | DEF | (-7.5, 4.5) |
+| 5 | 6 | LM（左ミッドフィルダー） | MID | (-4.5, -5.0) |
+| 6 | 7 | CM（左センターMF） | MID | (-4.5, -1.5) |
+| 7 | 8 | CM（右センターMF） | MID | (-4.5, 1.5) |
+| 8 | 9 | RM（右ミッドフィルダー） | MID | (-4.5, 5.0) |
+| 9 | 10 | ST（左ストライカー） | FWD | (-1.5, -1.8) |
+| 10 | 11 | ST（右ストライカー） | FWD | (-1.5, 1.8) |
+
+### 5.2 スロットから役割への変換
+
+```
+slot 0       → "GK"
+slot 1〜4    → "DEF"
+slot 5〜8    → "MID"
+slot 9〜10   → "FWD"
+```
+
+ウインガーの特定: `slot === 5`（LM）および `slot === 8`（RM）はワイドMFとして、アタッキングサードで特別なドリブル・クロス行動を取る。
+
+---
+
+## 6. 全チューナブルパラメータ一覧
+
+すべてのパラメータはソースコード冒頭の定数オブジェクト `P` に集約されている。
+
+### 6.1 試合制御パラメータ
+
+| パラメータ | デフォルト値 | 単位 | 説明 |
+|-----------|------------|------|------|
+| `matchDuration` | 120 | 秒 | 試合の総時間 |
+| `goalResetDelay` | 2.0 | 秒 | ゴール後、キックオフまでの待機時間 |
+
+### 6.2 ピッチ寸法パラメータ
+
+| パラメータ | デフォルト値 | 単位 | 説明 |
+|-----------|------------|------|------|
+| `pitchHalfW` | 10.5 | units | ピッチ半幅 |
+| `pitchHalfH` | 6.8 | units | ピッチ半高 |
+| `goalHalfH` | 1.22 | units | ゴール半高 |
+| `goalDepth` | 0.4 | units | ゴールネット奥行き |
+| `penAreaW` | 2.75 | units | ペナルティエリア幅 |
+| `penAreaH` | 3.35 | units | ペナルティエリア半高 |
+| `goalAreaW` | 0.92 | units | ゴールエリア幅 |
+| `goalAreaH` | 1.55 | units | ゴールエリア半高 |
+| `centreCircleR` | 1.53 | units | センターサークル半径 |
+| `penSpotDist` | 1.83 | units | ペナルティスポット距離 |
+| `cornerArcR` | 0.17 | units | コーナーアーク半径 |
+
+### 6.3 プレイヤー動作パラメータ
+
+| パラメータ | デフォルト値 | 単位 | 説明 |
+|-----------|------------|------|------|
+| `moveSpeed` | 4.8 | units/s | ボール非保持時の移動速度 |
+| `dribbleSpeed` | 3.8 | units/s | ドリブル時の移動速度 |
+| `passSpeed` | 12 | units/s | パスのボール速度 |
+| `shotSpeed` | 18 | units/s | シュートのボール速度 |
+| `longPassSpeed` | 10 | units/s | ロングパスのボール速度 |
+| `passAccuracy` | 0.88 | 0〜1 | 短距離パス精度 |
+| `shotAccuracy` | 0.60 | 0〜1 | シュート精度 |
+| `longPassAccuracy` | 0.65 | 0〜1 | ロングパス精度 |
+| `dribbleControl` | 0.90 | 0〜1 | ドリブル成功率 |
+| `interceptRadius` | 0.75 | units | フリーボールのインターセプト判定半径 |
+| `decisionInterval` | 0.20 | 秒 | AI意思決定の実行間隔 |
+| `shotRange` | 5.5 | units | シュート可能な最大距離 |
+| `shotAngle` | 55 | 度 | シュート可能な最大角度 |
+
+### 6.4 ボール物理パラメータ
+
+| パラメータ | デフォルト値 | 単位 | 説明 |
+|-----------|------------|------|------|
+| `looseBallDrag` | 3.5 | units/s² | フリーボールの減速率 |
+| `deadBallTime` | 0.7 | 秒 | ボール停止後の自動回収時間 |
+
+### 6.5 描画パラメータ
+
+| パラメータ | デフォルト値 | 単位 | 説明 |
+|-----------|------------|------|------|
+| `trailDuration` | 0.35 | 秒 | パス/シュート軌跡の表示時間 |
+| `playerRadius` | 0.30 | units | プレイヤー円の半径 |
+| `ballRadius` | 0.13 | units | ボール円の半径 |
+
+### 6.6 オフサイドパラメータ
+
+| パラメータ | デフォルト値 | 単位 | 説明 |
+|-----------|------------|------|------|
+| `offsideEnabled` | true | — | オフサイド判定の有効/無効 |
+| `offsideMargin` | 0.25 | units | オフサイド判定のマージン |
+| `offsidePause` | 1.2 | 秒 | オフサイド後の一時停止時間 |
+| `restartNoIntercept` | 0.5 | 秒 | リスタート後のインターセプト禁止時間 |
+
+### 6.7 アウトオブプレーパラメータ
+
+| パラメータ | デフォルト値 | 単位 | 説明 |
+|-----------|------------|------|------|
+| `outEnabled` | true | — | アウトオブプレー判定の有効/無効 |
+| `outMargin` | 0.02 | units | ピッチ外判定のマージン |
+| `restartPause` | 1.0 | 秒 | リスタート前の一時停止時間 |
+| `throwInInset` | 0.35 | units | スローイン位置のタッチラインからのインセット |
+| `cornerInset` | 0.25 | units | コーナーキック位置のインセット |
+| `goalKickX` | 9.78 | units | ゴールキック位置のX座標（`pitchHalfW - goalAreaW + 0.2`） |
+
+### 6.8 GKセーブパラメータ
+
+| パラメータ | デフォルト値 | 単位 | 説明 |
+|-----------|------------|------|------|
+| `gkSaveEnabled` | true | — | GKセーブの有効/無効 |
+| `gkSaveRadius` | 0.9 | units | GKのセーブ判定半径 |
+| `gkSaveBase` | 0.55 | 0〜1 | 基本セーブ確率 |
+| `gkSaveAngleBonus` | 0.20 | 0〜1 | 角度ボーナス（正面ほど高い） |
+| `gkParryChance` | 0.25 | 0〜1 | セーブ時にパリー（弾く）する確率 |
+| `gkHoldCooldown` | 0.6 | 秒 | GKキャッチ後のクールダウン |
+
+### 6.9 スピード切替パラメータ
+
+| パラメータ | デフォルト値 | 説明 |
+|-----------|------------|------|
+| `speedMult.LOW` | 0.75 | 低速モードの時間倍率 |
+| `speedMult.MID` | 1.0 | 通常モードの時間倍率 |
+| `speedMult.FAST` | 1.35 | 高速モードの時間倍率 |
+
+### 6.10 ロングパスパラメータ
+
+| パラメータ | デフォルト値 | 単位 | 説明 |
+|-----------|------------|------|------|
+| `longPassMinDist` | 8 | units | ロングパスの最小距離 |
+| `longPassMaxDist` | 22 | units | ロングパスの最大距離 |
+
+### 6.11 スローイン/コーナーキックアニメーションパラメータ
+
+| パラメータ | デフォルト値 | 単位 | 説明 |
+|-----------|------------|------|------|
+| `throwInMaxDist` | 12 | units | スローインの最大飛距離（ピッチ横幅の約半分） |
+| `throwInAnimDur` | 0.5 | 秒 | スローインのウインドアップアニメーション時間 |
+| `cornerAnimDur` | 0.4 | 秒 | コーナーキックのウインドアップアニメーション時間 |
+| `headingContestRadius` | 2.5 | units | ヘディング競り合いの参加判定半径 |
+| `headingContestDur` | 0.35 | 秒 | ヘディング競り合いのアニメーション時間 |
+
+### 6.12 ファウル/フリーキックパラメータ
+
+| パラメータ | デフォルト値 | 単位 | 説明 |
+|-----------|------------|------|------|
+| `foulChanceOnTackle` | 0.18 | 0〜1 | タックル時のファウル発生確率 |
+| `foulChanceOnDribble` | 0.10 | 0〜1 | ドリブラーへのインターセプト時のファウル確率 |
+| `foulPause` | 1.5 | 秒 | ファウル後の一時停止時間 |
+| `freeKickNoIntercept` | 0.8 | 秒 | フリーキック後のインターセプト禁止時間 |
+| `wallDistance` | 1.83 | units | 壁の配置距離（ボールから） |
+| `wallPlayerCount` | 3 | 人 | 壁を構成する基本人数 |
+| `directFKShotRange` | 7.0 | units | 直接シュート可能なフリーキック距離 |
+| `directFKShotChance` | 0.65 | 0〜1 | シュート距離内でシュートを選択する確率 |
+
+---
+
+## 7. AI意思決定システム
+
+### 7.1 概要
+
+各プレイヤーは `decisionInterval`（0.20秒）ごとに意思決定を行う。ボール保持者と非保持者で異なるロジックが適用される。
+
+```
+毎フレーム:
+  player.dt -= deltaTime
+  if player.dt <= 0:
+    player.dt = decisionInterval
+    if ボール保持者:
+      decideHasBall(state, playerIndex)
+    else:
+      decideNoBall(state, playerIndex)
+```
+
+### 7.2 ボール保持時の意思決定 (`decideHasBall`)
+
+#### 7.2.1 GK・自陣深い位置の特別処理
+
+ゴールキーパー、または自陣の守備的3分の1（`team * pos.x > pitchHalfW * 0.33`）にいるプレイヤーは、まずロングパスを45%の確率で試み、次に通常パス（リラックスモード）を試み、それでも不可の場合はセーフティクリアランスを行う。
+
+#### 7.2.2 ウインガーのアタッキングサード行動
+
+スロット5（LM）またはスロット8（RM）のプレイヤーがアタッキングサードにいる場合、以下の特別ロジックが適用される。
+
+- バイライン付近かつワイドポジション → 70%の確率でクロス
+- ワイドだがバイライン前 → サイドライン沿いにドリブル
+- シュート距離内 → シュート（通常より広い角度・距離で判定）
+- それ以外 → 40%の確率でクロス
+
+#### 7.2.3 通常の3段階優先ロジック
+
+**優先度1: シュート (SHOT)** — ゴールまでの距離が `shotRange`（5.5）以内、かつ向きとゴール方向の角度差が `shotAngle`（55度）以内の場合。`shotAccuracy` に基づく誤差が加わる。
+
+**優先度2: パス (PASS)** — `bestPass` 関数で最適なパス先を探索。30%の確率でロングパスも検討する。パス先評価スコア:
+
+```
+score = openness * 2 + goalProgress * 0.5 - distance * 0.12
+if laneBlocked: score -= 4（通常モード）/ score -= 1.5（relaxedモード）
+if offside: score -= 10
+```
+
+**優先度3: ドリブル (DRIBBLE)** — `dribbleControl`（0.90）の確率で成功。ゴール方向（重み0.55）、敵回避（重み0.3）、壁回避、ジンクを合成した方向へ移動。
+
+### 7.3 パス精度のコンテキスト対応
+
+パス精度は以下の3つのボーナスで動的に調整される。
+
+| 条件 | エラー減少率 |
+|------|------------|
+| 最寄り敵が5.0m以上 | 75%減 |
+| 最寄り敵が3.0m以上 | 55%減 |
+| 最寄り敵が2.0m以上 | 30%減 |
+| パス距離が4.0m未満 | 50%減 |
+| パス距離が7.0m未満 | 30%減 |
+| 自陣でのパス | 40%減 |
+
+### 7.4 ボール非保持時の意思決定 (`decideNoBall`)
+
+#### 7.4.1 GKの行動
+
+ゴールライン付近に位置し、ボールのY座標に追従。フリーボールが2.5ユニット以内なら飛び出す。
+
+#### 7.4.2 ルーズボール追跡
+
+各チームから最も近い2人のフィールドプレイヤーがボールを追跡。
+
+#### 7.4.3 味方がボール保持時（攻撃ラン）
+
+攻撃参加レベル `atkFactor`（0.0〜1.0）に応じてポジショニングが変化する。
+
+| 役割 | 攻撃時の行動 |
+|------|------------|
+| DEF | 保持者の後方に位置。攻撃レベルに応じて前進量が増加。 |
+| MID（ワイド） | 攻撃時はサイドに張り、バイラインに向かって走る。 |
+| MID（セントラル） | 保持者と相手ゴールの中間地点に位置。攻撃レベルに応じて前進。 |
+| FWD | 相手ゴール方向に前線ラン。攻撃レベルが高いほど深い位置を取る。 |
+
+#### 7.4.4 相手がボール保持時（守備）
+
+攻撃レベルが高いほど守備の後退量が減少する（`defRetreat = 1.0 - af * 0.3`）。
+
+---
+
+## 8. ボール物理と状態遷移
+
+### 8.1 ボールの3つの状態
+
+```
+[保持中] ←→ [フリー（飛行中）] ←→ [デッド（停止）]
+   ↑              ↓                      ↓
+   └──── インターセプト ────┘     └── 自動回収 ──→ [保持中]
+```
+
+**保持中**: ボールは保持者の前方0.22ユニットに追従。
+
+**フリー**: `vel` に従って移動し、`looseBallDrag`（3.5 units/s²）で減速。ロブボールは `lob` 値が時間とともに減少（`lob -= dt * 2`）。
+
+**デッド**: 速度0.5 units/s以下が `deadBallTime`（0.7秒）以上継続で最寄りプレイヤーに自動回収。
+
+### 8.2 インターセプト
+
+| 種類 | 条件 | 判定半径 |
+|------|------|---------|
+| フリーボールの拾得 | ボールがフリー状態、`lob < 0.3` | 0.75 units |
+| ドリブラーからの奪取 | ボール保持中、敵チーム | 0.4875 units（`interceptRadius * 0.65`） |
+
+奪取時に `foulChanceOnTackle`（18%）または `foulChanceOnDribble`（10%）の確率でファウルが発生する。
+
+### 8.3 所有権変更とクールダウン
+
+所有権変更時に0.35秒のクールダウンが発生し、インターセプトが無効化される。
+
+---
+
+## 9. オフサイド判定
+
+### 9.1 判定条件
+
+`isOffside` 関数は以下の条件をすべて満たす場合にオフサイドと判定する。
+
+1. `offsideEnabled` が `true`
+2. レシーバーが相手陣内にいる（`team * pos.x < 0`）
+3. レシーバーがボール位置より前方にいる
+4. レシーバーが相手の最終ラインより `offsideMargin`（0.25）以上前方にいる
+
+### 9.2 オフサイド発生時の処理
+
+1. 「OFFSIDE」フラッシュ表示
+2. 守備側チームの最寄りフィールドプレイヤーにボールを渡す
+3. `offsidePause`（1.2秒）の一時停止
+
+---
+
+## 10. アウトオブプレーとリスタート
+
+### 10.1 スローイン
+
+**発生条件**: ボールがタッチライン（上下端）を越えた場合。
+
+**判定**: 最後にボールに触れたチーム（`lastTouchTeam`）の反対側がスローイン権を取得。
+
+**ターゲット選定**: 最大飛距離 `throwInMaxDist`（12ユニット、ピッチ横幅の約半分）以内で、オープンネス評価が最も高いチームメイトを選択。
+
+**アニメーション**: スローワーが腕を上げるウインドアップモーション（`throwInAnimDur` = 0.5秒）の後、ボールをロブで投げ入れる。
+
+### 10.2 コーナーキック
+
+**発生条件**: ボールがゴールライン（左右端）を越え、最後にタッチしたのが守備側チームの場合。
+
+**配置**: 正しいサイド（ボールが出た側）のコーナーから、攻撃側FWD/MIDがペナルティエリア内に、守備側DEF/MIDがペナルティエリア内に移動。
+
+**アニメーション**: ウインドアップ → ロブボール（弧を描く黄色トレイル） → ヘディング競り合い（参加者全員がジャンプ、距離+乱数で勝者決定）。勝者がシュート距離内ならヘディングシュート、それ以外はボール保持。
+
+### 10.3 ゴールキック
+
+**発生条件**: ボールがゴールライン（左右端）を越え、最後にタッチしたのが攻撃側チームの場合。
+
+**処理**: 守備側GKがゴールエリア付近からリスタート。
+
+---
+
+## 11. GKセーブ機構
+
+### 11.1 判定条件
+
+1. `gkSaveEnabled` が `true`
+2. ボールが `shot` フラグ付き
+3. シュートがGKの守るゴール方向に向かっている
+4. GKとボールの距離が `gkSaveRadius`（0.9）以内
+
+### 11.2 セーブ確率
+
+```
+saveP = gkSaveBase + gkSaveAngleBonus * clamp01(1 - shotAngleToGK / 90)
+```
+
+正面からのシュートほどセーブ確率が高い（最大 `0.55 + 0.20 = 0.75`）。
+
+### 11.3 セーブ結果
+
+| 結果 | 確率 | 処理 |
+|------|------|------|
+| キャッチ | 75% | GKがボールを保持、`gkHoldCooldown`（0.6秒）のクールダウン |
+| パリー | 25% | ボールをゴールから離れる方向に弾く（速度5〜8 units/s） |
+
+---
+
+## 12. ファウルとフリーキック
+
+### 12.1 ファウル発生
+
+タックル（インターセプト）時にランダムでファウルが発生する。
+
+| 状況 | ファウル確率 |
+|------|------------|
+| ドリブラーへのタックル | 10%（`foulChanceOnDribble`） |
+| 通常のタックル | 18%（`foulChanceOnTackle`） |
+
+### 12.2 フリーキックの種類
+
+ファウル位置から相手ゴールまでの距離が `directFKShotRange`（7.0）以内の場合、`directFKShotChance`（65%）の確率で直接フリーキックシュートを選択。それ以外はパスで再開。
+
+### 12.3 壁の構成
+
+直接フリーキックシュート時、守備側は `wallPlayerCount`（3人、近距離では4人）の壁を自動構成する。壁はボールとゴールを結ぶ線上の `wallDistance`（1.83ユニット）の位置に、垂直方向に0.55ユニット間隔で並ぶ。壁の周囲には黄色の点線リングが描画される。
+
+### 12.4 フリーキックアニメーション
+
+1. **壁構成フェーズ** (`wall-forming`): 壁プレイヤーが所定位置に移動（最大1.2秒）
+2. **助走フェーズ** (`fk-run`): キッカーが0.4秒の助走アニメーション
+3. **キック**: シュートまたはパスを実行
+
+---
+
+## 13. 攻撃参加レベルシステム
+
+### 13.1 概要
+
+両チームに個別の攻撃参加レベル（1〜10）が設定可能。画面下部左右のUIパネルで +/− ボタンにより調整する。
+
+### 13.2 攻撃ファクター
+
+```
+atkFactor = (atkLevel - 1) / 9    // 0.0 (レベル1) 〜 1.0 (レベル10)
+```
+
+### 13.3 影響範囲
+
+| 影響対象 | レベル1（守備的） | レベル10（超攻撃的） |
+|---------|-----------------|-------------------|
+| DEFの前進量 | ほぼホームポジション | 中盤まで押し上げ |
+| MIDの攻撃参加率 | 控えめ | 積極的に前線へ |
+| FWDの位置 | 中盤寄り | 相手ゴール近く |
+| 守備時の後退量 | 通常 | 30%減少 |
+
+---
+
+## 14. ロングパスとクロス
+
+### 14.1 ロングパス
+
+`bestLongPass` 関数で評価。距離8〜22ユニットの味方を対象に、FWDへのボーナス（+2.5）、ワイドMIDへのボーナス（+1.5）を加えたスコアで選択。ロブボール（`lob = 1.0`）として放たれ、黄色の弧線トレイルで表示。
+
+### 14.2 クロス
+
+`doCross` 関数で実行。ウインガーがバイライン付近からペナルティエリア内のFWD/MIDに向けてロブボールを送る。ニアポスト/ファーポストの選択はウインガーの位置（上下）に依存。
+
+---
+
+## 15. 試合フロー
+
+### 15.1 状態遷移
+
+```
+[初期化] → [キックオフ] → [プレイ中] → [ゴール/ファウル/アウト] → [一時停止/セットピース]
+                                          ↓
+                                    [タイムアップ] → [FULL TIME] → [自動リスタート]
+```
+
+### 15.2 キックオフ処理
+
+1. 全プレイヤーをホームポジションにリセット
+2. ボールをピッチ中央に配置
+3. キックオフ側チームの中央に最も近いプレイヤーにボールを渡す
+4. ゴール後は**失点したチーム**がキックオフ
+
+### 15.3 試合終了と自動リスタート
+
+経過時間が `matchDuration`（120秒）に達すると「FULL TIME」表示、5秒後に自動リスタート。
+
+---
+
+## 16. 更新ループ
+
+### 16.1 更新順序
+
+1. フラッシュ減衰
+2. 試合終了チェック → リスタートタイマー減算
+3. セットピースアニメーション更新
+4. 一時停止チェック → タイマー減算
+5. 経過時間更新 → タイムアップ判定
+6. クールダウン/ロブ減算
+7. デッドボール回復
+8. ボール物理（保持追従 or フリー移動）
+9. GKセーブ判定
+10. アウトオブプレー判定
+11. ゴール判定
+12. ボール減速
+13. トレイル減衰
+14. プレイヤーループ（22人）: インターセプト → 意思決定 → 移動 → ジャンプ減衰
+
+---
+
+## 17. 描画仕様
+
+### 17.1 描画レイヤー順序
+
+| 順序 | レイヤー | 説明 |
+|------|---------|------|
+| 1 | 背景 | `#0a0a10` の暗色で全画面塗りつぶし |
+| 2 | ピッチ | 緑のグラデーション + 12本の縦縞パターン |
+| 3 | ピッチライン | 外枠、センターライン、センターサークル、ペナルティエリア、ゴールエリア、ペナルティスポット、ペナルティアーク、コーナーアーク |
+| 4 | ゴール | 半透明の白い矩形 + 枠線 + ゴールポスト |
+| 5 | 壁インジケーター | フリーキック時の壁プレイヤー周囲の黄色点線リング |
+| 6 | 軌跡（Trail） | パス: 白い点線、シュート: オレンジ太線、ロングパス: 黄色弧線 |
+| 7 | プレイヤー | ジャンプ影 → 保持者リング → スローイン腕アニメーション → 円形本体 → 背番号 |
+| 8 | ボール | ロブ影 → 通常影 → 白いグラデーション円 |
+| 9 | フラッシュ | 半透明オーバーレイ + テキスト |
+| 10 | HUD | スコアバー + タイマー |
+| 11 | スピード切替ボタン | 右上 |
+| 12 | 攻撃レベルパネル | 左下（BLUE）、右下（RED） |
+
+### 17.2 カラーパレット
+
+| 用途 | カラーコード | 説明 |
+|------|------------|------|
+| 背景 | `#0a0a10` | ダークネイビー |
+| ピッチ（明） | `#1a6b3a` | フォレストグリーン |
+| ピッチ（暗） | `#145e30` | ダークグリーン |
+| ライン | `rgba(255,255,255,0.75)` | 半透明白 |
+| BLUE チーム | `#2563eb` / `#60a5fa` | ロイヤルブルー系 |
+| RED チーム | `#dc2626` / `#f87171` | クリムゾンレッド系 |
+| 保持リング BLUE | `rgba(37,99,235,0.5)` | 半透明ブルー |
+| 保持リング RED | `rgba(220,38,38,0.5)` | 半透明レッド |
+| HUD背景 | `rgba(10,10,20,0.88)` | 半透明ダーク |
+| スピードLOW | `#60a5fa` | ライトブルー |
+| スピードMID | `#fbbf24` | イエロー |
+| スピードFAST | `#f87171` | ライトレッド |
+
+---
+
+## 18. UIコントロール
+
+### 18.1 スピード切替ボタン
+
+画面右上に配置。クリック/タップで LOW → MID → FAST をサイクル。各モードで時間の進行速度が変化する。
+
+### 18.2 攻撃参加レベルパネル
+
+画面下部左右に配置。BLUE（左）とRED（右）のパネルにそれぞれ −/+ ボタンと10段階のセグメントバーを表示。セグメントの色はレベルに応じて緑（守備的）から赤（攻撃的）にグラデーション。
+
+### 18.3 タッチ/クリックハンドリング
+
+Canvas上の `click` および `touchstart` イベントをリスンし、各UIボタンの矩形範囲とのヒットテストで判定。`touchAction: "none"` でモバイルのスクロール/ズームを防止。
+
+---
+
+## 19. Reactコンポーネント構造
+
+### 19.1 `Home` コンポーネント
+
+シミュレーション全体を管理する唯一のReactコンポーネント。`useRef` で状態を管理し、Reactの再レンダリングを回避してCanvas描画のパフォーマンスを最大化。
+
+### 19.2 ライフサイクル
+
+`useEffect` 内で Canvas初期化 → キックオフ → リサイズハンドラ → アニメーションループ（`requestAnimationFrame`）を実行。クリーンアップ時に `cancelAnimationFrame` とリスナー解除。
+
+---
+
+## 20. レスポンシブ対応
+
+### 20.1 Canvas解像度
+
+`window.devicePixelRatio` を考慮し、Retinaディスプレイでもシャープな描画を維持。
+
+### 20.2 スケーリング
+
+```
+sc = min(canvasWidth / (pitchHalfW * 2 + 2.5), canvasHeight / (pitchHalfH * 2 + 3.5))
+```
+
+画面のアスペクト比に関わらずピッチ全体が常に表示される。
+
+---
+
+## 21. 既知の制約と拡張可能性
+
+### 21.1 現在の制約
+
+| 項目 | 説明 |
+|------|------|
+| イエロー/レッドカード | 未実装。ファウルは発生するがカードは出ない |
+| 選手交代 | 未実装。22人が試合終了まで固定 |
+| 体力・疲労 | 未実装。全選手が一定速度で動き続ける |
+| フォーメーション変更 | 実行時の動的変更は未対応 |
+| ペナルティキック | 未実装。ペナルティエリア内のファウルも通常フリーキック |
+| VAR/リプレイ | 未実装 |
+
+### 21.2 拡張可能性
+
+| 拡張項目 | 実装方針 |
+|---------|---------|
+| フォーメーション切替 | `FORM_442` を複数定義し、UIで選択可能にする |
+| 選手個別能力値 | `Player` に `speed`, `accuracy`, `stamina` 等を追加 |
+| 試合統計 | ポゼッション率、シュート数、パス成功率等のカウンター |
+| ハーフタイム | 前後半制にして統計表示 |
+| 音声効果 | Web Audio API でホイッスル音、キック音、歓声等 |
+| 実在チームデータ | 選手名・背番号・チームカラーを外部JSONから読み込み |
+
+---
+
+## 付録A: 全関数一覧
+
+| 関数名 | 引数 | 戻り値 | 説明 |
+|--------|------|--------|------|
+| `slotRole` | `slot` | `Role` | スロット番号から役割を返す |
+| `mkPlayers` | — | `Player[]` | 22人のプレイヤーを初期化 |
+| `mkState` | — | `State` | 試合状態を初期化 |
+| `getAtkLevel` | `st, team` | `number` | チームの攻撃レベル（1-10）を返す |
+| `atkFactor` | `st, team` | `number` | 攻撃ファクター（0.0-1.0）を返す |
+| `checkGoal` | `pos` | `number` | ゴール判定（1/-1/0） |
+| `give` | `ball, idx, pl` | `void` | ボールをプレイヤーに渡す |
+| `kick` | `st, dir, spd, shot, tgt, isLong?` | `void` | ボールを蹴る |
+| `nearest` | `st, pos, teamFilter?` | `number` | 最寄りプレイヤーのインデックス |
+| `nearestOutfield` | `st, pos, team` | `number` | 最寄りフィールドプレイヤー |
+| `findGK` | `st, team` | `number` | GKのインデックス |
+| `isOffside` | `st, receiver, ballPos` | `boolean` | オフサイド判定 |
+| `openness` | `st, p` | `number` | プレイヤーの開き具合 |
+| `laneBlocked` | `st, from, to, team` | `boolean` | パスレーンブロック判定 |
+| `bestPass` | `st, idx, relaxed?` | `number \| null` | 最適なパス先 |
+| `bestLongPass` | `st, idx` | `number \| null` | 最適なロングパス先 |
+| `doPassTo` | `st, idx, targetIdx` | `void` | パスを実行 |
+| `doLongPassTo` | `st, idx, targetIdx` | `void` | ロングパスを実行 |
+| `doDribble` | `st, idx` | `void` | ドリブルを実行 |
+| `doCross` | `st, idx` | `void` | クロスを実行 |
+| `decideHasBall` | `st, idx` | `void` | ボール保持時の意思決定 |
+| `decideNoBall` | `st, idx` | `void` | ボール非保持時の意思決定 |
+| `triggerFoul` | `st, fouledIdx, foulerIdx` | `void` | ファウルを発生させる |
+| `doKickOff` | `st` | `void` | キックオフ処理 |
+| `startThrowIn` | `st, throwerIdx, targetPos` | `void` | スローインアニメーション開始 |
+| `startCornerKick` | `st, kickerIdx, targetPos` | `void` | コーナーキックアニメーション開始 |
+| `updateSetPiece` | `st, dtSim` | `void` | セットピースアニメーション更新 |
+| `update` | `st, dt` | `void` | 1フレーム分の状態更新 |
+| `render` | `ctx, canvas, st, ...bounds` | `void` | 1フレーム分の描画 |
+
+---
+
+## 付録B: パラメータ調整ガイド
+
+| 目的 | 調整するパラメータ | 方向 |
+|------|------------------|------|
+| 試合のテンポを速くする | `moveSpeed` ↑, `passSpeed` ↑, `decisionInterval` ↓ | 全体的に速度を上げ、判断を頻繁にする |
+| ゴールを増やす | `shotAccuracy` ↑, `shotRange` ↑, `gkSaveBase` ↓ | シュート成功率を上げ、GKを弱くする |
+| ゴールを減らす | `shotAccuracy` ↓, `interceptRadius` ↑, `gkSaveBase` ↑ | シュート精度を下げ、守備力を上げる |
+| パスサッカーにする | `passAccuracy` ↑, `dribbleControl` ↓ | パスを正確にし、ドリブルを失敗しやすくする |
+| ドリブル中心にする | `dribbleControl` ↑, `dribbleSpeed` ↑ | ドリブルの成功率と速度を上げる |
+| ファウルを増やす | `foulChanceOnTackle` ↑, `foulChanceOnDribble` ↑ | ファウル確率を上げる |
+| 直接FKゴールを増やす | `directFKShotChance` ↑, `directFKShotRange` ↑ | シュート選択率と距離を拡大 |
+| ロングボール主体にする | `longPassMinDist` ↓, `longPassAccuracy` ↑ | ロングパスの条件を緩和し精度を上げる |
+| 攻撃的な試合にする | `atkLevelBlue` / `atkLevelRed` を 7-10 に設定 | 両チームの攻撃参加を最大化 |
+| よりリアルな試合時間 | `matchDuration` → 5400（90分相当） | 試合時間を延長 |
+
+---
+
+## 付録C: 完全ソースコード
+
+以下は `client/src/pages/Home.tsx` の完全なソースコードである。本ファイルのみでシミュレーション全体が動作する。
+```typescript
 import { useEffect, useRef, useCallback } from "react";
 
 /*
@@ -349,20 +1219,11 @@ function bestPass(st: State, idx: number, relaxed: boolean = false): number | nu
     const d = vdist(me.pos, p.pos);
     if (d < 1.0 || d > 18) continue;
     const op = openness(st, p);
-    const gp = -me.team * p.pos.x; // goal progress
-    
-    // Back-pass (gp < 0) penalty is greatly reduced for possession play
-    let gpScore = gp * 0.6;
-    if (gp < 0) gpScore = gp * 0.05;
-
-    let sc = op * 2.0 + gpScore - d * 0.1;
-    
-    // Stronger penalty for blocked lanes to reduce forced vertical passes
-    if (laneBlocked(st, me.pos, p.pos, me.team)) sc -= 6.0;
-    
-    // Offside is excluded
-    if (P.offsideEnabled && isOffside(st, p, st.ball.pos)) sc -= 20;
-    
+    const gp = -me.team * p.pos.x;
+    let sc = op * 2 + gp * 0.5 - d * 0.12;
+    if (!relaxed && laneBlocked(st, me.pos, p.pos, me.team)) sc -= 4;
+    else if (relaxed && laneBlocked(st, me.pos, p.pos, me.team)) sc -= 1.5;
+    if (P.offsideEnabled && isOffside(st, p, st.ball.pos)) sc -= 10;
     if (sc > bs) { bs = sc; bi = i; }
   }
   return bi;
@@ -532,29 +1393,6 @@ function decideHasBall(st: State, idx: number) {
   const isWinger = me.slot === 5 || me.slot === 8;
   const isWide = Math.abs(me.pos.y) > P.pitchHalfH * 0.45;
 
-  // [NEW] Dribble breakthrough check
-  const distToGoal = vdist(me.pos, v(-me.team * P.pitchHalfW, 0));
-  let spaceInFront = true;
-  const checkDist = 7.0;
-  const checkDir = v(-me.team, 0); // toward goal
-  
-  // Check if enemies are in front cone
-  for (const p of st.pl) {
-    if (p.team === me.team) continue;
-    const d = vdist(me.pos, p.pos);
-    if (d < checkDist) {
-      const toEnemy = vnorm(vsub(p.pos, me.pos));
-      const angle = vang(checkDir, toEnemy);
-      if (angle < 40) { spaceInFront = false; break; }
-    }
-  }
-
-  // If space ahead and far from goal, prioritize dribble
-  if (spaceInFront && distToGoal > 12.0 && Math.random() < 0.65) {
-    doDribble(st, idx);
-    return;
-  }
-
   if (me.isGK || inOwnThird) {
     const lp = bestLongPass(st, idx);
     if (lp !== null && Math.random() < 0.45) {
@@ -622,9 +1460,8 @@ function decideNoBall(st: State, idx: number) {
   const me = st.pl[idx];
   const b = st.ball;
   const ballPos = b.pos;
-  const af = atkFactor(st, me.team); // attack level (0.0 - 1.0)
+  const af = atkFactor(st, me.team);
 
-  // 1. GK basic behavior (keep existing)
   if (me.isGK) {
     const gx = me.team * (P.pitchHalfW - 0.6);
     const gy = clamp(ballPos.y * 0.5, -P.goalHalfH + 0.2, P.goalHalfH - 0.2);
@@ -634,7 +1471,7 @@ function decideNoBall(st: State, idx: number) {
     return;
   }
 
-  // 2. Loose ball chase (keep existing)
+  // Chase loose ball
   if (b.free || (b.owner === null && !b.free)) {
     const d = vdist(me.pos, ballPos);
     let rank = 0;
@@ -648,69 +1485,86 @@ function decideNoBall(st: State, idx: number) {
   }
 
   const teamHasBall = b.owner !== null && st.pl[b.owner].team === me.team;
-  const oppGoalX = -me.team * P.pitchHalfW;
 
-  // 3. Attacking movement (Off the ball) - Box-to-Box movement added
   if (teamHasBall) {
+    const oppGoalX = -me.team * P.pitchHalfW;
     const carrier = st.pl[b.owner!];
-    
-    // MF attack participation (forward run): higher attack level → higher probability
-    const isMidRun = me.role === "MID" && Math.random() < (0.015 + af * 0.04);
+    const role = me.role;
+    let targetX: number, targetY: number;
 
-    if (isMidRun) {
-      // Run into the box (overtake FWD)
-      me.tgt = pitchClamp(v(oppGoalX * 0.85, rng(-4, 4)));
-    } else if (me.role === "DEF") {
-      // DEF: push line up based on attack level, but not too high to prevent counter
-      const baseFwd = carrier.pos.x + me.team * (2 + af * 4);
-      const limitX = me.team < 0 ? 2.0 : -2.0;
-      const isSB = Math.abs(me.home.y) > 3.0;
-      let tx = baseFwd;
-      if (!isSB && ((me.team < 0 && tx > limitX) || (me.team > 0 && tx < limitX))) {
-        tx = limitX;
+    // Attack factor shifts positions forward
+    // af=0 → defensive, af=1 → all-out attack
+    const pushFwd = af * 3.0; // extra forward push based on attack level
+
+    if (role === "DEF") {
+      // DEF: at low atk level, stay back; at high, push up significantly
+      const baseFwd = carrier.pos.x + me.team * 3;
+      targetX = baseFwd - me.team * pushFwd * 0.7; // push toward opponent goal
+      const minX = me.team < 0 ? -P.pitchHalfW : -P.pitchHalfW * (0.5 - af * 0.3);
+      const maxX = me.team < 0 ? P.pitchHalfW * (0.5 - af * 0.3) : P.pitchHalfW;
+      targetX = clamp(targetX, minX, maxX);
+      targetY = me.home.y + clamp(ballPos.y * 0.25, -2.0, 2.0);
+    } else if (role === "MID") {
+      const isWide = me.slot === 5 || me.slot === 8;
+      if (isWide) {
+        const teamAttacking = -me.team * carrier.pos.x > P.pitchHalfW * 0.15;
+        if (teamAttacking) {
+          targetX = oppGoalX * rng(0.55, 0.75);
+          targetY = me.home.y > 0
+            ? P.pitchHalfH * rng(0.6, 0.85)
+            : -P.pitchHalfH * rng(0.6, 0.85);
+        } else {
+          targetX = (carrier.pos.x + oppGoalX) * (0.35 + af * 0.1);
+          targetY = me.home.y * 0.8 + ballPos.y * 0.2;
+        }
+      } else {
+        // CM: push forward more with higher attack level
+        targetX = (carrier.pos.x + oppGoalX) * (0.4 + af * 0.15);
+        targetY = ballPos.y + (me.home.y > 0 ? rng(1.5, 3.5) : rng(-3.5, -1.5));
       }
-      me.tgt = pitchClamp(v(tx, me.home.y + ballPos.y * 0.1));
-
-    } else if (me.role === "MID") {
-      // Normal MF: support position as link-man (diagonal back or side)
-      const supportAngle = rng(-1.2, 1.2);
-      me.tgt = pitchClamp(vadd(carrier.pos, v(-me.team * 3, supportAngle * 5)));
-      
-    } else { // FWD
-      // Always aim for space behind defense, or post play
-      me.tgt = pitchClamp(v(oppGoalX * (0.6 + af * 0.3), me.home.y + rng(-3, 3)));
+    } else {
+      // FWD: always push forward, more aggressive with higher attack level
+      targetX = oppGoalX * (0.55 + af * 0.15) + rng(-1, 1);
+      targetY = me.home.y + rng(-2, 2);
     }
+
+    me.tgt = pitchClamp(v(targetX, targetY));
     me.act = "move";
     return;
   }
 
-  // 4. Defensive movement (Defensive Shape) - Prevent bunching
+  // Defending
   if (b.owner !== null && st.pl[b.owner].team !== me.team) {
     const carrier = st.pl[b.owner];
-    const distToBall = vdist(me.pos, carrier.pos);
-    
-    // Is ball in my zone (Home position vicinity)?
-    const distHomeToBall = vdist(me.home, carrier.pos);
-    const isInMyZone = distHomeToBall < 18.0;
-    
-    // FWD: don't chase deep, wait near halfway line for counter
-    if (me.role === "FWD" && !isInMyZone && distHomeToBall > 25.0) {
-      me.tgt = vlerp(me.pos, me.home, 0.05); // slowly return
-      me.act = "move";
-      return;
-    }
+    const myGoal = v(me.team * P.pitchHalfW, 0);
+    const dc = vdist(me.pos, carrier.pos);
+    const role = me.role;
+    // Higher attack level → less defensive retreat
+    const defRetreat = 1.0 - af * 0.3;
 
-    // Press: if in zone and close to ball
-    if (distToBall < 8.0 && isInMyZone) {
-      me.tgt = carrier.pos;
+    if (role === "FWD") {
+      if (dc < 5) {
+        me.tgt = pitchClamp(vlerp(carrier.pos, myGoal, 0.1));
+      } else {
+        me.tgt = pitchClamp(v(me.home.x + (ballPos.x - me.home.x) * 0.3, me.home.y));
+      }
+    } else if (role === "MID") {
+      if (dc < 4.5) {
+        me.tgt = pitchClamp(vlerp(carrier.pos, myGoal, 0.15 * defRetreat));
+      } else {
+        const shift = v(
+          clamp((ballPos.x - me.home.x) * 0.4 * defRetreat, -3.5, 3.5),
+          clamp((ballPos.y - me.home.y) * 0.45, -3, 3)
+        );
+        me.tgt = pitchClamp(vadd(me.home, shift));
+      }
     } else {
-      // Retreat: get between ball and own goal, while keeping Home position balance
-      const myGoal = v(me.team * P.pitchHalfW, 0);
-      const blockPos = vlerp(carrier.pos, myGoal, 0.35);
-      me.tgt = vlerp(blockPos, me.home, 0.5);
+      const shift = v(
+        clamp((ballPos.x - me.home.x) * 0.25 * defRetreat, -2.5, 2.5),
+        clamp((ballPos.y - me.home.y) * 0.5, -3, 3)
+      );
+      me.tgt = pitchClamp(vadd(me.home, shift));
     }
-    
-    me.tgt = pitchClamp(me.tgt);
     me.act = "move";
     return;
   }
@@ -1898,3 +2752,9 @@ export default function Home() {
     <canvas ref={ref} style={{ display: "block", width: "100vw", height: "100vh", background: "#0a0a10", touchAction: "none" }} />
   );
 }
+
+```
+
+---
+
+> 本文書は自動生成されたものであり、ソースコードの変更に伴い更新が必要な場合がある。
