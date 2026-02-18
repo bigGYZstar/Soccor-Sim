@@ -541,26 +541,34 @@ function decideHasBall(st: State, idx: number) {
   const isWinger = me.slot === 5 || me.slot === 8;
   const isWide = Math.abs(me.pos.y) > P.pitchHalfH * 0.45;
 
-  // [NEW] Dribble breakthrough check
-  const distToGoal = vdist(me.pos, v(-me.team * P.pitchHalfW, 0));
-  let spaceInFront = true;
-  const checkDist = 7.0;
-  const checkDir = v(-me.team, 0); // toward goal
+  // [CRITICAL FIX] Progressive Carry (運ぶドリブル) - HIGHEST PRIORITY
+  // Check if path to goal is clear before considering passes
+  const goalPos = v(-me.team * P.pitchHalfW, 0);
+  const distToGoal = vdist(me.pos, goalPos);
+  const toGoalDir = vnorm(vsub(goalPos, me.pos));
+
+  let pathClear = true;
+  const searchDist = Math.min(distToGoal, 10.0);
   
-  // Check if enemies are in front cone
   for (const p of st.pl) {
     if (p.team === me.team) continue;
     const d = vdist(me.pos, p.pos);
-    if (d < checkDist) {
+    if (d < searchDist) {
       const toEnemy = vnorm(vsub(p.pos, me.pos));
-      const angle = vang(checkDir, toEnemy);
-      if (angle < 40) { spaceInFront = false; break; }
+      if (vang(toGoalDir, toEnemy) < 30) { 
+        pathClear = false; 
+        break; 
+      }
     }
   }
 
-  // If space ahead and far from goal, prioritize dribble (increased from 0.65 to 0.85)
-  if (spaceInFront && distToGoal > 12.0 && Math.random() < 0.85) {
-    doDribble(st, idx);
+  // ■■■ CRITICAL: If path is clear, CARRY forward (not probabilistic, deterministic) ■■■
+  // Only skip if in shot range (let shot logic handle it)
+  if (pathClear && distToGoal > P.shotRange) {
+    me.tgt = vadd(me.pos, vscl(toGoalDir, 8.0));
+    me.act = "dribble";
+    me.face = toGoalDir;
+    kick(st, toGoalDir, P.dribbleSpeed * 1.2, false, me.tgt);
     return;
   }
 
@@ -659,36 +667,49 @@ function decideNoBall(st: State, idx: number) {
   const teamHasBall = b.owner !== null && st.pl[b.owner].team === me.team;
   const oppGoalX = -me.team * P.pitchHalfW;
 
-  // 3. Attacking movement (Off the ball) - Box-to-Box movement added
+  // 3. Attacking movement (Off the ball) - REWRITTEN for high-line push-up
   if (teamHasBall) {
     const carrier = st.pl[b.owner!];
     
-    // MF attack participation (forward run): higher attack level → higher probability
-    const isMidRun = me.role === "MID" && Math.random() < (0.015 + af * 0.04);
+    // Attack level push-up distance (0.0 〜 1.0)
+    // af=0 (defensive) -> no push
+    // af=1 (ultra-attacking) -> push entire line forward by 4.5 units
+    const pushUpDist = af * 4.5;
 
-    if (isMidRun) {
-      // Run into the box (overtake FWD)
-      me.tgt = pitchClamp(v(oppGoalX * 0.85, rng(-4, 4)));
-    } else if (me.role === "DEF") {
-      // DEF: push line up based on attack level, but not too high to prevent counter
-      const baseFwd = carrier.pos.x + me.team * (2 + af * 4);
-      const limitX = me.team < 0 ? 2.0 : -2.0;
-      const isSB = Math.abs(me.home.y) > 3.0;
-      let tx = baseFwd;
-      if (!isSB && ((me.team < 0 && tx > limitX) || (me.team > 0 && tx < limitX))) {
-        tx = limitX;
-      }
-      me.tgt = pitchClamp(v(tx, me.home.y + ballPos.y * 0.1));
+    if (me.role === "DEF") {
+      // DEF line: High-line positioning
+      const ballX = carrier.pos.x;
+      
+      // Base position: between ball and home, pushed forward by attack level
+      let lineX = (ballX + me.home.x) * 0.5 + (pushUpDist * -me.team);
+      
+      // At max attack level, even CBs push up to center circle area
+      // But don't go too deep into opponent half (prevent counter)
+      if (Math.abs(lineX) > P.pitchHalfW * 0.8) lineX = me.team * P.pitchHalfW * 0.8;
+      
+      me.tgt = pitchClamp(v(lineX, me.home.y + ballPos.y * 0.2));
 
     } else if (me.role === "MID") {
-      // Normal MF: support position as link-man (diagonal back or side)
-      const supportAngle = rng(-1.2, 1.2);
-      me.tgt = pitchClamp(vadd(carrier.pos, v(-me.team * 3, supportAngle * 5)));
+      // MF: Box-to-Box movement
+      // Higher attack level → deeper penetration into penalty area
+      const attackX = oppGoalX * (0.3 + af * 0.5); // 30%〜80% toward goal
       
+      const distToCarrier = vdist(me.pos, carrier.pos);
+      
+      if (distToCarrier > 15 && af > 0.5) {
+        // Far from ball + attacking → run into the box
+        me.tgt = pitchClamp(v(attackX, me.home.y));
+      } else {
+        // Support position (link-man)
+        me.tgt = pitchClamp(vadd(carrier.pos, v(-me.team * 2 + (pushUpDist * -me.team), rng(-4, 4))));
+      }
+
     } else { // FWD
-      // Always aim for space behind defense, or post play
-      me.tgt = pitchClamp(v(oppGoalX * (0.6 + af * 0.3), me.home.y + rng(-3, 3)));
+      // Always aim for penalty area edge, make runs behind defense
+      const penAreaEdge = oppGoalX - (-me.team * P.penAreaW);
+      me.tgt = pitchClamp(v(penAreaEdge + rng(-2, 2), me.home.y * 0.5 + rng(-3, 3)));
     }
+    
     me.act = "move";
     return;
   }
