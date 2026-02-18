@@ -6,7 +6,8 @@ import { useEffect, useRef, useCallback } from "react";
  *  Formation: 4-4-2 for both teams
  *  Features: Offside, Out-of-play restarts (throw-in anim,
  *            corner + heading contest), GK saves, Speed toggle,
- *            Long pass AI
+ *            Long pass AI, Attack level toggle (1-10 per team),
+ *            Fouls, Free-kicks with wall + direct shot
  * ============================================================
  */
 
@@ -31,7 +32,7 @@ const P = {
   dribbleSpeed: 3.8,
   passSpeed: 12,
   shotSpeed: 18,
-  longPassSpeed: 10,       // slower arc feel
+  longPassSpeed: 10,
   passAccuracy: 0.88,
   shotAccuracy: 0.60,
   longPassAccuracy: 0.65,
@@ -74,15 +75,25 @@ const P = {
   speedMult: { LOW: 0.75, MID: 1.0, FAST: 1.35 } as Record<string, number>,
 
   // Long pass
-  longPassMinDist: 8,      // minimum distance to consider long pass
+  longPassMinDist: 8,
   longPassMaxDist: 22,
 
   // Throw-in / Corner animation
-  throwInMaxDist: 12,      // max throw-in distance (~half pitch width + a bit)
-  throwInAnimDur: 0.5,     // seconds for throw-in animation
-  cornerAnimDur: 0.4,      // seconds for corner kick wind-up
-  headingContestRadius: 2.5, // players within this radius contest headers
+  throwInMaxDist: 12,
+  throwInAnimDur: 0.5,
+  cornerAnimDur: 0.4,
+  headingContestRadius: 2.5,
   headingContestDur: 0.35,
+
+  // Foul
+  foulChanceOnTackle: 0.18,    // chance of foul when tackling
+  foulChanceOnDribble: 0.10,   // chance of foul when intercepting dribbler
+  foulPause: 1.5,              // pause after foul
+  freeKickNoIntercept: 0.8,    // cooldown after free kick
+  wallDistance: 1.83,           // 9.15m / 5 ≈ 1.83 units
+  wallPlayerCount: 3,          // number of players in wall (can be 4 for close range)
+  directFKShotRange: 7.0,      // within this distance, FK taker may shoot
+  directFKShotChance: 0.65,    // probability of choosing shot over pass at FK
 };
 
 // ── Vec2 ────────────────────────────────────────────────────
@@ -105,6 +116,7 @@ const vmove = (from: V, to: V, d: number): V => {
   const diff = vsub(to, from); const l = vlen(diff);
   return l <= d ? { ...to } : vadd(from, vscl(vnorm(diff), d));
 };
+const vperp = (a: V): V => v(-a.y, a.x);
 const clamp = (val: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, val));
 const clamp01 = (val: number) => Math.max(0, Math.min(1, val));
 const rng = (a: number, b: number) => a + Math.random() * (b - a);
@@ -126,19 +138,21 @@ function slotRole(slot: number): Role {
 
 type SpeedMode = "LOW" | "MID" | "FAST";
 
-// Set-piece animation types
-type SetPieceType = "throw-in" | "corner" | null;
+type SetPieceType = "throw-in" | "corner" | "free-kick" | null;
 
 interface SetPieceAnim {
   type: SetPieceType;
-  timer: number;       // countdown
+  timer: number;
   duration: number;
   throwerIdx: number;
-  ballTarget: V;       // where ball will go
-  phase: "windup" | "release" | "heading"; // animation phase
+  ballTarget: V;
+  phase: "windup" | "release" | "heading" | "wall-forming" | "fk-run";
   headingTimer: number;
-  headingPlayers: number[]; // indices of players contesting header
-  headingWinner: number;    // index of winner
+  headingPlayers: number[];
+  headingWinner: number;
+  wallPlayers: number[];     // indices of players forming wall
+  fkIsShot: boolean;         // whether the FK will be a shot
+  fkTeam: number;            // team taking the FK
 }
 
 interface Player {
@@ -148,7 +162,7 @@ interface Player {
   isGK: boolean;
   slot: number;
   role: Role;
-  jumpY: number; // visual jump offset for heading animation
+  jumpY: number;
 }
 
 interface Ball {
@@ -156,7 +170,7 @@ interface Ball {
   free: boolean; shot: boolean; dead: number;
   cooldown: number;
   lastTouchTeam: number;
-  lob: number; // > 0 means ball is in the air (visual height for lob passes)
+  lob: number;
 }
 
 interface State {
@@ -167,6 +181,8 @@ interface State {
   flash: number; flashTxt: string; restartT: number;
   speed: SpeedMode;
   setPiece: SetPieceAnim | null;
+  atkLevelBlue: number;  // 1-10
+  atkLevelRed: number;   // 1-10
 }
 
 // ── 4-4-2 Formation ─────────────────────────────────────────
@@ -216,10 +232,21 @@ function mkState(): State {
     flash: 0, flashTxt: "", restartT: 0,
     speed: "MID",
     setPiece: null,
+    atkLevelBlue: 5,
+    atkLevelRed: 5,
   };
 }
 
 // ── Helpers ─────────────────────────────────────────────────
+function getAtkLevel(st: State, team: number): number {
+  return team < 0 ? st.atkLevelBlue : st.atkLevelRed;
+}
+
+// Attack factor: 0.0 (defensive) to 1.0 (all-out attack)
+function atkFactor(st: State, team: number): number {
+  return (getAtkLevel(st, team) - 1) / 9;
+}
+
 function checkGoal(pos: V): number {
   if (pos.x >= P.pitchHalfW - 0.05 && Math.abs(pos.y) <= P.goalHalfH) return 1;
   if (pos.x <= -P.pitchHalfW + 0.05 && Math.abs(pos.y) <= P.goalHalfH) return -1;
@@ -239,7 +266,7 @@ function kick(st: State, dir: V, spd: number, shot: boolean, tgt: V, isLong: boo
   st.trail = { start: { ...b.pos }, end: { ...tgt }, shot, longPass: isLong, t: P.trailDuration };
   b.owner = null; b.free = true; b.shot = shot;
   b.vel = vscl(vnorm(dir), spd); b.dead = 0;
-  b.lob = isLong ? 1.0 : 0; // lob for long passes
+  b.lob = isLong ? 1.0 : 0;
 }
 
 function nearest(st: State, pos: V, teamFilter?: number): number {
@@ -313,7 +340,6 @@ function laneBlocked(st: State, from: V, to: V, team: number): boolean {
   return false;
 }
 
-// Best short pass
 function bestPass(st: State, idx: number, relaxed: boolean = false): number | null {
   const me = st.pl[idx];
   let bi: number | null = null, bs = -Infinity;
@@ -333,7 +359,6 @@ function bestPass(st: State, idx: number, relaxed: boolean = false): number | nu
   return bi;
 }
 
-// Best long pass — targets far teammates, especially FWD/MID making runs
 function bestLongPass(st: State, idx: number): number | null {
   const me = st.pl[idx];
   let bi: number | null = null, bs = -Infinity;
@@ -343,18 +368,16 @@ function bestLongPass(st: State, idx: number): number | null {
     const d = vdist(me.pos, p.pos);
     if (d < P.longPassMinDist || d > P.longPassMaxDist) continue;
     const op = openness(st, p);
-    const gp = -me.team * p.pos.x; // progress toward opponent goal
-    // Prefer FWDs and wide MIDs for long passes
+    const gp = -me.team * p.pos.x;
     let bonus = 0;
     if (p.role === "FWD") bonus = 2.5;
     else if (p.role === "MID" && (p.slot === 5 || p.slot === 8)) bonus = 1.5;
     let sc = op * 1.5 + gp * 0.8 + bonus - d * 0.05;
-    // Long passes fly over defenders, so lane blocking matters less
     if (laneBlocked(st, me.pos, p.pos, me.team)) sc -= 1.0;
     if (P.offsideEnabled && isOffside(st, p, st.ball.pos)) sc -= 10;
     if (sc > bs) { bs = sc; bi = i; }
   }
-  return (bi !== null && bs > 2) ? bi : null; // threshold to avoid bad long passes
+  return (bi !== null && bs > 2) ? bi : null;
 }
 
 function doPassTo(st: State, idx: number, targetIdx: number) {
@@ -380,29 +403,21 @@ function doPassTo(st: State, idx: number, targetIdx: number) {
     tp = vadd(tp, vscl(lead, Math.min(pd * 0.1, 1.2)));
   }
 
-  // ── Context-aware pass accuracy ──
-  // Base error from passAccuracy parameter
   let baseErr = (1 - P.passAccuracy) * 1.5;
-
-  // Bonus 1: Nearest opponent distance — less pressure = more accurate
   let nearestOppDist = Infinity;
   for (const p of st.pl) {
     if (p.team === me.team) continue;
     const d = vdist(me.pos, p.pos);
     if (d < nearestOppDist) nearestOppDist = d;
   }
-  if (nearestOppDist > 5.0) baseErr *= 0.25;       // very open: almost no error
-  else if (nearestOppDist > 3.0) baseErr *= 0.45;   // comfortable space
-  else if (nearestOppDist > 2.0) baseErr *= 0.70;   // some pressure
-  // else: full error under tight pressure
+  if (nearestOppDist > 5.0) baseErr *= 0.25;
+  else if (nearestOppDist > 3.0) baseErr *= 0.45;
+  else if (nearestOppDist > 2.0) baseErr *= 0.70;
 
-  // Bonus 2: Short pass distance — shorter = more accurate
   const passDist = vdist(me.pos, tm.pos);
-  if (passDist < 4.0) baseErr *= 0.5;              // very short pass
-  else if (passDist < 7.0) baseErr *= 0.7;          // medium-short
-  // else: full distance penalty
+  if (passDist < 4.0) baseErr *= 0.5;
+  else if (passDist < 7.0) baseErr *= 0.7;
 
-  // Bonus 3: Own half — safer build-up play
   const inOwnHalf = me.team * me.pos.x > 0;
   if (inOwnHalf) baseErr *= 0.6;
 
@@ -428,7 +443,6 @@ function doLongPassTo(st: State, idx: number, targetIdx: number) {
   }
 
   let tp = { ...tm.pos };
-  // Lead the target more for long passes
   if (tm.act !== "idle") {
     const lead = vnorm(vsub(tm.tgt, tm.pos));
     const pd = vdist(me.pos, tm.pos);
@@ -437,7 +451,7 @@ function doLongPassTo(st: State, idx: number, targetIdx: number) {
   const err = (1 - P.longPassAccuracy) * 2.5;
   tp.x += rng(-err, err); tp.y += rng(-err, err);
   me.face = vnorm(vsub(tp, me.pos));
-  kick(st, me.face, P.longPassSpeed, false, tp, true); // isLong = true
+  kick(st, me.face, P.longPassSpeed, false, tp, true);
 }
 
 function doDribble(st: State, idx: number) {
@@ -473,13 +487,10 @@ function doDribble(st: State, idx: number) {
 function doCross(st: State, idx: number) {
   const me = st.pl[idx];
   const oppGoalX = -me.team * P.pitchHalfW;
-  // Target: near post or far post area in the box
   const nearPost = v(oppGoalX * 0.88, -P.goalHalfH * rng(0.3, 1.2));
   const farPost = v(oppGoalX * 0.88, P.goalHalfH * rng(0.3, 1.2));
-  // Choose near or far post based on winger side
-  const isTopWinger = me.home.y < 0; // LM is top (negative y)
+  const isTopWinger = me.home.y < 0;
   const crossTarget = isTopWinger ? farPost : nearPost;
-  // Find best teammate near the cross target
   let bestIdx: number | null = null;
   let bestDist = Infinity;
   for (let i = 0; i < st.pl.length; i++) {
@@ -490,7 +501,6 @@ function doCross(st: State, idx: number) {
     if (d < bestDist && d < 6) { bestDist = d; bestIdx = i; }
   }
   let tp = bestIdx !== null ? { ...st.pl[bestIdx].pos } : crossTarget;
-  // Lead the target slightly
   if (bestIdx !== null && st.pl[bestIdx].act !== "idle") {
     const lead = vnorm(vsub(st.pl[bestIdx].tgt, st.pl[bestIdx].pos));
     tp = vadd(tp, vscl(lead, 1.0));
@@ -498,7 +508,7 @@ function doCross(st: State, idx: number) {
   const err = 1.2;
   tp.x += rng(-err * 0.5, err * 0.5); tp.y += rng(-err, err);
   me.face = vnorm(vsub(tp, me.pos));
-  kick(st, me.face, P.longPassSpeed * 1.1, false, tp, true); // lob cross
+  kick(st, me.face, P.longPassSpeed * 1.1, false, tp, true);
 }
 
 function decideHasBall(st: State, idx: number) {
@@ -513,9 +523,7 @@ function decideHasBall(st: State, idx: number) {
   const isWinger = me.slot === 5 || me.slot === 8;
   const isWide = Math.abs(me.pos.y) > P.pitchHalfH * 0.45;
 
-  // GK or deep defender: try pass first, consider long pass
   if (me.isGK || inOwnThird) {
-    // Try long pass first when under pressure or from deep
     const lp = bestLongPass(st, idx);
     if (lp !== null && Math.random() < 0.45) {
       doLongPassTo(st, idx, lp); return;
@@ -529,28 +537,20 @@ function decideHasBall(st: State, idx: number) {
     return;
   }
 
-  // ── Winger in attacking third: dribble toward byline or cross ──
+  // Winger in attacking third
   if (isWinger && inAttackingThird) {
-    // If near the byline and wide, cross into the box
     const nearByline = Math.abs(me.pos.x) > P.pitchHalfW * 0.75;
     if (nearByline && isWide) {
-      // 70% cross, 30% cut inside and shoot/pass
-      if (Math.random() < 0.70) {
-        doCross(st, idx); return;
-      }
+      if (Math.random() < 0.70) { doCross(st, idx); return; }
     }
-    // If wide but not at byline yet, dribble toward byline
     if (isWide && !nearByline) {
-      // Dribble forward along the wing
       const bylineDir = vnorm(v(-me.team, 0));
-      const wideKeep = v(0, me.pos.y > 0 ? 0.15 : -0.15); // stay wide
+      const wideKeep = v(0, me.pos.y > 0 ? 0.15 : -0.15);
       const desired = vnorm(vadd(bylineDir, wideKeep));
       me.tgt = pitchClamp(vadd(me.pos, vscl(desired, 4.0)));
-      me.act = "dribble";
-      me.face = desired;
+      me.act = "dribble"; me.face = desired;
       return;
     }
-    // Winger cut inside: try shot or pass
     if (dg < P.shotRange * 1.1 && ag < P.shotAngle * 1.2) {
       const err = (1 - P.shotAccuracy) * 3.0;
       const t = v(gc.x, gc.y + rng(-err, err));
@@ -558,13 +558,10 @@ function decideHasBall(st: State, idx: number) {
       kick(st, me.face, P.shotSpeed, true, t);
       return;
     }
-    // Cross even if not super wide, if in attacking third
-    if (Math.random() < 0.40) {
-      doCross(st, idx); return;
-    }
+    if (Math.random() < 0.40) { doCross(st, idx); return; }
   }
 
-  // 1) SHOT
+  // SHOT
   if (dg < P.shotRange && ag < P.shotAngle) {
     const err = (1 - P.shotAccuracy) * 3.0;
     const t = v(gc.x, gc.y + rng(-err, err));
@@ -573,22 +570,19 @@ function decideHasBall(st: State, idx: number) {
     return;
   }
 
-  // 2) SHORT PASS
+  // SHORT PASS
   const bp = bestPass(st, idx);
   if (bp !== null) {
-    // Consider long pass instead if under pressure and teammate is far forward
     const lp = bestLongPass(st, idx);
-    if (lp !== null && Math.random() < 0.3) {
-      doLongPassTo(st, idx, lp); return;
-    }
+    if (lp !== null && Math.random() < 0.3) { doLongPassTo(st, idx, lp); return; }
     doPassTo(st, idx, bp); return;
   }
 
-  // 2.5) LONG PASS if no short pass available
+  // LONG PASS
   const lp = bestLongPass(st, idx);
   if (lp !== null) { doLongPassTo(st, idx, lp); return; }
 
-  // 3) DRIBBLE
+  // DRIBBLE
   doDribble(st, idx);
 }
 
@@ -596,18 +590,18 @@ function decideNoBall(st: State, idx: number) {
   const me = st.pl[idx];
   const b = st.ball;
   const ballPos = b.pos;
+  const af = atkFactor(st, me.team);
 
   if (me.isGK) {
     const gx = me.team * (P.pitchHalfW - 0.6);
     const gy = clamp(ballPos.y * 0.5, -P.goalHalfH + 0.2, P.goalHalfH - 0.2);
     me.tgt = v(gx, gy);
     me.act = "move";
-    if (b.free && vdist(me.pos, ballPos) < 2.5) {
-      me.tgt = { ...ballPos };
-    }
+    if (b.free && vdist(me.pos, ballPos) < 2.5) { me.tgt = { ...ballPos }; }
     return;
   }
 
+  // Chase loose ball
   if (b.free || (b.owner === null && !b.free)) {
     const d = vdist(me.pos, ballPos);
     let rank = 0;
@@ -616,45 +610,51 @@ function decideNoBall(st: State, idx: number) {
       if (vdist(st.pl[i].pos, ballPos) < d) rank++;
     }
     if (rank < 2 && d < 12) {
-      me.tgt = { ...ballPos };
-      me.act = "move";
-      return;
+      me.tgt = { ...ballPos }; me.act = "move"; return;
     }
   }
 
   const teamHasBall = b.owner !== null && st.pl[b.owner].team === me.team;
+
   if (teamHasBall) {
     const oppGoalX = -me.team * P.pitchHalfW;
     const carrier = st.pl[b.owner!];
     const role = me.role;
     let targetX: number, targetY: number;
 
+    // Attack factor shifts positions forward
+    // af=0 → defensive, af=1 → all-out attack
+    const pushFwd = af * 3.0; // extra forward push based on attack level
+
     if (role === "DEF") {
-      targetX = carrier.pos.x + me.team * 3;
-      targetX = clamp(targetX, me.team < 0 ? -P.pitchHalfW : -P.pitchHalfW * 0.3,
-                                me.team < 0 ? P.pitchHalfW * 0.3 : P.pitchHalfW);
+      // DEF: at low atk level, stay back; at high, push up significantly
+      const baseFwd = carrier.pos.x + me.team * 3;
+      targetX = baseFwd - me.team * pushFwd * 0.7; // push toward opponent goal
+      const minX = me.team < 0 ? -P.pitchHalfW : -P.pitchHalfW * (0.5 - af * 0.3);
+      const maxX = me.team < 0 ? P.pitchHalfW * (0.5 - af * 0.3) : P.pitchHalfW;
+      targetX = clamp(targetX, minX, maxX);
       targetY = me.home.y + clamp(ballPos.y * 0.25, -2.0, 2.0);
     } else if (role === "MID") {
       const isWide = me.slot === 5 || me.slot === 8;
       if (isWide) {
-        // Wingers: push wide and forward in attacking third
         const teamAttacking = -me.team * carrier.pos.x > P.pitchHalfW * 0.15;
         if (teamAttacking) {
-          // Run wide toward the byline for crossing opportunities
           targetX = oppGoalX * rng(0.55, 0.75);
           targetY = me.home.y > 0
-            ? P.pitchHalfH * rng(0.6, 0.85)   // stay wide on their side
+            ? P.pitchHalfH * rng(0.6, 0.85)
             : -P.pitchHalfH * rng(0.6, 0.85);
         } else {
-          targetX = (carrier.pos.x + oppGoalX) * 0.35;
+          targetX = (carrier.pos.x + oppGoalX) * (0.35 + af * 0.1);
           targetY = me.home.y * 0.8 + ballPos.y * 0.2;
         }
       } else {
-        targetX = (carrier.pos.x + oppGoalX) * 0.4;
+        // CM: push forward more with higher attack level
+        targetX = (carrier.pos.x + oppGoalX) * (0.4 + af * 0.15);
         targetY = ballPos.y + (me.home.y > 0 ? rng(1.5, 3.5) : rng(-3.5, -1.5));
       }
     } else {
-      targetX = oppGoalX * 0.65 + rng(-1, 1);
+      // FWD: always push forward, more aggressive with higher attack level
+      targetX = oppGoalX * (0.55 + af * 0.15) + rng(-1, 1);
       targetY = me.home.y + rng(-2, 2);
     }
 
@@ -663,11 +663,14 @@ function decideNoBall(st: State, idx: number) {
     return;
   }
 
+  // Defending
   if (b.owner !== null && st.pl[b.owner].team !== me.team) {
     const carrier = st.pl[b.owner];
     const myGoal = v(me.team * P.pitchHalfW, 0);
     const dc = vdist(me.pos, carrier.pos);
     const role = me.role;
+    // Higher attack level → less defensive retreat
+    const defRetreat = 1.0 - af * 0.3;
 
     if (role === "FWD") {
       if (dc < 5) {
@@ -677,17 +680,17 @@ function decideNoBall(st: State, idx: number) {
       }
     } else if (role === "MID") {
       if (dc < 4.5) {
-        me.tgt = pitchClamp(vlerp(carrier.pos, myGoal, 0.15));
+        me.tgt = pitchClamp(vlerp(carrier.pos, myGoal, 0.15 * defRetreat));
       } else {
         const shift = v(
-          clamp((ballPos.x - me.home.x) * 0.4, -3.5, 3.5),
+          clamp((ballPos.x - me.home.x) * 0.4 * defRetreat, -3.5, 3.5),
           clamp((ballPos.y - me.home.y) * 0.45, -3, 3)
         );
         me.tgt = pitchClamp(vadd(me.home, shift));
       }
     } else {
       const shift = v(
-        clamp((ballPos.x - me.home.x) * 0.25, -2.5, 2.5),
+        clamp((ballPos.x - me.home.x) * 0.25 * defRetreat, -2.5, 2.5),
         clamp((ballPos.y - me.home.y) * 0.5, -3, 3)
       );
       me.tgt = pitchClamp(vadd(me.home, shift));
@@ -696,12 +699,96 @@ function decideNoBall(st: State, idx: number) {
     return;
   }
 
+  // Default: shift toward ball
   const shift = v(
     clamp((ballPos.x - me.home.x) * 0.25, -2.5, 2.5),
     clamp((ballPos.y - me.home.y) * 0.35, -2, 2)
   );
   me.tgt = pitchClamp(vadd(me.home, shift));
   me.act = "move";
+}
+
+// ── Foul & Free-kick ────────────────────────────────────────
+function triggerFoul(st: State, fouledIdx: number, foulerIdx: number) {
+  const fouled = st.pl[fouledIdx];
+  const fkPos = pitchClamp({ ...fouled.pos });
+  const fkTeam = fouled.team;
+  const oppTeam = -fkTeam;
+
+  st.ball.vel = v(0, 0); st.ball.free = false; st.ball.shot = false;
+  st.ball.owner = null; st.ball.lob = 0;
+  st.ball.pos = { ...fkPos };
+  st.flash = 1.5; st.flashTxt = "FOUL";
+
+  // Determine if this is a direct shot opportunity
+  const oppGoal = v(-fkTeam * P.pitchHalfW, 0);
+  const distToGoal = vdist(fkPos, oppGoal);
+  const fkIsShot = distToGoal < P.directFKShotRange && Math.random() < P.directFKShotChance;
+
+  // Find FK taker (nearest outfield teammate)
+  const takerIdx = nearestOutfield(st, fkPos, fkTeam);
+  st.pl[takerIdx].pos = vadd(fkPos, vscl(vnorm(vsub(fkPos, oppGoal)), 0.4));
+  st.pl[takerIdx].face = vnorm(vsub(oppGoal, fkPos));
+
+  // Build wall
+  const wallPlayers: number[] = [];
+  if (fkIsShot) {
+    const wallDir = vnorm(vsub(fkPos, oppGoal));
+    const wallCenter = vadd(fkPos, vscl(vnorm(vsub(oppGoal, fkPos)), P.wallDistance));
+    const perpDir = vperp(wallDir);
+    const numWall = distToGoal < 4.5 ? 4 : P.wallPlayerCount;
+
+    // Find closest defenders to wall position
+    const candidates: { idx: number; dist: number }[] = [];
+    for (let i = 0; i < st.pl.length; i++) {
+      const p = st.pl[i];
+      if (p.team !== oppTeam || p.isGK) continue;
+      candidates.push({ idx: i, dist: vdist(p.pos, wallCenter) });
+    }
+    candidates.sort((a, b) => a.dist - b.dist);
+
+    for (let w = 0; w < Math.min(numWall, candidates.length); w++) {
+      const wi = candidates[w].idx;
+      wallPlayers.push(wi);
+      const offset = (w - (numWall - 1) / 2) * 0.55;
+      st.pl[wi].tgt = pitchClamp(vadd(wallCenter, vscl(perpDir, offset)));
+      st.pl[wi].act = "move";
+    }
+  }
+
+  // FK target
+  let ballTarget: V;
+  if (fkIsShot) {
+    const err = (1 - P.shotAccuracy) * 2.5;
+    ballTarget = v(oppGoal.x, rng(-P.goalHalfH + 0.2, P.goalHalfH - 0.2) + rng(-err, err));
+  } else {
+    const bp = bestPass(st, takerIdx, true);
+    if (bp !== null) {
+      ballTarget = { ...st.pl[bp].pos };
+    } else {
+      ballTarget = vadd(fkPos, vscl(vnorm(vsub(oppGoal, fkPos)), 5));
+    }
+  }
+
+  // Give ball to taker temporarily
+  give(st.ball, takerIdx, st.pl);
+  st.ball.cooldown = P.freeKickNoIntercept;
+
+  // Start set piece animation
+  st.setPiece = {
+    type: "free-kick",
+    timer: fkIsShot ? 1.2 : 0.8, // longer for wall forming
+    duration: fkIsShot ? 1.2 : 0.8,
+    throwerIdx: takerIdx,
+    ballTarget,
+    phase: fkIsShot ? "wall-forming" : "windup",
+    headingTimer: 0,
+    headingPlayers: [],
+    headingWinner: -1,
+    wallPlayers,
+    fkIsShot,
+    fkTeam,
+  };
 }
 
 // ── Kick-off ────────────────────────────────────────────────
@@ -715,7 +802,6 @@ function doKickOff(st: State) {
     p.face = v(-p.team, 0); p.dt = Math.random() * P.decisionInterval;
     p.jumpY = 0;
   }
-  // FIX: koSide is the team that kicks off (the team that conceded)
   const ki = nearest(st, v(0, 0), st.koSide);
   give(st.ball, ki, st.pl);
 }
@@ -723,7 +809,6 @@ function doKickOff(st: State) {
 // ── Set-piece animations ────────────────────────────────────
 function startThrowIn(st: State, throwerIdx: number, targetPos: V) {
   const thrower = st.pl[throwerIdx];
-  // Move thrower to the sideline
   thrower.face = vnorm(vsub(targetPos, thrower.pos));
   st.setPiece = {
     type: "throw-in",
@@ -735,6 +820,9 @@ function startThrowIn(st: State, throwerIdx: number, targetPos: V) {
     headingTimer: 0,
     headingPlayers: [],
     headingWinner: -1,
+    wallPlayers: [],
+    fkIsShot: false,
+    fkTeam: 0,
   };
 }
 
@@ -749,6 +837,9 @@ function startCornerKick(st: State, kickerIdx: number, targetPos: V) {
     headingTimer: P.headingContestDur,
     headingPlayers: [],
     headingWinner: -1,
+    wallPlayers: [],
+    fkIsShot: false,
+    fkTeam: 0,
   };
 }
 
@@ -758,52 +849,100 @@ function updateSetPiece(st: State, dtSim: number) {
 
   sp.timer -= dtSim;
 
-  if (sp.phase === "windup") {
-    // Thrower/kicker raises arms (visual only via jumpY)
+  // ── Free-kick: wall-forming phase ──
+  if (sp.type === "free-kick" && sp.phase === "wall-forming") {
+    // Wait for wall to form, then switch to run-up
+    const thrower = st.pl[sp.throwerIdx];
+    thrower.jumpY = 0;
+
+    // Move wall players into position
+    let wallReady = true;
+    for (const wi of sp.wallPlayers) {
+      const p = st.pl[wi];
+      if (vdist(p.pos, p.tgt) > 0.3) wallReady = false;
+    }
+
+    if (sp.timer <= 0 || wallReady) {
+      sp.phase = "fk-run";
+      sp.timer = 0.4; // run-up time
+      sp.duration = 0.4;
+    }
+    return;
+  }
+
+  // ── Free-kick: run-up phase ──
+  if (sp.type === "free-kick" && sp.phase === "fk-run") {
     const thrower = st.pl[sp.throwerIdx];
     const progress = 1 - (sp.timer / sp.duration);
-    thrower.jumpY = Math.sin(progress * Math.PI) * 0.4; // bob up
+    thrower.jumpY = Math.sin(progress * Math.PI) * 0.2;
 
     if (sp.timer <= 0) {
-      // Release the ball
+      thrower.jumpY = 0;
+      const b = st.ball;
+      b.owner = null; b.free = true;
+
+      if (sp.fkIsShot) {
+        // Direct free-kick shot
+        const dir = vnorm(vsub(sp.ballTarget, b.pos));
+        const err = (1 - P.shotAccuracy) * 2.0;
+        const tgt = v(sp.ballTarget.x, sp.ballTarget.y + rng(-err, err));
+        b.vel = vscl(vnorm(vsub(tgt, b.pos)), P.shotSpeed * 0.9);
+        b.shot = true;
+        b.lob = 0;
+        st.trail = { start: { ...b.pos }, end: tgt, shot: true, longPass: false, t: P.trailDuration * 1.5 };
+      } else {
+        // Free-kick pass
+        const dir = vnorm(vsub(sp.ballTarget, b.pos));
+        const err = 0.6;
+        const tgt = v(sp.ballTarget.x + rng(-err, err), sp.ballTarget.y + rng(-err, err));
+        b.vel = vscl(vnorm(vsub(tgt, b.pos)), P.passSpeed);
+        b.shot = false;
+        b.lob = 0;
+        st.trail = { start: { ...b.pos }, end: tgt, shot: false, longPass: false, t: P.trailDuration };
+      }
+      b.cooldown = 0.3;
+      b.lastTouchTeam = sp.fkTeam;
+      st.setPiece = null;
+    }
+    return;
+  }
+
+  // ── Throw-in / Corner ──
+  if (sp.phase === "windup") {
+    const thrower = st.pl[sp.throwerIdx];
+    const progress = 1 - (sp.timer / sp.duration);
+    thrower.jumpY = Math.sin(progress * Math.PI) * 0.4;
+
+    if (sp.timer <= 0) {
       sp.phase = "release";
       thrower.jumpY = 0;
       const b = st.ball;
-      b.owner = null;
-      b.free = true;
-      b.shot = false;
+      b.owner = null; b.free = true; b.shot = false;
 
       if (sp.type === "throw-in") {
-        // Throw-in: ball goes to target, moderate speed
-        const dir = vnorm(vsub(sp.ballTarget, b.pos));
         const err = 0.4;
         const tgt = v(sp.ballTarget.x + rng(-err, err), sp.ballTarget.y + rng(-err, err));
         b.vel = vscl(vnorm(vsub(tgt, b.pos)), P.passSpeed * 0.7);
-        b.lob = 0.5; // slight lob
+        b.lob = 0.5;
         st.trail = { start: { ...b.pos }, end: tgt, shot: false, longPass: false, t: P.trailDuration };
         b.cooldown = 0.3;
       } else if (sp.type === "corner") {
-        // Corner kick: lob into the box
-        const dir = vnorm(vsub(sp.ballTarget, b.pos));
         const err = 1.0;
         const tgt = v(sp.ballTarget.x + rng(-err, err), sp.ballTarget.y + rng(-err, err));
         b.vel = vscl(vnorm(vsub(tgt, b.pos)), P.longPassSpeed * 1.1);
-        b.lob = 1.0; // high lob
+        b.lob = 1.0;
         st.trail = { start: { ...b.pos }, end: tgt, shot: false, longPass: true, t: P.trailDuration * 1.5 };
         b.cooldown = 0.2;
 
-        // Gather players for heading contest near target
         sp.headingPlayers = [];
         for (let i = 0; i < st.pl.length; i++) {
           if (st.pl[i].isGK) continue;
           if (vdist(st.pl[i].pos, sp.ballTarget) < P.headingContestRadius) {
             sp.headingPlayers.push(i);
-            // Move them toward the target
             st.pl[i].tgt = vadd(sp.ballTarget, v(rng(-0.5, 0.5), rng(-0.5, 0.5)));
             st.pl[i].act = "move";
           }
         }
-        // Also send some attackers and defenders toward the target
         const kickerTeam = st.pl[sp.throwerIdx].team;
         for (let i = 0; i < st.pl.length; i++) {
           const p = st.pl[i];
@@ -815,20 +954,16 @@ function updateSetPiece(st: State, dtSim: number) {
             p.act = "move";
           }
         }
-
         sp.headingTimer = P.headingContestDur;
       }
     }
   } else if (sp.phase === "release") {
-    // Ball is in flight. For corners, wait for ball to arrive near target then do heading
     if (sp.type === "corner") {
       const distToTarget = vdist(st.ball.pos, sp.ballTarget);
       if (distToTarget < 1.5 || vlen(st.ball.vel) < 2) {
-        // Ball arrived — heading contest!
         sp.phase = "heading";
         sp.headingTimer = P.headingContestDur;
 
-        // Find contestants near the ball
         const contestants: number[] = [];
         for (let i = 0; i < st.pl.length; i++) {
           if (st.pl[i].isGK && vdist(st.pl[i].pos, st.ball.pos) > 2) continue;
@@ -838,60 +973,45 @@ function updateSetPiece(st: State, dtSim: number) {
         }
 
         if (contestants.length > 0) {
-          // Pick winner: closest player with some randomness
           let bestIdx = contestants[0];
           let bestScore = -Infinity;
           for (const ci of contestants) {
-            const p = st.pl[ci];
-            const dist = vdist(p.pos, st.ball.pos);
-            const score = -dist + rng(0, 1.5); // randomness for contest
+            const dist = vdist(st.pl[ci].pos, st.ball.pos);
+            const score = -dist + rng(0, 1.5);
             if (score > bestScore) { bestScore = score; bestIdx = ci; }
           }
           sp.headingWinner = bestIdx;
           sp.headingPlayers = contestants;
-
-          // All contestants jump
           for (const ci of contestants) {
             st.pl[ci].jumpY = 0.5 + rng(0, 0.3);
           }
         } else {
-          // No one near — ball just lands
           st.setPiece = null;
         }
       }
     } else {
-      // Throw-in: just let ball physics handle it
       if (vlen(st.ball.vel) < 1 || st.ball.owner !== null) {
         st.setPiece = null;
       }
     }
   } else if (sp.phase === "heading") {
     sp.headingTimer -= dtSim;
-
-    // Animate jumps
     for (const ci of sp.headingPlayers) {
       const progress = 1 - (sp.headingTimer / P.headingContestDur);
       st.pl[ci].jumpY = Math.max(0, Math.sin(progress * Math.PI) * 0.6);
     }
 
     if (sp.headingTimer <= 0) {
-      // Heading resolves
-      for (const ci of sp.headingPlayers) {
-        st.pl[ci].jumpY = 0;
-      }
+      for (const ci of sp.headingPlayers) { st.pl[ci].jumpY = 0; }
 
       if (sp.headingWinner >= 0) {
         const winner = st.pl[sp.headingWinner];
         const b = st.ball;
         b.lob = 0;
-
-        // Winner heads the ball
         const oppGoal = v(-winner.team * P.pitchHalfW, 0);
         const distToGoal = vdist(winner.pos, oppGoal);
 
         if (distToGoal < P.shotRange * 1.2) {
-          // Header on goal!
-          const err = 2.0;
           const tgt = v(oppGoal.x, rng(-P.goalHalfH + 0.2, P.goalHalfH - 0.2));
           b.pos = { ...winner.pos };
           b.vel = vscl(vnorm(vsub(tgt, winner.pos)), P.shotSpeed * 0.7);
@@ -899,7 +1019,6 @@ function updateSetPiece(st: State, dtSim: number) {
           b.lastTouchTeam = winner.team;
           st.trail = { start: { ...winner.pos }, end: tgt, shot: true, longPass: false, t: P.trailDuration };
         } else {
-          // Header clearance/pass
           give(b, sp.headingWinner, st.pl);
           b.cooldown = 0.4;
         }
@@ -921,12 +1040,10 @@ function update(st: State, dt: number) {
     return;
   }
 
-  // Set-piece animation runs even during pause
+  // Set-piece animation
   if (st.setPiece) {
     updateSetPiece(st, dtSim);
-    // During set-piece, still update ball physics and player movement
-    if (st.setPiece && st.setPiece.phase !== "windup") {
-      // Ball physics during set piece flight
+    if (st.setPiece && (st.setPiece.phase === "release" || st.setPiece.phase === "heading")) {
       const b = st.ball;
       if (b.free) {
         b.pos = vadd(b.pos, vscl(b.vel, dtSim));
@@ -937,19 +1054,16 @@ function update(st: State, dt: number) {
         }
         if (b.cooldown > 0) b.cooldown -= dtSim;
 
-        // Check goal during set piece
         const gs = checkGoal(b.pos);
         if (gs !== 0) {
           if (gs > 0) st.sL++; else st.sR++;
-          // FIX: conceding team kicks off
-          st.koSide = (gs > 0) ? 1 : -1; // team=1 (RED) conceded if gs>0 (ball in right goal), so RED kicks off
+          st.koSide = (gs > 0) ? 1 : -1;
           st.paused = true; st.pauseT = P.goalResetDelay;
           st.flash = 1.8; st.flashTxt = "GOAL!";
           st.setPiece = null;
           return;
         }
 
-        // Intercept during set piece (after cooldown)
         if (b.cooldown <= 0) {
           for (let i = 0; i < st.pl.length; i++) {
             if (b.owner !== null) break;
@@ -962,7 +1076,6 @@ function update(st: State, dt: number) {
         }
       }
 
-      // Player movement during set piece
       for (const p of st.pl) {
         if (p.act !== "idle") {
           const spd = P.moveSpeed;
@@ -975,7 +1088,21 @@ function update(st: State, dt: number) {
         }
       }
     }
-    if (st.setPiece) return; // still in set piece
+    // During wall-forming / fk-run, still move players
+    if (st.setPiece && (st.setPiece.phase === "wall-forming" || st.setPiece.phase === "fk-run" || st.setPiece.phase === "windup")) {
+      for (const p of st.pl) {
+        if (p.act !== "idle") {
+          const spd = P.moveSpeed;
+          const d = vsub(p.tgt, p.pos);
+          if (vlen(d) < 0.08) { p.act = "idle"; }
+          else {
+            p.face = vnorm(d);
+            p.pos = pitchClamp(vmove(p.pos, p.tgt, spd * dtSim));
+          }
+        }
+      }
+    }
+    if (st.setPiece) return;
   }
 
   if (st.paused) {
@@ -1057,26 +1184,21 @@ function update(st: State, dt: number) {
     const outX = Math.abs(b.pos.x) > P.pitchHalfW + P.outMargin;
 
     if (P.outEnabled && (outY || outX)) {
-      // Check goal first
       const gs = checkGoal(b.pos);
       if (gs !== 0) {
         if (gs > 0) st.sL++; else st.sR++;
-        // FIX: conceding team kicks off from centre
-        // gs > 0 means ball entered right goal → BLUE scored → RED kicks off
-        // gs < 0 means ball entered left goal → RED scored → BLUE kicks off
         st.koSide = (gs > 0) ? 1 : -1;
         st.paused = true; st.pauseT = P.goalResetDelay;
         st.flash = 1.8; st.flashTxt = "GOAL!";
         return;
       }
 
-      // Out of play
       b.vel = v(0, 0); b.free = false; b.shot = false; b.owner = null; b.lob = 0;
 
       if (outY && !outX) {
         // THROW-IN
         st.flashTxt = "THROW IN"; st.flash = 1.0;
-        const restartTeam = -b.lastTouchTeam; // opposite of last touch
+        const restartTeam = -b.lastTouchTeam;
         const outSign = b.pos.y > 0 ? 1 : -1;
         const restartY = outSign * (P.pitchHalfH - P.throwInInset);
         const restartX = clamp(b.pos.x, -P.pitchHalfW + 0.5, P.pitchHalfW - 0.5);
@@ -1085,22 +1207,19 @@ function update(st: State, dt: number) {
         give(b, ri, st.pl);
         b.cooldown = P.restartNoIntercept;
 
-        // Move thrower to ball position and start animation
         st.pl[ri].pos = { ...b.pos };
-        st.pl[ri].face = v(0, -outSign); // face infield
+        st.pl[ri].face = v(0, -outSign);
 
-        // Find a nearby teammate as throw target (capped by throwInMaxDist)
         let throwTarget = vadd(b.pos, v(-restartTeam * 3, -outSign * 2));
         let bestScore = -Infinity;
         for (let i = 0; i < st.pl.length; i++) {
           if (i === ri || st.pl[i].team !== restartTeam || st.pl[i].isGK) continue;
           const d = vdist(st.pl[i].pos, b.pos);
-          if (d > P.throwInMaxDist || d < 1.0) continue; // enforce max throw distance
+          if (d > P.throwInMaxDist || d < 1.0) continue;
           const op = openness(st, st.pl[i]);
           const sc = op * 2 - d * 0.3;
           if (sc > bestScore) { bestScore = sc; throwTarget = { ...st.pl[i].pos }; }
         }
-        // Final safety: clamp target distance to throwInMaxDist
         const throwDist = vdist(b.pos, throwTarget);
         if (throwDist > P.throwInMaxDist) {
           const dir = vnorm(vsub(throwTarget, b.pos));
@@ -1111,7 +1230,6 @@ function update(st: State, dt: number) {
         return;
       } else if (outX) {
         const goalSide = b.pos.x > 0 ? 1 : -1;
-        // BLUE (team=-1) defends left goal (goalSide=-1), RED (team=+1) defends right goal (goalSide=+1)
         const defendingTeam = goalSide;
         const attackingTeam = -defendingTeam;
 
@@ -1125,14 +1243,11 @@ function update(st: State, dt: number) {
           give(b, ri, st.pl);
           b.cooldown = P.restartNoIntercept;
 
-          // Move kicker to corner
           st.pl[ri].pos = { ...b.pos };
 
-          // Target: near post / centre of penalty area
           const targetX = goalSide * (P.pitchHalfW - P.penAreaW * 0.6);
           const targetY = rng(-P.penAreaH * 0.5, P.penAreaH * 0.5);
 
-          // Move attackers and defenders toward the box
           for (let i = 0; i < st.pl.length; i++) {
             const p = st.pl[i];
             if (p.isGK || i === ri) continue;
@@ -1209,14 +1324,22 @@ function update(st: State, dt: number) {
   for (let i = 0; i < st.pl.length; i++) {
     const p = st.pl[i];
 
+    // Intercept with foul check
     if (b.cooldown > 0) { /* skip intercept */ }
     else if (b.owner !== i && b.free && vdist(p.pos, b.pos) < P.interceptRadius) {
-      // Don't intercept lobbed balls easily
       if (b.lob < 0.3) give(b, i, st.pl);
     }
     else if (b.owner !== null && b.owner !== i && !b.free && b.cooldown <= 0
       && st.pl[b.owner].team !== p.team && vdist(p.pos, b.pos) < P.interceptRadius * 0.65) {
-      give(b, i, st.pl);
+      // Tackle attempt — may cause foul
+      const foulChance = st.pl[b.owner].act === "dribble" ? P.foulChanceOnDribble : P.foulChanceOnTackle;
+      if (Math.random() < foulChance) {
+        // FOUL!
+        triggerFoul(st, b.owner, i);
+        return;
+      } else {
+        give(b, i, st.pl);
+      }
     }
 
     p.dt -= dtSim;
@@ -1236,7 +1359,6 @@ function update(st: State, dt: number) {
       }
     }
 
-    // Decay jump
     if (p.jumpY > 0) p.jumpY = Math.max(0, p.jumpY - dtSim * 3);
   }
 }
@@ -1252,13 +1374,21 @@ const COL = {
   rA: "rgba(37,99,235,0.5)", rB: "rgba(220,38,38,0.5)",
 };
 
-function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State, speedBtnBounds: { x: number; y: number; w: number; h: number }) {
+interface UIBounds { x: number; y: number; w: number; h: number }
+
+function render(
+  ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State,
+  speedBtnBounds: UIBounds,
+  atkBlueBounds: { minus: UIBounds; plus: UIBounds },
+  atkRedBounds: { minus: UIBounds; plus: UIBounds },
+) {
   const W = c.width, H = c.height;
   const cW = P.pitchHalfW * 2 + 2.5, cH = P.pitchHalfH * 2 + 3.5;
   const sc = Math.min(W / cW, H / cH);
   const ox = W / 2, oy = H / 2 + 0.75 * sc;
   const w2s = (p: V): V => v(ox + p.x * sc, oy - p.y * sc);
   const s = (n: number) => n * sc;
+  const dpr = window.devicePixelRatio || 1;
 
   ctx.fillStyle = COL.bg; ctx.fillRect(0, 0, W, H);
 
@@ -1338,6 +1468,19 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State, 
     ctx.beginPath(); ctx.arc(ps.x, ps.y, s(0.06), 0, Math.PI * 2); ctx.fill();
   }
 
+  // Wall indicator (during free-kick)
+  if (st.setPiece && st.setPiece.type === "free-kick" && st.setPiece.wallPlayers.length > 0) {
+    for (const wi of st.setPiece.wallPlayers) {
+      const wp = w2s(st.pl[wi].pos);
+      const wr = s(P.playerRadius * 0.5);
+      ctx.strokeStyle = "rgba(255,255,100,0.5)";
+      ctx.lineWidth = Math.max(1, s(0.03));
+      ctx.setLineDash([s(0.05), s(0.05)]);
+      ctx.beginPath(); ctx.arc(wp.x, wp.y, s(P.playerRadius) * 1.8, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
   // Trail
   if (st.trail) {
     const tr = st.trail, a = tr.t / P.trailDuration;
@@ -1346,7 +1489,6 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State, 
       ctx.strokeStyle = `rgba(255,100,30,${(0.65 * a).toFixed(2)})`;
       ctx.lineWidth = Math.max(2, s(0.08));
     } else if (tr.longPass) {
-      // Long pass: dashed arc-like trail in yellow
       ctx.strokeStyle = `rgba(255,220,80,${(0.5 * a).toFixed(2)})`;
       ctx.lineWidth = Math.max(1.5, s(0.05));
       ctx.setLineDash([s(0.18), s(0.1)]);
@@ -1356,9 +1498,8 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State, 
       ctx.setLineDash([s(0.12), s(0.12)]);
     }
     if (tr.longPass) {
-      // Draw curved trail for long pass
       const mx = (ts.x + te.x) / 2;
-      const my = Math.min(ts.y, te.y) - s(1.5); // arc upward
+      const my = Math.min(ts.y, te.y) - s(1.5);
       ctx.beginPath(); ctx.moveTo(ts.x, ts.y);
       ctx.quadraticCurveTo(mx, my, te.x, te.y); ctx.stroke();
     } else {
@@ -1370,13 +1511,12 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State, 
   // Players
   for (let i = 0; i < st.pl.length; i++) {
     const p = st.pl[i];
-    const jumpOffset = p.jumpY * sc; // visual jump
+    const jumpOffset = p.jumpY * sc;
     const ps = w2s(p.pos);
-    ps.y -= jumpOffset; // move up when jumping
+    ps.y -= jumpOffset;
     const r = s(P.playerRadius);
     const isA = p.team < 0, col = isA ? COL.tA : COL.tB, colL = isA ? COL.tAL : COL.tBL;
 
-    // Jump shadow
     if (p.jumpY > 0.05) {
       const shadowPs = w2s(p.pos);
       ctx.fillStyle = `rgba(0,0,0,${0.2 * p.jumpY})`;
@@ -1385,7 +1525,6 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State, 
       ctx.fill();
     }
 
-    // Possession ring
     if (st.ball.owner === i) {
       ctx.strokeStyle = isA ? COL.rA : COL.rB;
       ctx.lineWidth = Math.max(2, s(0.05));
@@ -1396,7 +1535,6 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State, 
     // Throw-in arm animation
     if (st.setPiece && st.setPiece.type === "throw-in" && st.setPiece.throwerIdx === i && st.setPiece.phase === "windup") {
       const progress = 1 - (st.setPiece.timer / st.setPiece.duration);
-      // Draw arms above head
       ctx.strokeStyle = colL;
       ctx.lineWidth = Math.max(2, s(0.04));
       const armAngle = -Math.PI / 2 + Math.sin(progress * Math.PI) * 0.8;
@@ -1426,12 +1564,11 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State, 
   // Ball
   {
     const b = st.ball;
-    const lobOffset = b.lob * sc * 1.2; // visual height
+    const lobOffset = b.lob * sc * 1.2;
     const bs = w2s(b.pos);
     bs.y -= lobOffset;
-    const br = s(P.ballRadius + b.lob * 0.05); // slightly bigger when in air
+    const br = s(P.ballRadius + b.lob * 0.05);
 
-    // Shadow (on ground)
     if (b.lob > 0.05) {
       const groundBs = w2s(b.pos);
       ctx.fillStyle = `rgba(0,0,0,${0.15 * (1 - b.lob * 0.5)})`;
@@ -1462,7 +1599,7 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State, 
     }
   }
 
-  // HUD
+  // ── HUD ──
   const hH = s(0.9), hY = s(0.25), hW = Math.min(W * 0.55, s(9)), hX = (W - hW) / 2;
   ctx.fillStyle = COL.hBg;
   const hR = s(0.12);
@@ -1512,7 +1649,7 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State, 
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   ctx.fillText(ts, W / 2, tbY + tbH / 2);
 
-  // Speed toggle
+  // ── Speed toggle (top-right) ──
   const speedLabel = `SPEED: ${st.speed}`;
   const spFontSize = Math.max(9, s(0.22));
   ctx.font = `bold ${spFontSize}px "Roboto Condensed","Arial Narrow",sans-serif`;
@@ -1523,15 +1660,14 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State, 
   const spX = W - spW - s(0.3);
   const spY = s(0.3);
 
-  const dpr = window.devicePixelRatio || 1;
   speedBtnBounds.x = spX / dpr;
   speedBtnBounds.y = spY / dpr;
   speedBtnBounds.w = spW / dpr;
   speedBtnBounds.h = spH / dpr;
 
   ctx.fillStyle = "rgba(10,10,20,0.75)";
-  ctx.beginPath();
   const spR = s(0.08);
+  ctx.beginPath();
   ctx.moveTo(spX + spR, spY); ctx.lineTo(spX + spW - spR, spY);
   ctx.quadraticCurveTo(spX + spW, spY, spX + spW, spY + spR);
   ctx.lineTo(spX + spW, spY + spH - spR);
@@ -1541,7 +1677,6 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State, 
   ctx.lineTo(spX, spY + spR);
   ctx.quadraticCurveTo(spX, spY, spX + spR, spY);
   ctx.closePath(); ctx.fill();
-
   ctx.strokeStyle = "rgba(255,255,255,0.2)"; ctx.lineWidth = 1; ctx.stroke();
 
   const speedColors: Record<string, string> = { LOW: "#60a5fa", MID: "#fbbf24", FAST: "#f87171" };
@@ -1549,6 +1684,105 @@ function render(ctx: CanvasRenderingContext2D, c: HTMLCanvasElement, st: State, 
   ctx.font = `bold ${spFontSize}px "Roboto Condensed","Arial Narrow",sans-serif`;
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   ctx.fillText(speedLabel, spX + spW / 2, spY + spH / 2);
+
+  // ── Attack Level Controls (bottom-left and bottom-right) ──
+  const drawAtkControl = (
+    team: "BLUE" | "RED",
+    level: number,
+    baseX: number,
+    baseY: number,
+    bounds: { minus: UIBounds; plus: UIBounds }
+  ) => {
+    const panelW = s(3.8);
+    const panelH = s(1.1);
+    const bR = s(0.08);
+
+    // Panel background
+    ctx.fillStyle = "rgba(10,10,20,0.80)";
+    ctx.beginPath();
+    ctx.moveTo(baseX + bR, baseY); ctx.lineTo(baseX + panelW - bR, baseY);
+    ctx.quadraticCurveTo(baseX + panelW, baseY, baseX + panelW, baseY + bR);
+    ctx.lineTo(baseX + panelW, baseY + panelH - bR);
+    ctx.quadraticCurveTo(baseX + panelW, baseY + panelH, baseX + panelW - bR, baseY + panelH);
+    ctx.lineTo(baseX + bR, baseY + panelH);
+    ctx.quadraticCurveTo(baseX, baseY + panelH, baseX, baseY + panelH - bR);
+    ctx.lineTo(baseX, baseY + bR);
+    ctx.quadraticCurveTo(baseX, baseY, baseX + bR, baseY);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.15)"; ctx.lineWidth = 1; ctx.stroke();
+
+    // Team color accent
+    const accentCol = team === "BLUE" ? COL.tA : COL.tB;
+    ctx.fillStyle = accentCol;
+    ctx.fillRect(baseX, baseY, s(0.08), panelH);
+
+    // Label
+    const labelFont = Math.max(8, s(0.18));
+    ctx.fillStyle = team === "BLUE" ? COL.tAL : COL.tBL;
+    ctx.font = `bold ${labelFont}px "Roboto Condensed","Arial Narrow",sans-serif`;
+    ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    ctx.fillText(`${team} ATK`, baseX + s(0.2), baseY + panelH * 0.3);
+
+    // Level bar
+    const barX = baseX + s(0.2);
+    const barY = baseY + panelH * 0.55;
+    const barW = panelW - s(0.4);
+    const barH = s(0.22);
+
+    // Minus button
+    const btnSize = s(0.35);
+    const minusX = barX;
+    const minusY = barY;
+    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    ctx.fillRect(minusX, minusY, btnSize, barH);
+    ctx.fillStyle = "#fff";
+    ctx.font = `bold ${Math.max(10, s(0.2))}px sans-serif`;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("−", minusX + btnSize / 2, minusY + barH / 2);
+    bounds.minus = { x: minusX / dpr, y: minusY / dpr, w: btnSize / dpr, h: barH / dpr };
+
+    // Plus button
+    const plusX = barX + barW - btnSize;
+    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    ctx.fillRect(plusX, minusY, btnSize, barH);
+    ctx.fillStyle = "#fff";
+    ctx.fillText("+", plusX + btnSize / 2, minusY + barH / 2);
+    bounds.plus = { x: plusX / dpr, y: minusY / dpr, w: btnSize / dpr, h: barH / dpr };
+
+    // Level segments
+    const segStart = minusX + btnSize + s(0.08);
+    const segEnd = plusX - s(0.08);
+    const segW = (segEnd - segStart) / 10;
+    for (let lv = 1; lv <= 10; lv++) {
+      const sx = segStart + (lv - 1) * segW;
+      if (lv <= level) {
+        // Filled: gradient from green (1) to red (10)
+        const t = (lv - 1) / 9;
+        const r = Math.round(40 + t * 200);
+        const g = Math.round(180 - t * 140);
+        const bl = Math.round(80 - t * 50);
+        ctx.fillStyle = `rgb(${r},${g},${bl})`;
+      } else {
+        ctx.fillStyle = "rgba(255,255,255,0.08)";
+      }
+      ctx.fillRect(sx + 1, minusY + 1, segW - 2, barH - 2);
+    }
+
+    // Level number
+    ctx.fillStyle = "#fff";
+    ctx.font = `bold ${Math.max(9, s(0.18))}px "Roboto Mono",monospace`;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(String(level), barX + barW / 2, barY + barH / 2);
+  };
+
+  // Position: bottom-left for BLUE, bottom-right for RED
+  const atkPanelW = s(3.8);
+  const atkPanelH = s(1.1);
+  const atkMargin = s(0.3);
+  const atkY = H - atkPanelH - atkMargin;
+
+  drawAtkControl("BLUE", st.atkLevelBlue, atkMargin, atkY, atkBlueBounds);
+  drawAtkControl("RED", st.atkLevelRed, W - atkPanelW - atkMargin, atkY, atkRedBounds);
 }
 
 // ── Component ───────────────────────────────────────────────
@@ -1556,24 +1790,54 @@ export default function Home() {
   const ref = useRef<HTMLCanvasElement>(null);
   const stRef = useRef<State>(mkState());
   const ltRef = useRef(0);
-  const speedBtnRef = useRef({ x: 0, y: 0, w: 0, h: 0 });
+  const speedBtnRef = useRef<UIBounds>({ x: 0, y: 0, w: 0, h: 0 });
+  const atkBlueRef = useRef<{ minus: UIBounds; plus: UIBounds }>({
+    minus: { x: 0, y: 0, w: 0, h: 0 },
+    plus: { x: 0, y: 0, w: 0, h: 0 },
+  });
+  const atkRedRef = useRef<{ minus: UIBounds; plus: UIBounds }>({
+    minus: { x: 0, y: 0, w: 0, h: 0 },
+    plus: { x: 0, y: 0, w: 0, h: 0 },
+  });
 
   const handleClick = useCallback((e: MouseEvent | TouchEvent) => {
-    const bounds = speedBtnRef.current;
     let cx: number, cy: number;
     if ("touches" in e) {
       cx = e.touches[0]?.clientX ?? (e as TouchEvent).changedTouches[0]?.clientX ?? 0;
       cy = e.touches[0]?.clientY ?? (e as TouchEvent).changedTouches[0]?.clientY ?? 0;
     } else {
-      cx = e.clientX;
-      cy = e.clientY;
+      cx = e.clientX; cy = e.clientY;
     }
-    if (cx >= bounds.x && cx <= bounds.x + bounds.w && cy >= bounds.y && cy <= bounds.y + bounds.h) {
-      const st = stRef.current;
+
+    const hitTest = (b: UIBounds) => cx >= b.x && cx <= b.x + b.w && cy >= b.y && cy <= b.y + b.h;
+    const st = stRef.current;
+
+    // Speed toggle
+    if (hitTest(speedBtnRef.current)) {
       const cycle: SpeedMode[] = ["LOW", "MID", "FAST"];
       const idx = cycle.indexOf(st.speed);
       st.speed = cycle[(idx + 1) % 3];
-      e.preventDefault();
+      e.preventDefault(); return;
+    }
+
+    // BLUE attack level
+    if (hitTest(atkBlueRef.current.minus)) {
+      st.atkLevelBlue = Math.max(1, st.atkLevelBlue - 1);
+      e.preventDefault(); return;
+    }
+    if (hitTest(atkBlueRef.current.plus)) {
+      st.atkLevelBlue = Math.min(10, st.atkLevelBlue + 1);
+      e.preventDefault(); return;
+    }
+
+    // RED attack level
+    if (hitTest(atkRedRef.current.minus)) {
+      st.atkLevelRed = Math.max(1, st.atkLevelRed - 1);
+      e.preventDefault(); return;
+    }
+    if (hitTest(atkRedRef.current.plus)) {
+      st.atkLevelRed = Math.min(10, st.atkLevelRed + 1);
+      e.preventDefault(); return;
     }
   }, []);
 
@@ -1600,7 +1864,7 @@ export default function Home() {
       const dt = Math.min(0.05, (t - ltRef.current) / 1000);
       ltRef.current = t;
       if (dt > 0.001 && dt < 0.1) update(stRef.current, dt);
-      render(ctx, cv, stRef.current, speedBtnRef.current);
+      render(ctx, cv, stRef.current, speedBtnRef.current, atkBlueRef.current, atkRedRef.current);
       id = requestAnimationFrame(loop);
     };
     ltRef.current = performance.now();
