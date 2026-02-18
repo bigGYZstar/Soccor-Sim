@@ -349,16 +349,25 @@ function bestPass(st: State, idx: number, relaxed: boolean = false): number | nu
     const d = vdist(me.pos, p.pos);
     if (d < 1.0 || d > 18) continue;
     const op = openness(st, p);
-    const gp = -me.team * p.pos.x; // goal progress
+    const gp = -me.team * p.pos.x; // goal progress (x-axis difference)
     
-    // Back-pass (gp < 0) penalty is greatly reduced for possession play
-    let gpScore = gp * 0.6;
-    if (gp < 0) gpScore = gp * 0.05;
+    // [MODIFIED] Strengthen forward pass bonus to escape own half
+    // Forward passes (gp > 0) get 3.5x evaluation, back-passes stay low (escape route only)
+    let gpScore = gp > 0 ? gp * 3.5 : gp * 0.1;
 
-    let sc = op * 2.0 + gpScore - d * 0.1;
+    // Additional bonus for passes into attacking third
+    const isAttackingPass = (-me.team * p.pos.x > P.pitchHalfW * 0.25);
+    if (isAttackingPass) gpScore += 2.0;
+
+    // Base score calculation
+    // Reduce openness weight slightly to encourage risk-taking
+    let sc = op * 1.5 + gpScore - d * 0.08;
     
-    // Stronger penalty for blocked lanes to reduce forced vertical passes
-    if (laneBlocked(st, me.pos, p.pos, me.team)) sc -= 6.0;
+    // Adjust lane-blocked penalty
+    if (laneBlocked(st, me.pos, p.pos, me.team)) {
+      // For forward passes, reduce penalty (bet on getting through)
+      sc -= (gp > 2.0) ? 3.0 : 6.0;
+    }
     
     // Offside is excluded
     if (P.offsideEnabled && isOffside(st, p, st.ball.pos)) sc -= 20;
@@ -549,8 +558,8 @@ function decideHasBall(st: State, idx: number) {
     }
   }
 
-  // If space ahead and far from goal, prioritize dribble
-  if (spaceInFront && distToGoal > 12.0 && Math.random() < 0.65) {
+  // If space ahead and far from goal, prioritize dribble (increased from 0.65 to 0.85)
+  if (spaceInFront && distToGoal > 12.0 && Math.random() < 0.85) {
     doDribble(st, idx);
     return;
   }
@@ -1366,12 +1375,32 @@ function update(st: State, dt: number) {
     }
 
     if (p.act !== "idle") {
-      const spd = p.act === "dribble" ? P.dribbleSpeed : P.moveSpeed;
+      const baseSpd = p.act === "dribble" ? P.dribbleSpeed : P.moveSpeed;
       const d = vsub(p.tgt, p.pos);
-      if (vlen(d) < 0.08) { p.act = "idle"; }
-      else {
-        p.face = vnorm(d);
-        p.pos = pitchClamp(vmove(p.pos, p.tgt, spd * dtSim));
+      const dist = vlen(d);
+      
+      if (dist < 0.08) { 
+        p.act = "idle"; 
+      } else {
+        const moveDir = vnorm(d);
+        
+        // [NEW] Inertia simulation (Turn Penalty)
+        // The greater the angle between current facing (p.face) and movement direction (moveDir), the more we slow down
+        // dot product: 1.0 (facing forward) -> no slowdown, -1.0 (180° turn) -> major slowdown
+        const turnDot = vdot(p.face, moveDir); 
+        // Turn coefficient: sharp turns reduce speed to 40% at worst
+        const turnPenalty = Math.max(0.4, (turnDot + 1.0) * 0.5 + 0.1); 
+        
+        // Defenders (not possessing ball) have additional reaction delay
+        const defNerf = (p.team !== st.ball.lastTouchTeam && p.act === "move") ? 0.95 : 1.0;
+
+        const finalSpd = baseSpd * turnPenalty * defNerf;
+
+        // Gradual facing update: instead of instant turn, slerp-like behavior
+        // 0.25 coefficient for gradual rotation
+        p.face = vnorm(vadd(p.face, vscl(moveDir, 0.25))); 
+        
+        p.pos = pitchClamp(vmove(p.pos, p.tgt, finalSpd * dtSim));
       }
     }
 
