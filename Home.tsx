@@ -548,14 +548,16 @@ function decideHasBall(st: State, idx: number) {
   const toGoalDir = vnorm(vsub(goalPos, me.pos));
 
   let pathClear = true;
-  const searchDist = Math.min(distToGoal, 10.0);
+  // FIXED: Very short search distance (4 units ≈ 8m) and wide cone (60 degrees)
+  const searchDist = 4.0;
   
   for (const p of st.pl) {
     if (p.team === me.team) continue;
     const d = vdist(me.pos, p.pos);
+    // FIXED: Only block if enemy is very close (< 4 units) AND directly in front (< 60 degrees)
     if (d < searchDist) {
       const toEnemy = vnorm(vsub(p.pos, me.pos));
-      if (vang(toGoalDir, toEnemy) < 30) { 
+      if (vang(toGoalDir, toEnemy) < 60) { 
         pathClear = false; 
         break; 
       }
@@ -563,8 +565,8 @@ function decideHasBall(st: State, idx: number) {
   }
 
   // ■■■ CRITICAL: If path is clear, CARRY forward (not probabilistic, deterministic) ■■■
-  // Only skip if in shot range (let shot logic handle it)
-  if (pathClear && distToGoal > P.shotRange) {
+  // Only skip if in shot range (let shot logic handle it) or too close to own goal
+  if (pathClear && distToGoal > P.shotRange && distToGoal < P.pitchHalfW * 1.8) {
     me.tgt = vadd(me.pos, vscl(toGoalDir, 8.0));
     me.act = "dribble";
     me.face = toGoalDir;
