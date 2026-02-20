@@ -157,7 +157,7 @@ interface SetPieceAnim {
 
 interface Player {
   pos: V; team: number; num: number; home: V;
-  face: V; act: "idle" | "dribble" | "move"; tgt: V;
+  face: V; act: "idle" | "dribble" | "move" | "carry"; tgt: V;
   dt: number;
   isGK: boolean;
   slot: number;
@@ -343,6 +343,10 @@ function laneBlocked(st: State, from: V, to: V, team: number): boolean {
 function bestPass(st: State, idx: number, relaxed: boolean = false): number | null {
   const me = st.pl[idx];
   let bi: number | null = null, bs = -Infinity;
+  
+  // Check if player is in own half
+  const isOwnHalf = (me.team * me.pos.x > 0);
+  
   for (let i = 0; i < st.pl.length; i++) {
     const p = st.pl[i];
     if (p.team !== me.team || i === idx) continue;
@@ -362,6 +366,11 @@ function bestPass(st: State, idx: number, relaxed: boolean = false): number | nu
     // Base score calculation
     // Reduce openness weight slightly to encourage risk-taking
     let sc = op * 1.5 + gpScore - d * 0.08;
+    
+    // ★ CRITICAL: Strong back-pass penalty in own half to eliminate U-shaped possession
+    if (isOwnHalf && gp <= 0 && !relaxed) {
+      sc -= 10.0; // Massive penalty for back-passes in own half
+    }
     
     // Adjust lane-blocked penalty
     if (laneBlocked(st, me.pos, p.pos, me.team)) {
@@ -536,6 +545,24 @@ function decideHasBall(st: State, idx: number) {
   const tg = vnorm(vsub(gc, me.pos));
   const ag = vang(me.face, tg);
 
+  // ★ CRITICAL: Carry state lock - prevent 0.2s decision interruptions
+  if (me.act === "carry") {
+    // Find nearest enemy
+    let nearestEnemyDist = Infinity;
+    for (const p of st.pl) {
+      if (p.team === me.team) continue;
+      const d = vdist(me.pos, p.pos);
+      if (d < nearestEnemyDist) nearestEnemyDist = d;
+    }
+    
+    // Continue carrying if enemy is far (>1.5 units) and not in shot range
+    if (nearestEnemyDist >= 1.5 && dg > P.shotRange) {
+      return; // Lock: skip all decision logic and keep carrying
+    } else {
+      me.act = "dribble"; // Unlock: enemy approached, return to normal decision loop
+    }
+  }
+
   const inOwnThird = me.team * me.pos.x > P.pitchHalfW * 0.33;
   const inAttackingThird = -me.team * me.pos.x > P.pitchHalfW * 0.33;
   const isWinger = me.slot === 5 || me.slot === 8;
@@ -568,7 +595,7 @@ function decideHasBall(st: State, idx: number) {
   // Only skip if in shot range (let shot logic handle it) or too close to own goal
   if (pathClear && distToGoal > P.shotRange && distToGoal < P.pitchHalfW * 1.8) {
     me.tgt = vadd(me.pos, vscl(toGoalDir, 8.0));
-    me.act = "dribble";
+    me.act = "carry"; // ★ Use "carry" state instead of "dribble" to enable lock
     me.face = toGoalDir;
     kick(st, toGoalDir, P.dribbleSpeed * 1.2, false, me.tgt);
     return;
@@ -1398,7 +1425,9 @@ function update(st: State, dt: number) {
     }
 
     if (p.act !== "idle") {
-      const baseSpd = p.act === "dribble" ? P.dribbleSpeed : P.moveSpeed;
+      let baseSpd = P.moveSpeed;
+      if (p.act === "dribble") baseSpd = P.dribbleSpeed;
+      if (p.act === "carry") baseSpd = P.dribbleSpeed * 1.2; // Carry is faster than dribble
       const d = vsub(p.tgt, p.pos);
       const dist = vlen(d);
       
