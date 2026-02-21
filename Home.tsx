@@ -262,10 +262,45 @@ function give(ball: Ball, idx: number, pl: Player[]) {
 
 function kick(st: State, dir: V, spd: number, shot: boolean, tgt: V, isLong: boolean = false) {
   const b = st.ball;
+  const kicker = b.owner !== null ? st.pl[b.owner] : null;
   if (b.owner !== null) b.lastTouchTeam = st.pl[b.owner].team;
-  st.trail = { start: { ...b.pos }, end: { ...tgt }, shot, longPass: isLong, t: P.trailDuration };
+  
+  // ★ v7.1: Safety improvements for back-passes and own goal prevention
+  let finalTarget = { ...tgt };
+  let accuracy = shot ? P.shotAccuracy : (isLong ? P.longPassAccuracy : P.passAccuracy);
+  let errRange = (1 - accuracy) * (shot ? 3.0 : 1.5);
+  
+  if (!shot && kicker) {
+    // Improvement 1: Detect back/lateral passes (gp <= 0)
+    const isForward = (tgt.x - kicker.pos.x) * -kicker.team > 0.5;
+    
+    if (!isForward) {
+      // Back/lateral passes are extremely safe (90% error reduction)
+      errRange *= 0.1;
+    }
+    
+    // Improvement 2: Own goal prevention (passes near own goal)
+    const ownGoalX = kicker.team * P.pitchHalfW;
+    const nearOwnGoal = Math.abs(tgt.x - ownGoalX) < 3.0 && Math.abs(tgt.y) < P.goalHalfH + 1.0;
+    
+    if (nearOwnGoal) {
+      errRange = 0; // Zero error for passes near own goal
+      
+      // Force target outside goal posts (Y-axis safety offset)
+      const safeOffsetY = P.goalHalfH + 0.8;
+      if (Math.abs(finalTarget.y) < safeOffsetY) {
+        finalTarget.y = Math.sign(finalTarget.y || 1) * safeOffsetY;
+      }
+    }
+  }
+  
+  // Apply error to final target
+  const err = v(rng(-errRange, errRange), rng(-errRange, errRange));
+  finalTarget = vadd(finalTarget, err);
+  
+  st.trail = { start: { ...b.pos }, end: finalTarget, shot, longPass: isLong, t: P.trailDuration };
   b.owner = null; b.free = true; b.shot = shot;
-  b.vel = vscl(vnorm(dir), spd); b.dead = 0;
+  b.vel = vscl(vnorm(vsub(finalTarget, b.pos)), spd); b.dead = 0;
   b.lob = isLong ? 1.0 : 0;
 }
 
@@ -342,6 +377,17 @@ function laneBlocked(st: State, from: V, to: V, team: number): boolean {
 
 function bestPass(st: State, idx: number, relaxed: boolean = false): number | null {
   const me = st.pl[idx];
+  
+  // ★ v7.1: Press detection - measure pressure on ball carrier
+  let nearestEnemyDist = Infinity;
+  for (const q of st.pl) {
+    if (q.team === me.team) continue;
+    const d = vdist(me.pos, q.pos);
+    if (d < nearestEnemyDist) nearestEnemyDist = d;
+  }
+  const underHeavyPress = nearestEnemyDist < 2.5; // Enemy within 2.5 units (~5m)
+  const isOwnHalf = me.team * me.pos.x > 0;
+  
   let bi: number | null = null, bs = -Infinity;
   for (let i = 0; i < st.pl.length; i++) {
     const p = st.pl[i];
@@ -379,6 +425,18 @@ function bestPass(st: State, idx: number, relaxed: boolean = false): number | nu
           (p.role === "MID" && (p.slot === 5 || p.slot === 8)) || // Half-space WM
           (p.role === "DEF" && p.slot === 1)) {         // High left FB
         if (gp > 0) sc += 5.0; // Decisive pass bonus
+      }
+    }
+    
+    // ★ v7.1: Context-aware back-pass evaluation (press escape)
+    if (isOwnHalf && gp <= 0 && !relaxed) {
+      if (underHeavyPress) {
+        // PRESS ESCAPE MODE: Reward open teammates for back-passes under pressure
+        sc += op * 2.5; // Massive bonus for passing to free players
+        sc -= 1.0;      // Small penalty to prefer forward when both equally open
+      } else {
+        // COMFORTABLE MODE: Punish unnecessary back-passes when not under pressure
+        sc -= 10.0;
       }
     }
     
