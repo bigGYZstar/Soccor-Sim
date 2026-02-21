@@ -424,10 +424,6 @@ export function decideHasBall(st: State, idx: number) {
     }
   }
   
-  me.dt -= 0.016;
-  if (me.dt > 0) return;
-  me.dt = PExt.decisionInterval;
-  
   // Progressive carry check
   const distToGoal = vdist(me.pos, gc);
   if (distToGoal > 3.0 && !me.isGK) {
@@ -497,10 +493,6 @@ export function decideNoBall(st: State, idx: number) {
   const me = st.pl[idx];
   const gc = v(-me.team * PExt.pitchHalfW, 0);
   
-  me.dt -= 0.016;
-  if (me.dt > 0) return;
-  me.dt = PExt.decisionInterval;
-  
   const b = st.ball;
   const ballOwner = b.owner !== null ? st.pl[b.owner] : null;
   const myTeamHasBall = ballOwner && ballOwner.team === me.team;
@@ -559,19 +551,56 @@ export function decideNoBall(st: State, idx: number) {
       me.tgt = { ...me.home };
     }
   } else {
-    // Defensive positioning
+    // ★ Fix: Prevent ball-swarming behavior
     const ballPos = b.free ? b.pos : (ballOwner ? ballOwner.pos : b.pos);
-    const toBall = vsub(ballPos, me.pos);
-    const distToBall = vlen(toBall);
+    const distToBall = vdist(me.pos, ballPos);
     
-    if (distToBall < 3.0 && !me.isGK) {
+    // GK: Stay home
+    if (me.isGK) {
       me.act = "move";
-      me.tgt = ballPos;
-    } else {
-      const defFactor = 0.6;
-      me.act = "move";
-      me.tgt = vlerp(me.home, ballPos, defFactor);
+      me.tgt = { ...me.home };
+      return;
     }
+    
+    // Free ball: Only closest player chases
+    if (b.free) {
+      if (distToBall < 12.0) {
+        const myTeamClosest = nearest(st, b.pos, me.team);
+        if (myTeamClosest === idx) {
+          me.act = "move";
+          me.tgt = ballPos;
+          return;
+        }
+      }
+      // Others: Shift home position slightly toward ball
+      me.act = "move";
+      me.tgt = vlerp(me.home, ballPos, 0.15);
+      return;
+    }
+    
+    // Enemy has ball: Press or block
+    if (ballOwner && ballOwner.team !== me.team) {
+      if (me.role === "FWD" && distToBall < 5.0) {
+        // FWD: Press aggressively
+        me.act = "move";
+        me.tgt = vlerp(ballPos, v(me.team * PExt.pitchHalfW, 0), 0.1);
+      } else if (me.role === "MID" && distToBall < 4.5) {
+        // MID: Press moderately
+        me.act = "move";
+        me.tgt = vlerp(ballPos, v(me.team * PExt.pitchHalfW, 0), 0.15);
+      } else {
+        // Others: Maintain formation with slight shift
+        const shiftX = clamp((ballPos.x - me.home.x) * 0.5, -2.5, 2.5);
+        const shiftY = clamp((ballPos.y - me.home.y) * 0.5, -3.0, 3.0);
+        me.act = "move";
+        me.tgt = v(me.home.x + shiftX, me.home.y + shiftY);
+      }
+      return;
+    }
+    
+    // Default: Return to home
+    me.act = "move";
+    me.tgt = { ...me.home };
   }
 }
 
@@ -588,14 +617,25 @@ export function doKickOff(st: State) {
     st.pl[i].pos = { ...st.pl[i].home };
     st.pl[i].act = "idle";
     st.pl[i].tgt = { ...st.pl[i].home };
-    st.pl[i].dt = 0;
+    st.pl[i].face = v(-st.pl[i].team, 0);
+    // ★ Fix: Randomize decision timers to prevent simultaneous AI decisions
+    st.pl[i].dt = Math.random() * PExt.decisionInterval;
   }
   st.ball.pos = v(0, 0);
   st.ball.vel = v(0, 0);
   st.ball.free = true;
   st.ball.owner = null;
   st.ball.cooldown = PExt.restartNoIntercept;
+  st.ball.dead = 0;
   st.trail = null;
+  
+  // Give ball to nearest player on kickoff side
+  const takerIdx = nearest(st, v(0, 0), st.koSide);
+  if (takerIdx !== -1) {
+    st.ball.owner = takerIdx;
+    st.ball.free = false;
+    st.pl[takerIdx].pos = v(-st.koSide * 0.2, 0);
+  }
 }
 
 export function startThrowIn(st: State, throwerIdx: number, targetPos: V) {
@@ -614,113 +654,135 @@ export function updateSetPiece(st: State, dtSim: number) {
   // Set piece animation logic - simplified
 }
 
-export function update(st: State, dt: number) {
-  if (st.over) return;
-  
-  const dtSim = dt;
-  st.time += dtSim;
-  if (st.time >= PExt.matchDuration) {
-    st.over = true;
+export const update = (st: State, dt: number) => {
+  // --- 1. 演出とマッチコントロール ---
+  if (st.flash > 0) st.flash -= dt;
+
+  if (st.over) {
+    st.restartT -= dt;
+    if (st.restartT <= 0) {
+       Object.assign(st, mkState());
+       doKickOff(st);
+    }
     return;
   }
-  
-  // Flash text
-  if (st.flash > 0) st.flash = Math.max(0, st.flash - dtSim);
-  
-  // Trail
-  if (st.trail) {
-    st.trail.t -= dtSim;
-    if (st.trail.t <= 0) st.trail = null;
-  }
-  
-  // Pause/restart handling
+
   if (st.paused) {
-    st.pauseT -= dtSim;
+    st.pauseT -= dt;
     if (st.pauseT <= 0) {
       st.paused = false;
-      st.restartT = PExt.restartNoIntercept;
+      doKickOff(st);
     }
     return;
   }
-  
-  if (st.restartT > 0) st.restartT -= dtSim;
-  
-  // Ball physics
-  const b = st.ball;
-  if (b.free) {
-    b.pos = vadd(b.pos, vscl(b.vel, dtSim));
-    const drag = Math.exp(-PExt.looseBallDrag * dtSim);
-    b.vel = vscl(b.vel, drag);
-    
-    // Bounce off walls
-    if (Math.abs(b.pos.y) > PExt.pitchHalfH) {
-      b.pos.y = Math.sign(b.pos.y) * PExt.pitchHalfH;
-      b.vel.y *= -0.6;
-    }
-    
-    // Check goal
-    const gs = checkGoal(b.pos);
-    if (gs !== 0) {
-      if (gs === -1) st.sR++;
-      else st.sL++;
-      st.flash = 1.5;
-      st.flashTxt = "GOAL!";
-      st.paused = true;
-      st.pauseT = PExt.goalResetDelay;
-      st.koSide = -gs;
-      doKickOff(st);
-      return;
-    }
-    
-    // Dead ball
-    if (b.dead > 0) {
-      b.dead -= dtSim;
-      if (b.dead <= 0) b.dead = 0;
-    }
-    
-    // Lob decay
-    if (b.lob > 0) {
-      b.lob = Math.max(0, b.lob - dtSim * 2.0);
-    }
-    
-    b.cooldown = Math.max(0, b.cooldown - dtSim);
+
+  st.time += dt;
+  if (st.time >= P.matchDuration) {
+    st.over = true;
+    st.flash = 2.5;
+    st.flashTxt = "FULL TIME";
   }
-  
-  // Player updates
-  for (let i = 0; i < st.pl.length; i++) {
-    const p = st.pl[i];
+
+  st.ball.cooldown = Math.max(0, st.ball.cooldown - dt);
+  if (st.trail) {
+    st.trail.t -= dt;
+    if (st.trail.t <= 0) st.trail = null;
+  }
+
+  // --- 2. デッドボールの自動回収 ---
+  if (st.ball.owner === null && !st.ball.free) st.ball.free = true;
+  if (st.ball.free && vlen(st.ball.vel) < 0.5) {
+    st.ball.dead += dt;
+    if (st.ball.dead > P.deadBallTime) {
+      const idx = nearest(st, st.ball.pos);
+      st.ball.owner = idx;
+      st.ball.free = false;
+      st.ball.dead = 0;
+    }
+  } else {
+    st.ball.dead = 0;
+  }
+
+  // --- 3. ボールの物理演算 ---
+  if (st.ball.free) {
+    st.ball.pos = vadd(st.ball.pos, vscl(st.ball.vel, dt));
+    const spd = vlen(st.ball.vel);
+    if (spd > 0) {
+      const newSpd = Math.max(0, spd - P.looseBallDrag * dt);
+      st.ball.vel = vscl(st.ball.vel, newSpd / spd);
+    }
     
-    // Intercept check
-    if (b.free && b.owner === null && b.cooldown <= 0 && b.dead <= 0 && b.lob < 0.3) {
-      const dist = vdist(p.pos, b.pos);
-      if (dist < PExt.interceptRadius) {
-        give(b, i, st.pl);
-        p.dt = 0;
+    // 壁反射とゴール判定
+    const b = st.ball;
+    if (Math.abs(b.pos.y) > P.pitchHalfH) {
+      b.pos.y = Math.sign(b.pos.y) * P.pitchHalfH;
+      b.vel.y *= -0.4;
+    }
+    if (Math.abs(b.pos.x) > P.pitchHalfW) {
+      if (Math.abs(b.pos.y) <= P.goalHalfH) {
+         if (b.pos.x > 0) { st.sL++; st.flashTxt="GOAL!"; st.koSide = -1; }
+         else { st.sR++; st.flashTxt="GOAL!"; st.koSide = 1; }
+         st.paused = true;
+         st.pauseT = P.goalResetDelay;
+         st.flash = 1.8;
+      } else {
+        b.pos.x = Math.sign(b.pos.x) * P.pitchHalfW;
+        b.vel.x *= -0.4;
       }
     }
-    
-    // AI decision
-    if (b.owner === i) {
-      decideHasBall(st, i);
-    } else {
-      decideNoBall(st, i);
-    }
-    
-    // Movement
-    if (p.act === "move" || p.act === "dribble" || (p.act as any) === "carry") {
-      const spd = (p.act === "dribble" || (p.act as any) === "carry") ? PExt.dribbleSpeed : PExt.moveSpeed;
-      const realSpd = (p.act as any) === "carry" ? spd * 1.2 : spd;
-      p.pos = vmove(p.pos, p.tgt, realSpd * dtSim);
-      p.pos = pitchClamp(p.pos);
-      
-      if (vdist(p.pos, p.tgt) < 0.3) {
-        p.act = "idle";
+  } else if (st.ball.owner !== null) {
+    // 保持中は選手の足元に追従
+    const p = st.pl[st.ball.owner];
+    st.ball.pos = vadd(p.pos, vscl(p.face, 0.22));
+    st.ball.vel = v(0,0);
+  }
+
+  // --- 4. プレイヤーループ (★これが抜けていました！) ---
+  st.pl.forEach((p, idx) => {
+    // A. インターセプト・タックル判定
+    if (st.ball.cooldown <= 0) {
+      if (st.ball.free) {
+         if (vdist(p.pos, st.ball.pos) < P.interceptRadius) {
+           st.ball.owner = idx;
+           st.ball.free = false;
+           st.ball.cooldown = 0.1;
+         }
+      } else if (st.ball.owner !== null && st.ball.owner !== idx) {
+        if (st.pl[st.ball.owner].team !== p.team) {
+           if (vdist(p.pos, st.ball.pos) < P.interceptRadius * 0.65) {
+             st.ball.owner = idx; // ボール奪取
+             st.ball.cooldown = 0.35;
+           }
+        }
       }
     }
-    
-    // Update ball position if owned
-    if (b.owner === i) {
-      b.pos = { ...p.pos };
+
+    // B. AIの意思決定 (0.2秒に1回発火)
+    p.dt -= dt;
+    if (p.dt <= 0) {
+      p.dt = P.decisionInterval;
+      if (st.ball.owner === idx) decideHasBall(st, idx);
+      else decideNoBall(st, idx);
     }
-  }
-}
+
+    // C. 移動処理
+    let speed = P.moveSpeed;
+    if (p.act === "dribble") speed = P.dribbleSpeed;
+    if (p.act === "carry") speed = P.dribbleSpeed * 1.2;
+
+    const oldPos = p.pos;
+    if (p.act !== "idle") {
+      p.pos = vmove(p.pos, p.tgt, speed * dt);
+    }
+    
+    // D. 向き(Face)の更新
+    if (vdist(oldPos, p.pos) > 0.001) {
+      p.face = vnorm(vsub(p.pos, oldPos));
+    } else if (st.ball.free) {
+      p.face = vnorm(vsub(st.ball.pos, p.pos));
+    }
+
+    // E. ピッチ外に出ないようクランプ
+    p.pos = pitchClamp(p.pos);
+  });
+};
