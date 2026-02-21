@@ -157,7 +157,7 @@ interface SetPieceAnim {
 
 interface Player {
   pos: V; team: number; num: number; home: V;
-  face: V; act: "idle" | "dribble" | "move" | "carry"; tgt: V;
+  face: V; act: "idle" | "dribble" | "move"; tgt: V;
   dt: number;
   isGK: boolean;
   slot: number;
@@ -343,10 +343,6 @@ function laneBlocked(st: State, from: V, to: V, team: number): boolean {
 function bestPass(st: State, idx: number, relaxed: boolean = false): number | null {
   const me = st.pl[idx];
   let bi: number | null = null, bs = -Infinity;
-  
-  // Check if player is in own half
-  const isOwnHalf = (me.team * me.pos.x > 0);
-  
   for (let i = 0; i < st.pl.length; i++) {
     const p = st.pl[i];
     if (p.team !== me.team || i === idx) continue;
@@ -367,11 +363,6 @@ function bestPass(st: State, idx: number, relaxed: boolean = false): number | nu
     // Reduce openness weight slightly to encourage risk-taking
     let sc = op * 1.5 + gpScore - d * 0.08;
     
-    // ★ CRITICAL: Strong back-pass penalty in own half to eliminate U-shaped possession
-    if (isOwnHalf && gp <= 0 && !relaxed) {
-      sc -= 10.0; // Massive penalty for back-passes in own half
-    }
-    
     // Adjust lane-blocked penalty
     if (laneBlocked(st, me.pos, p.pos, me.team)) {
       // For forward passes, reduce penalty (bet on getting through)
@@ -383,6 +374,11 @@ function bestPass(st: State, idx: number, relaxed: boolean = false): number | nu
     
     if (sc > bs) { bs = sc; bi = i; }
   }
+  
+  // ★ CRITICAL: Pass rejection - if best pass score is too low (back-pass or blocked), refuse to pass
+  // This forces AI to dribble forward instead of making desperate back-passes
+  if (bs < -5.0) return null;
+  
   return bi;
 }
 
@@ -546,7 +542,7 @@ function decideHasBall(st: State, idx: number) {
   const ag = vang(me.face, tg);
 
   // ★ CRITICAL: Carry state lock - prevent 0.2s decision interruptions
-  if (me.act === "carry") {
+  if ((me.act as any) === "carry") {
     // Find nearest enemy
     let nearestEnemyDist = Infinity;
     for (const p of st.pl) {
@@ -557,6 +553,10 @@ function decideHasBall(st: State, idx: number) {
     
     // Continue carrying if enemy is far (>1.5 units) and not in shot range
     if (nearestEnemyDist >= 1.5 && dg > P.shotRange) {
+      // ★ CRITICAL: Continuously update target to prevent stopping
+      const goalPos = v(-me.team * P.pitchHalfW, 0);
+      const toGoalDir = vnorm(vsub(goalPos, me.pos));
+      me.tgt = vadd(me.pos, vscl(toGoalDir, 8.0));
       return; // Lock: skip all decision logic and keep carrying
     } else {
       me.act = "dribble"; // Unlock: enemy approached, return to normal decision loop
@@ -595,7 +595,7 @@ function decideHasBall(st: State, idx: number) {
   // Only skip if in shot range (let shot logic handle it) or too close to own goal
   if (pathClear && distToGoal > P.shotRange && distToGoal < P.pitchHalfW * 1.8) {
     me.tgt = vadd(me.pos, vscl(toGoalDir, 8.0));
-    me.act = "carry"; // ★ Use "carry" state instead of "dribble" to enable lock
+    (me.act as any) = "carry"; // ★ Use "carry" state instead of "dribble" to enable lock
     me.face = toGoalDir;
     kick(st, toGoalDir, P.dribbleSpeed * 1.2, false, me.tgt);
     return;
@@ -696,47 +696,46 @@ function decideNoBall(st: State, idx: number) {
   const teamHasBall = b.owner !== null && st.pl[b.owner].team === me.team;
   const oppGoalX = -me.team * P.pitchHalfW;
 
-  // 3. Attacking movement (Off the ball) - REWRITTEN for high-line push-up
+  // 3. Attacking movement (Off the ball) - DYNAMIC RUNS TO CREATE PASSING LANES
   if (teamHasBall) {
     const carrier = st.pl[b.owner!];
+    const targetGoalX = -me.team * P.pitchHalfW; // Opponent goal X
     
     // Attack level push-up distance (0.0 〜 1.0)
-    // af=0 (defensive) -> no push
-    // af=1 (ultra-attacking) -> push entire line forward by 4.5 units
     const pushUpDist = af * 4.5;
 
-    if (me.role === "DEF") {
-      // DEF line: High-line positioning
-      const ballX = carrier.pos.x;
-      
-      // Base position: between ball and home, pushed forward by attack level
-      let lineX = (ballX + me.home.x) * 0.5 + (pushUpDist * -me.team);
-      
-      // At max attack level, even CBs push up to center circle area
-      // But don't go too deep into opponent half (prevent counter)
-      if (Math.abs(lineX) > P.pitchHalfW * 0.8) lineX = me.team * P.pitchHalfW * 0.8;
-      
-      me.tgt = pitchClamp(v(lineX, me.home.y + ballPos.y * 0.2));
-
-    } else if (me.role === "MID") {
-      // MF: Box-to-Box movement
-      // Higher attack level → deeper penetration into penalty area
-      const attackX = oppGoalX * (0.3 + af * 0.5); // 30%〜80% toward goal
-      
-      const distToCarrier = vdist(me.pos, carrier.pos);
-      
-      if (distToCarrier > 15 && af > 0.5) {
-        // Far from ball + attacking → run into the box
-        me.tgt = pitchClamp(v(attackX, me.home.y));
+    if (me.role === "FWD") {
+      // ★ FWD: Diagonal runs behind defense when carrier is dribbling/carrying
+      const carrierMoving = (carrier.act === "dribble" || carrier.act === "carry" as any);
+      if (carrierMoving) {
+        const runTargetX = targetGoalX * 0.85; // Deep into penalty area
+        const runTargetY = me.home.y * 0.4;    // Diagonal run toward center
+        me.tgt = vlerp(me.pos, v(runTargetX, runTargetY), 0.7); // Sprint with momentum
       } else {
-        // Support position (link-man)
-        me.tgt = pitchClamp(vadd(carrier.pos, v(-me.team * 2 + (pushUpDist * -me.team), rng(-4, 4))));
+        // Default: stay near penalty area edge
+        me.tgt = v(targetGoalX * 0.65, me.home.y + rng(-2, 2));
       }
-
-    } else { // FWD
-      // Always aim for penalty area edge, make runs behind defense
-      const penAreaEdge = oppGoalX - (-me.team * P.penAreaW);
-      me.tgt = pitchClamp(v(penAreaEdge + rng(-2, 2), me.home.y * 0.5 + rng(-3, 3)));
+    } 
+    else if (me.role === "MID") {
+      // ★ MID: Show for pass if ahead of ball, otherwise support from behind
+      const amIAhead = Math.abs(me.pos.x - targetGoalX) < Math.abs(b.pos.x - targetGoalX);
+      
+      if (amIAhead) {
+        // Create passing lane: move 5 units ahead, 4 units to the side
+        const supportX = b.pos.x - me.team * 5.0;
+        const supportY = b.pos.y + Math.sign(me.home.y - b.pos.y) * 4.0;
+        me.tgt = v(supportX, clamp(supportY, -P.pitchHalfH + 1, P.pitchHalfH - 1));
+      } else {
+        // Support from behind: push up gradually
+        me.tgt = v((me.pos.x + targetGoalX) * 0.4, b.pos.y + (me.home.y > 0 ? 2 : -2));
+      }
+    } 
+    else { // DEF
+      // DEF line: High-line positioning (existing logic)
+      const ballX = carrier.pos.x;
+      let lineX = (ballX + me.home.x) * 0.5 + (pushUpDist * -me.team);
+      if (Math.abs(lineX) > P.pitchHalfW * 0.8) lineX = me.team * P.pitchHalfW * 0.8;
+      me.tgt = pitchClamp(v(lineX, me.home.y + ballPos.y * 0.2));
     }
     
     me.act = "move";
@@ -1425,9 +1424,7 @@ function update(st: State, dt: number) {
     }
 
     if (p.act !== "idle") {
-      let baseSpd = P.moveSpeed;
-      if (p.act === "dribble") baseSpd = P.dribbleSpeed;
-      if (p.act === "carry") baseSpd = P.dribbleSpeed * 1.2; // Carry is faster than dribble
+      const baseSpd = p.act === "dribble" ? P.dribbleSpeed : P.moveSpeed;
       const d = vsub(p.tgt, p.pos);
       const dist = vlen(d);
       
