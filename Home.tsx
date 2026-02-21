@@ -260,36 +260,49 @@ function give(ball: Ball, idx: number, pl: Player[]) {
   ball.lob = 0;
 }
 
-function kick(st: State, dir: V, spd: number, shot: boolean, tgt: V, isLong: boolean = false) {
+function kick(st: State, dir: V, spd: number, shot: boolean, tgt: V, isLong: boolean = false, customErr?: number) {
   const b = st.ball;
   const kicker = b.owner !== null ? st.pl[b.owner] : null;
   if (b.owner !== null) b.lastTouchTeam = st.pl[b.owner].team;
   
-  // ★ v7.1: Safety improvements for back-passes and own goal prevention
+  // ★ v7.2: Unified error handling with GK-specific safety
   let finalTarget = { ...tgt };
-  let accuracy = shot ? P.shotAccuracy : (isLong ? P.longPassAccuracy : P.passAccuracy);
-  let errRange = (1 - accuracy) * (shot ? 3.0 : 1.5);
+  let errRange = customErr !== undefined ? customErr : 
+                 (shot ? (1 - P.shotAccuracy) * 3.0 : 
+                  isLong ? (1 - P.longPassAccuracy) * 1.5 : 
+                  (1 - P.passAccuracy) * 1.5);
   
   if (!shot && kicker) {
     // Improvement 1: Detect back/lateral passes (gp <= 0)
     const isForward = (tgt.x - kicker.pos.x) * -kicker.team > 0.5;
     
     if (!isForward) {
-      // Back/lateral passes are extremely safe (90% error reduction)
-      errRange *= 0.1;
+      // Back/lateral passes are extremely safe (95% error reduction)
+      errRange *= 0.05;
     }
     
-    // Improvement 2: Own goal prevention (passes near own goal)
+    // Improvement 2: GK-specific own goal prevention
     const ownGoalX = kicker.team * P.pitchHalfW;
-    const nearOwnGoal = Math.abs(tgt.x - ownGoalX) < 3.0 && Math.abs(tgt.y) < P.goalHalfH + 1.0;
+    const ownGoalY = 0;
+    const distToOwnGoal = Math.sqrt(Math.pow(tgt.x - ownGoalX, 2) + Math.pow(tgt.y - ownGoalY, 2));
     
-    if (nearOwnGoal) {
-      errRange = 0; // Zero error for passes near own goal
+    // Check if target is GK (within 2.0 units of own goal)
+    const targetIsGK = distToOwnGoal < 2.0;
+    
+    if (targetIsGK) {
+      // CRITICAL: Force GK pass target outside goal posts
+      errRange = 0; // Zero error
       
-      // Force target outside goal posts (Y-axis safety offset)
-      const safeOffsetY = P.goalHalfH + 0.8;
+      // Move target to safe zone (outside goal posts)
+      const safeOffsetY = P.goalHalfH + 1.0; // 1.0 unit outside posts
       if (Math.abs(finalTarget.y) < safeOffsetY) {
-        finalTarget.y = Math.sign(finalTarget.y || 1) * safeOffsetY;
+        // Choose side based on current Y or default to positive
+        finalTarget.y = (finalTarget.y >= 0 ? 1 : -1) * safeOffsetY;
+      }
+      // Ensure X is slightly in front of goal line
+      const safeOffsetX = 0.5;
+      if (Math.abs(finalTarget.x - ownGoalX) < safeOffsetX) {
+        finalTarget.x = ownGoalX - kicker.team * safeOffsetX;
       }
     }
   }
@@ -521,9 +534,9 @@ function doPassTo(st: State, idx: number, targetIdx: number) {
   const inOwnHalf = me.team * me.pos.x > 0;
   if (inOwnHalf) baseErr *= 0.6;
 
-  tp.x += rng(-baseErr, baseErr); tp.y += rng(-baseErr, baseErr);
+  // v7.2: Remove pre-kick error - let kick() handle all error calculation
   me.face = vnorm(vsub(tp, me.pos));
-  kick(st, me.face, P.passSpeed, false, tp);
+  kick(st, me.face, P.passSpeed, false, tp, false, baseErr);
 }
 
 function doLongPassTo(st: State, idx: number, targetIdx: number) {
@@ -549,9 +562,9 @@ function doLongPassTo(st: State, idx: number, targetIdx: number) {
     tp = vadd(tp, vscl(lead, Math.min(pd * 0.15, 2.0)));
   }
   const err = (1 - P.longPassAccuracy) * 2.5;
-  tp.x += rng(-err, err); tp.y += rng(-err, err);
+  // v7.2: Remove pre-kick error - let kick() handle all error calculation
   me.face = vnorm(vsub(tp, me.pos));
-  kick(st, me.face, P.longPassSpeed, false, tp, true);
+  kick(st, me.face, P.longPassSpeed, false, tp, true, err);
 }
 
 function doDribble(st: State, idx: number) {
@@ -606,9 +619,9 @@ function doCross(st: State, idx: number) {
     tp = vadd(tp, vscl(lead, 1.0));
   }
   const err = 1.2;
-  tp.x += rng(-err * 0.5, err * 0.5); tp.y += rng(-err, err);
+  // v7.2: Remove pre-kick error - let kick() handle all error calculation
   me.face = vnorm(vsub(tp, me.pos));
-  kick(st, me.face, P.longPassSpeed * 1.1, false, tp, true);
+  kick(st, me.face, P.longPassSpeed * 1.1, false, tp, true, err);
 }
 
 function decideHasBall(st: State, idx: number) {
