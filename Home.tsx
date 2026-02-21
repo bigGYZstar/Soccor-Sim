@@ -363,6 +363,25 @@ function bestPass(st: State, idx: number, relaxed: boolean = false): number | nu
     // Reduce openness weight slightly to encourage risk-taking
     let sc = op * 1.5 + gpScore - d * 0.08;
     
+    // ★ v7.0: UP-BACK-THROUGH pattern evaluation
+    // FW to CM "Back" (lay-off) bonus
+    if (me.role === "FWD") {
+      // FW with back to goal: prioritize lay-off to CM
+      if (p.role === "MID" && gp < 0) {
+        sc += 8.0; // Cancel back-pass penalty, make it attractive
+      }
+    }
+    
+    // CM to WM/FW/FB "Through" (third man run) bonus
+    if (me.role === "MID") {
+      // CM with ball: prioritize passes to tucked-in WM, pinning FW, or high FB
+      if ((p.role === "FWD" && p.slot === 10) ||        // Pinning striker
+          (p.role === "MID" && (p.slot === 5 || p.slot === 8)) || // Half-space WM
+          (p.role === "DEF" && p.slot === 1)) {         // High left FB
+        if (gp > 0) sc += 5.0; // Decisive pass bonus
+      }
+    }
+    
     // Adjust lane-blocked penalty
     if (laneBlocked(st, me.pos, p.pos, me.team)) {
       // For forward passes, reduce penalty (bet on getting through)
@@ -564,9 +583,30 @@ function decideHasBall(st: State, idx: number) {
   }
 
   const inOwnThird = me.team * me.pos.x > P.pitchHalfW * 0.33;
+  const inOwnHalf = me.team * me.pos.x > 0;
   const inAttackingThird = -me.team * me.pos.x > P.pitchHalfW * 0.33;
   const isWinger = me.slot === 5 || me.slot === 8;
   const isWide = Math.abs(me.pos.y) > P.pitchHalfH * 0.45;
+  
+  // ★ v7.0: CB BAITING (Sole control + press trap)
+  // Find nearest enemy distance
+  let nearestEnemyDist = Infinity;
+  for (const p of st.pl) {
+    if (p.team === me.team) continue;
+    const d = vdist(me.pos, p.pos);
+    if (d < nearestEnemyDist) nearestEnemyDist = d;
+  }
+  
+  // CB in own half: wait for press if enemy is far
+  if (me.role === "DEF" && inOwnHalf) {
+    // Enemy far (>4.5 units): hold ball, draw press
+    if (nearestEnemyDist > 4.5 && (me.act as any) !== "carry") {
+      me.act = "idle";
+      me.tgt = me.pos; // Stand still (sole control)
+      return; // Wait for enemy to approach, then break press
+    }
+    // Enemy close (<= 4.5 units): press triggered, proceed to normal pass/carry logic
+  }
 
   // [CRITICAL FIX] Progressive Carry (運ぶドリブル) - HIGHEST PRIORITY
   // Check if path to goal is clear before considering passes
@@ -696,48 +736,48 @@ function decideNoBall(st: State, idx: number) {
   const teamHasBall = b.owner !== null && st.pl[b.owner].team === me.team;
   const oppGoalX = -me.team * P.pitchHalfW;
 
-  // 3. Attacking movement (Off the ball) - DYNAMIC RUNS TO CREATE PASSING LANES
+  // 3. Attacking movement - ASYMMETRIC 3-2-5 SYSTEM (Modern 4-4-2 variation)
   if (teamHasBall) {
     const carrier = st.pl[b.owner!];
-    const targetGoalX = -me.team * P.pitchHalfW; // Opponent goal X
-    
-    // Attack level push-up distance (0.0 〜 1.0)
-    const pushUpDist = af * 4.5;
+    const targetGoalX = -me.team * P.pitchHalfW;
 
+    // ① Striker (FWD) role differentiation: one drops, one pins
     if (me.role === "FWD") {
-      // ★ FWD: Diagonal runs behind defense when carrier is dribbling/carrying
-      const carrierMoving = (carrier.act === "dribble" || carrier.act === "carry" as any);
-      if (carrierMoving) {
-        const runTargetX = targetGoalX * 0.85; // Deep into penalty area
-        const runTargetY = me.home.y * 0.4;    // Diagonal run toward center
-        me.tgt = vlerp(me.pos, v(runTargetX, runTargetY), 0.7); // Sprint with momentum
+      if (me.slot === 9) {
+        // Left FW (9): Drop down to receive (False 9)
+        me.tgt = vlerp(me.pos, carrier.pos, 0.4);
       } else {
-        // Default: stay near penalty area edge
-        me.tgt = v(targetGoalX * 0.65, me.home.y + rng(-2, 2));
+        // Right FW (10): Pin defense, run behind
+        me.tgt = v(targetGoalX * 0.8, me.home.y * 0.5);
       }
-    } 
-    else if (me.role === "MID") {
-      // ★ MID: Show for pass if ahead of ball, otherwise support from behind
-      const amIAhead = Math.abs(me.pos.x - targetGoalX) < Math.abs(b.pos.x - targetGoalX);
-      
-      if (amIAhead) {
-        // Create passing lane: move 5 units ahead, 4 units to the side
-        const supportX = b.pos.x - me.team * 5.0;
-        const supportY = b.pos.y + Math.sign(me.home.y - b.pos.y) * 4.0;
-        me.tgt = v(supportX, clamp(supportY, -P.pitchHalfH + 1, P.pitchHalfH - 1));
-      } else {
-        // Support from behind: push up gradually
-        me.tgt = v((me.pos.x + targetGoalX) * 0.4, b.pos.y + (me.home.y > 0 ? 2 : -2));
-      }
-    } 
-    else { // DEF
-      // DEF line: High-line positioning (existing logic)
-      const ballX = carrier.pos.x;
-      let lineX = (ballX + me.home.x) * 0.5 + (pushUpDist * -me.team);
-      if (Math.abs(lineX) > P.pitchHalfW * 0.8) lineX = me.team * P.pitchHalfW * 0.8;
-      me.tgt = pitchClamp(v(lineX, me.home.y + ballPos.y * 0.2));
     }
-    
+    // ② Wide Midfielders (WM): Tuck into half-spaces, form box midfield
+    else if (me.role === "MID" && (me.slot === 5 || me.slot === 8)) {
+      const halfSpaceY = me.home.y > 0 ? 2.5 : -2.5; // Tuck inside
+      const forwardX = carrier.pos.x - me.team * 4.0; // Slightly ahead of carrier
+      me.tgt = v(forwardX, halfSpaceY);
+    }
+    // ③ Central Midfielders (CM): Pivot with staggered depth
+    else if (me.role === "MID" && (me.slot === 6 || me.slot === 7)) {
+      // 6 drops below ball, 7 pushes higher (diagonal relationship)
+      const supportX = me.slot === 6 ? carrier.pos.x + me.team * 2.0 : carrier.pos.x - me.team * 3.0;
+      me.tgt = v(supportX, me.home.y);
+    }
+    // ④ Fullbacks (FB): Asymmetric positioning (Salida Lavolpiana)
+    else if (me.role === "DEF" && (me.slot === 1 || me.slot === 4)) {
+      if (me.slot === 1) {
+        // Left FB (2): Push high, provide width (becomes winger)
+        me.tgt = v(carrier.pos.x - me.team * 6.0, me.home.y);
+      } else {
+        // Right FB (5): Stay low, form back 3
+        me.tgt = v(carrier.pos.x + me.team * 3.0, me.home.y * 0.6);
+      }
+    }
+    // ⑤ Center Backs (CB): Rest defense
+    else if (me.role === "DEF") {
+      me.tgt = v(carrier.pos.x + me.team * 5.0, me.home.y);
+    }
+
     me.act = "move";
     return;
   }
