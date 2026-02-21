@@ -46,5 +46,7 @@ export const pitchClamp = (p: V): V => ({
 
 export const vmove = (from: V, to: V, d: number): V => {
   const dist = vdist(from, to);
-  return dist <= d ? to : vadd(from, vscl(vsub(to, from), d / dist));
+  // ★ Fix: Prevent zero-division and NaN when already at target
+  if (dist <= 0.001 || dist <= d) return v(to.x, to.y);
+  return vadd(from, vscl(vsub(to, from), d / dist));
 };
