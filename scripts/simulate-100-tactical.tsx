@@ -26,6 +26,14 @@ const stats = {
   zoneDefBlue: 0, zoneMidBlue: 0, zoneAttBlue: 0,
   zoneDefRed: 0, zoneMidRed: 0, zoneAttRed: 0,
   
+  // v8.7.2: 乖離診断用の追加ログ
+  freeFrames: 0,
+  maxBallAXBlue: 0,
+  maxBallAXRed: 0,
+  freeZoneDef: 0,
+  freeZoneMid: 0,
+  freeZoneAtt: 0,
+  
   // Match statistics
   ownGoals: 0,
   throwIns: 0,
@@ -50,6 +58,15 @@ for (let i = 1; i <= MATCHES; i++) {
     update(st, DT);
 
     // --- 1. ポゼッションとエリアの集計 ---
+    // v8.7.2: Track max ball position for each team
+    if (st.ball.owner !== null) {
+      const owner = st.pl[st.ball.owner];
+      const team = owner.team;
+      const ballAX = Math.abs(st.ball.pos.x);
+      if (team === -1 && ballAX > stats.maxBallAXBlue) stats.maxBallAXBlue = ballAX;
+      if (team === 1 && ballAX > stats.maxBallAXRed) stats.maxBallAXRed = ballAX;
+    }
+    
     if (st.ball.owner !== null) {
       const owner = st.pl[st.ball.owner];
       const team = owner.team; // -1(Blue) or 1(Red)
@@ -78,6 +95,15 @@ for (let i = 1; i <= MATCHES; i++) {
         
         if (owner.act === "carry") stats.carryFramesRed++;
       }
+    } else {
+      // v8.7.2: Track free ball zone distribution (for reference only, not used in penetration %)
+      stats.freeFrames++;
+      const ballX = Math.abs(st.ball.pos.x);
+      const w = P.pitchHalfW;
+      const third = w / 3;
+      if (ballX < third) stats.freeZoneDef++;
+      else if (ballX < 2 * third) stats.freeZoneMid++;
+      else stats.freeZoneAtt++;
     }
 
     // --- 2. パス・シュート方向の集計 ---
@@ -169,4 +195,18 @@ console.log(`   - Own Goals              : ${avg(stats.ownGoals)}`);
 console.log(`   - Throw-ins              : ${avg(stats.throwIns)}`);
 console.log(`   - Throw-ins (Pass Miss)  : ${avg(stats.throwInsFromPassMiss)}`);
 console.log(`   - Corners                : ${avg(stats.corners)}`);
+console.log("==================================================");
+console.log("\n🔍 DISCREPANCY DIAGNOSIS (v8.7.2)");
+console.log("==================================================");
+console.log(`📊 Frame Breakdown (Total: ${STEPS_PER_MATCH * MATCHES} frames)`);
+console.log(`   - Blue possession frames : ${stats.possTotalBlue} (${pct(stats.possTotalBlue, STEPS_PER_MATCH * MATCHES)}%)`);
+console.log(`   - Red possession frames  : ${stats.possTotalRed} (${pct(stats.possTotalRed, STEPS_PER_MATCH * MATCHES)}%)`);
+console.log(`   - Free ball frames       : ${stats.freeFrames} (${pct(stats.freeFrames, STEPS_PER_MATCH * MATCHES)}%)`);
+console.log(`\n📍 Max Ball Position (Absolute X)`);
+console.log(`   - Blue max ball AX       : ${stats.maxBallAXBlue.toFixed(2)}`);
+console.log(`   - Red max ball AX        : ${stats.maxBallAXRed.toFixed(2)}`);
+console.log(`\n🏐 Free Ball Zone Distribution (Reference only)`);
+console.log(`   - Free in DEF zone       : ${pct(stats.freeZoneDef, stats.freeFrames)}%`);
+console.log(`   - Free in MID zone       : ${pct(stats.freeZoneMid, stats.freeFrames)}%`);
+console.log(`   - Free in ATT zone       : ${pct(stats.freeZoneAtt, stats.freeFrames)}%`);
 console.log("==================================================");

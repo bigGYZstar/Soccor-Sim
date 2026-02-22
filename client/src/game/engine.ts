@@ -315,9 +315,11 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
     score += openness(st, tm) * 3.0;
     
     const isBlocked = laneBlocked(st, me.pos, tm.pos, me.team);
-    // v8.3: Reduce blocking penalty for forward passes
-    const isForwardPass = gp > 2.0;
-    if (isBlocked) score -= (isForwardPass ? 2.0 : 4.0);
+    // v8.7.2: Phase-based blocking penalty (Phase A: -2.0, Phase B: -4.0)
+    const ax = me.pos.x * (-me.team);
+    const w = PExt.pitchHalfW;
+    const isPhaseA = ax < (2 * w / 3); // Phase A: ax < 6.66
+    if (isBlocked) score -= (isPhaseA ? 2.0 : 4.0);
     if (isOffside(st, tm, me.pos)) score -= 100;
     
     // ★ v8.3: GK diagonal switch (side change) evaluation
@@ -472,16 +474,16 @@ export function decideHasBall(st: State, idx: number) {
   let targetIdx = -1;
   const shouldLog = Math.random() < 0.01;
   
-  // ★ v8.7.1: GK bait with 0.8s safety valve
-  if (me.isGK && st.ball.holdT < 0.8) {
+  // ★ v8.7.2: GK bait with 0.5s safety valve (reduced frequency)
+  if (me.isGK && st.ball.holdT < 0.5) {
     let minEnemyDist = Infinity;
     for (const e of st.pl) {
       if (e.team === me.team) continue;
       const d = vdist(me.pos, e.pos);
       if (d < minEnemyDist) minEnemyDist = d;
     }
-    // If enemy is far, wait to draw opponent FW (max 0.8s)
-    if (minEnemyDist > 6.0) {
+    // If enemy is far, wait to draw opponent FW (max 0.5s)
+    if (minEnemyDist > 8.0) {
       me.act = "idle";
       chosenAction = "idle-GKbait";
       return;
@@ -505,8 +507,8 @@ export function decideHasBall(st: State, idx: number) {
     }
   }
   
-  // ★ v8.7.1: CB baiting with 0.8s safety valve
-  if (me.role === "DEF" && me.team * me.pos.x > 0 && st.ball.holdT < 0.8) {
+  // ★ v8.7.2: CB baiting with 0.5s safety valve (reduced frequency)
+  if (me.role === "DEF" && me.team * me.pos.x > 0 && st.ball.holdT < 0.5) {
     let closestEnemy = Infinity;
     for (const p of st.pl) {
       if (p.team === me.team) continue;
@@ -514,11 +516,11 @@ export function decideHasBall(st: State, idx: number) {
       if (d < closestEnemy) closestEnemy = d;
     }
     
-    if (closestEnemy > 4.5) {
+    if (closestEnemy > 6.0) {
       me.act = "idle";
       me.tgt = { ...me.pos };
       chosenAction = "idle-CBbait";
-      return; // Stand still to bait press (max 0.8s)
+      return; // Stand still to bait press (max 0.5s)
     }
   }
   
@@ -530,10 +532,10 @@ export function decideHasBall(st: State, idx: number) {
     const w = PExt.pitchHalfW;
     const isPhaseA = ax < (2 * w / 3);
     
-    // New spec: Allow enemies in cone, but check minimum distance
+    // v8.7.2: Increased carry success rate (minConeDist reduced)
     const coneAngle = isPhaseA ? 120 : 140; // Phase A: 120°, Phase B: 140°
     const searchDist = 10.0; // Fixed
-    const minConeDist = isPhaseA ? 2.2 : 1.8; // Phase A: 2.2, Phase B: 1.8
+    const minConeDist = isPhaseA ? 2.0 : 1.5; // Phase A: 2.0, Phase B: 1.5
     
     let closestInCone = Infinity;
     for (const p of st.pl) {
