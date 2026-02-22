@@ -83,6 +83,7 @@ export interface Ball {
   lob: number;
   lastKickType?: "PASS" | "LONG" | "CROSS" | "SHOT" | "OTHER";
   lastKickTeam?: number;
+  holdT: number;  // v8.7.1: Time since current owner acquired ball (safety valve)
 }
 
 export interface State {

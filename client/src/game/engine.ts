@@ -75,7 +75,7 @@ export function mkPlayers(): Player[] {
       pos: { ...home },
       vel: v(0, 0),  // Phase 5: velocity for inertia
       team: -1, num: i + 1, home, face: v(1, 0),
-      act: "idle", tgt: { ...home }, dt: 0, isGK: i === 0, slot: i, role: slotRole(i), jumpY: 0,
+      act: "idle", tgt: { ...home }, dt: Math.random() * PExt.decisionInterval, isGK: i === 0, slot: i, role: slotRole(i), jumpY: 0,
       turnDebt: 0,  // Phase 5: turning inertia
       staminaShort: 1,  // Phase 5: short-term stamina (full)
       burstT: 0,  // Phase 5: off-the-ball burst timer
@@ -89,7 +89,7 @@ export function mkPlayers(): Player[] {
       pos: { ...home },
       vel: v(0, 0),  // Phase 5: velocity for inertia
       team: 1, num: i + 1, home, face: v(-1, 0),
-      act: "idle", tgt: { ...home }, dt: 0, isGK: i === 0, slot: i, role: slotRole(i), jumpY: 0,
+      act: "idle", tgt: { ...home }, dt: Math.random() * PExt.decisionInterval, isGK: i === 0, slot: i, role: slotRole(i), jumpY: 0,
       turnDebt: 0,  // Phase 5: turning inertia
       staminaShort: 1,  // Phase 5: short-term stamina (full)
       burstT: 0,  // Phase 5: off-the-ball burst timer
@@ -102,7 +102,7 @@ export function mkPlayers(): Player[] {
 export function mkState(): State {
   return {
     pl: mkPlayers(),
-    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0 },
+    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0, holdT: 0 },
     sL: 0, sR: 0, time: 0, over: false, paused: false, pauseT: 0, koSide: -1,
     trail: null, flash: 0, flashTxt: "", restartT: 0,
     speed: "MID",
@@ -134,6 +134,7 @@ export function give(ball: Ball, idx: number, pl: Player[]) {
   ball.pos = { ...pl[idx].pos }; ball.vel = v(0, 0);
   ball.lastTouchTeam = pl[idx].team;
   ball.lob = 0;
+  ball.holdT = 0;  // ★ v8.7.1: Reset hold time on owner change
 }
 
 export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, tgt: V, isLong: boolean = false, customErr?: number) {
@@ -208,6 +209,14 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   
   // Update kicker's face direction
   kicker.face = dir;
+  
+  // ★ v8.7.1: Kick logging (1% sample)
+  if (Math.random() < 0.01) {
+    const dirLen = vlen(dir);
+    const ballVelLen = vlen(b.vel);
+    const type = shot ? "SHOT" : isLong ? "LONG" : "PASS";
+    console.log(`[KICK] t=${st.time.toFixed(1)} P${kickerIdx}(${kicker.team === -1 ? 'B' : 'R'}) ${type} from(${kicker.pos.x.toFixed(1)},${kicker.pos.y.toFixed(1)}) to(${finalTarget.x.toFixed(1)},${finalTarget.y.toFixed(1)}) spd=${spd.toFixed(1)} dirLen=${dirLen.toFixed(3)} ballVelLen=${ballVelLen.toFixed(1)}`);
+  }
 }
 
 export function nearest(st: State, pos: V, teamFilter?: number): number {
@@ -458,17 +467,23 @@ export function decideHasBall(st: State, idx: number) {
   const me = st.pl[idx];
   const gc = v(-me.team * PExt.pitchHalfW, 0);
   
-  // ★ v8.3: GK bait (press attraction)
-  if (me.isGK) {
+  // ★ v8.7.1: Decision logging (1% sample) - will be updated at the end
+  let chosenAction = "unknown";
+  let targetIdx = -1;
+  const shouldLog = Math.random() < 0.01;
+  
+  // ★ v8.7.1: GK bait with 0.8s safety valve
+  if (me.isGK && st.ball.holdT < 0.8) {
     let minEnemyDist = Infinity;
     for (const e of st.pl) {
       if (e.team === me.team) continue;
       const d = vdist(me.pos, e.pos);
       if (d < minEnemyDist) minEnemyDist = d;
     }
-    // If enemy is far, don't rush - keep ball at feet to draw opponent FW
+    // If enemy is far, wait to draw opponent FW (max 0.8s)
     if (minEnemyDist > 6.0) {
       me.act = "idle";
+      chosenAction = "idle-GKbait";
       return;
     }
   }
@@ -490,8 +505,8 @@ export function decideHasBall(st: State, idx: number) {
     }
   }
   
-  // ★ v7.0: CB baiting - stand still in own half to draw press
-  if (me.role === "DEF" && me.team * me.pos.x > 0) {
+  // ★ v8.7.1: CB baiting with 0.8s safety valve
+  if (me.role === "DEF" && me.team * me.pos.x > 0 && st.ball.holdT < 0.8) {
     let closestEnemy = Infinity;
     for (const p of st.pl) {
       if (p.team === me.team) continue;
@@ -502,20 +517,25 @@ export function decideHasBall(st: State, idx: number) {
     if (closestEnemy > 4.5) {
       me.act = "idle";
       me.tgt = { ...me.pos };
-      return; // Stand still to bait press
+      chosenAction = "idle-CBbait";
+      return; // Stand still to bait press (max 0.8s)
     }
   }
   
-  // Progressive carry check
+  // ★ v8.7.1: Redesigned Progressive carry with minConeDist
   const distToGoal = vdist(me.pos, gc);
   if (distToGoal > 3.0 && !me.isGK) {
     const toGoalDir = vnorm(vsub(gc, me.pos));
-    // v8.3: Expand carry range significantly
-    const inOpponentHalf = me.pos.x * -me.team > 0;
-    const searchDist = inOpponentHalf ? 8.0 : 5.0;
-    const coneAngle = inOpponentHalf ? 90 : 60;
+    const ax = me.pos.x * (-me.team);
+    const w = PExt.pitchHalfW;
+    const isPhaseA = ax < (2 * w / 3);
     
-    let pathClear = true;
+    // New spec: Allow enemies in cone, but check minimum distance
+    const coneAngle = isPhaseA ? 120 : 140; // Phase A: 120°, Phase B: 140°
+    const searchDist = 10.0; // Fixed
+    const minConeDist = isPhaseA ? 2.2 : 1.8; // Phase A: 2.2, Phase B: 1.8
+    
+    let closestInCone = Infinity;
     for (const p of st.pl) {
       if (p.team === me.team) continue;
       const toOpp = vsub(p.pos, me.pos);
@@ -523,46 +543,93 @@ export function decideHasBall(st: State, idx: number) {
       if (dist > searchDist) continue;
       const angle = vang(toGoalDir, toOpp);
       if (angle < coneAngle / 2) {
-        pathClear = false;
-        break;
+        if (dist < closestInCone) closestInCone = dist;
       }
     }
     
+    const pathClear = closestInCone >= minConeDist;
+    
     if (pathClear) {
-      // Bug fix C: Don't kick - maintain possession while carrying
       me.act = "carry";
       me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 8.0)));
       me.face = toGoalDir;
-      // ★ Don't call kick() - ball follows owner in update loop
+      chosenAction = "carry";
       return;
     }
   }
   
-  // D-1: Shot priority - evaluate shot before pass when close to goal in opponent half
-  const inOpponentHalf = me.pos.x * -me.team > 0;
-  const shouldPrioritizeShot = inOpponentHalf && distToGoal < (PExt.shotRange + 2.0);
+  // ★ v8.7.1: Forward progress guarantee - force action if stuck
+  const ax = me.pos.x * (-me.team); // Attack direction normalized (0 → pitchHalfW)
+  const w = PExt.pitchHalfW; // 10.0
+  const isPhaseA = ax < (2 * w / 3); // Phase A: advance (ax < 6.66)
+  const isPhaseB = ax >= (2 * w / 3); // Phase B: finish (ax >= 6.66)
   
-  if (shouldPrioritizeShot) {
-    // D-2: Graduated shot conditions based on distance
-    const toGoal = vsub(gc, me.pos);
-    const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
+  if (st.ball.holdT >= 0.8) {
+    // Stuck for 0.8s - force forward movement
+    const toGoalDir = vnorm(vsub(gc, me.pos));
     
-    let allowedAngle = PExt.shotAngle; // default 45°
-    if (distToGoal <= 5.0) {
-      allowedAngle = 80; // Very close: wide angle
-    } else if (distToGoal <= 7.0) {
-      allowedAngle = 60; // Close: medium angle
-    } else if (distToGoal <= 10.0) {
-      allowedAngle = 45; // Medium: narrow angle
+    // Try forced carry with relaxed minConeDist
+    const relaxedMinConeDist = 1.4;
+    let closestInCone = Infinity;
+    for (const p of st.pl) {
+      if (p.team === me.team) continue;
+      const toOpp = vsub(p.pos, me.pos);
+      const dist = vlen(toOpp);
+      if (dist > 10.0) continue;
+      const angle = vang(toGoalDir, toOpp);
+      if (angle < 60) { // 120° cone
+        if (dist < closestInCone) closestInCone = dist;
+      }
     }
     
-    if (angle < allowedAngle) {
-      const err = (1 - PExt.shotAccuracy) * 2.5;
-      const t = v(gc.x, gc.y + rng(-err, err));
-      kick(st, idx, PExt.shotSpeed, true, t);
+    if (closestInCone >= relaxedMinConeDist) {
+      // Forced carry
+      me.act = "carry";
+      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 6.0)));
+      me.face = toGoalDir;
+      chosenAction = "carry-forced";
       return;
+    } else {
+      // Forced forward pass (even if blocked)
+      const tgt = bestPass(st, idx);
+      if (tgt !== null) {
+        doPassTo(st, idx, tgt);
+        chosenAction = "pass-forced";
+        return;
+      }
     }
   }
+  
+  // ★ v8.7: Phase separation - divide decision-making into Phase A (advance) and Phase B (finish)
+  
+  // Phase B (finish): Shot-first evaluation
+  if (isPhaseB) {
+    const shouldPrioritizeShot = distToGoal < 7.5;
+    
+    if (shouldPrioritizeShot) {
+      // D-2: Graduated shot conditions based on distance
+      const toGoal = vsub(gc, me.pos);
+      const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
+      
+      let allowedAngle = 45; // default
+      if (distToGoal <= 5.0) {
+        allowedAngle = 80; // Very close: wide angle
+      } else if (distToGoal <= 7.0) {
+        allowedAngle = 60; // Close: medium angle
+      } else if (distToGoal <= 7.5) {
+        allowedAngle = 45; // Medium: narrow angle
+      }
+      
+      if (angle < allowedAngle) {
+        const err = (1 - PExt.shotAccuracy) * 2.5;
+        const t = v(gc.x, gc.y + rng(-err, err));
+        kick(st, idx, PExt.shotSpeed, true, t);
+        return;
+      }
+    }
+  }
+  
+  // Phase A (advance): Shot-first is DISABLED - prioritize pass and carry
   
   // Try pass
   const tgt = bestPass(st, idx);
@@ -578,11 +645,11 @@ export function decideHasBall(st: State, idx: number) {
     return;
   }
   
-  // Try shot again (fallback for edge cases)
-  if (inOpponentHalf && distToGoal < PExt.shotRange) {
+  // Fallback shot: only in Phase A with extreme conditions (accidental breakaway)
+  if (isPhaseA && distToGoal < 5.0) {
     const toGoal = vsub(gc, me.pos);
     const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
-    if (angle < PExt.shotAngle) {
+    if (angle < 80) {
       const err = (1 - PExt.shotAccuracy) * 2.5;
       const t = v(gc.x, gc.y + rng(-err, err));
       kick(st, idx, PExt.shotSpeed, true, t);
@@ -597,7 +664,16 @@ export function decideHasBall(st: State, idx: number) {
   }
   
   // Fallback: dribble
+  chosenAction = "dribble";
   doDribble(st, idx);
+  
+  // ★ v8.7.1: Log decision result
+  if (shouldLog) {
+    const ax = me.pos.x * (-me.team);
+    const w = PExt.pitchHalfW;
+    const phase = ax < (2 * w / 3) ? "A" : "B";
+    console.log(`[DECIDE] t=${st.time.toFixed(1)} P${idx}(${me.team === -1 ? 'B' : 'R'}) ${me.role}${me.isGK ? '-GK' : ''} ax=${ax.toFixed(1)} phase=${phase} action=${chosenAction} tgt=${targetIdx}`);
+  }
 }
 
 export function decideNoBall(st: State, idx: number) {
@@ -924,11 +1000,12 @@ export function update(st: State, dt: number) {
   const b = st.ball;
   
   // A. AI decisions
+  // ★ v8.7.1: Fix dt timer - restore subtract-based logic
   for (let i = 0; i < st.pl.length; i++) {
     const p = st.pl[i];
-    p.dt += dt;
-    if (p.dt >= PExt.decisionInterval) {
-      p.dt = 0;
+    p.dt -= dt;
+    if (p.dt <= 0) {
+      p.dt = PExt.decisionInterval;
       if (b.owner === i) {
         decideHasBall(st, i);
       } else {
@@ -1077,6 +1154,10 @@ export function update(st: State, dt: number) {
     // Ball follows owner
     if (b.owner !== null) {
       b.pos = { ...st.pl[b.owner].pos };
+      // ★ v8.7.1: Track hold time for safety valve
+      b.holdT += dt;
+    } else {
+      b.holdT = 0;
     }
   }
   

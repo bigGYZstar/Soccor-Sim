@@ -54,23 +54,27 @@ for (let i = 1; i <= MATCHES; i++) {
       const owner = st.pl[st.ball.owner];
       const team = owner.team; // -1(Blue) or 1(Red)
       
-      // 進行度合いの計算 (相手ゴール方向がプラスになるように正規化)
+      // v8.7: progressX を 0（センター）→ pitchHalfW（相手ゴール）へ正規化
       // Blue(-1)は+X方向、Red(1)は-X方向が前
       const progressX = st.ball.pos.x * (-team); 
-      const thirdDist = P.pitchHalfW / 3; // ピッチの1/3の長さ (20/3 = 6.66)
+      const w = P.pitchHalfW; // 10.0
+      const third = w / 3;    // 3.33
 
       if (team === -1) {
         stats.possTotalBlue++;
-        if (progressX < -thirdDist) stats.zoneDefBlue++;       // 自陣深く (Defensive 3rd)
-        else if (progressX > thirdDist) stats.zoneAttBlue++;    // 敵陣深く (Attacking 3rd)
-        else stats.zoneMidBlue++;                               // 中盤 (Middle 3rd)
+        // Def: progressX < third (0-3.33)
+        // Mid: third <= progressX < 2*third (3.33-6.66)
+        // Att: progressX >= 2*third (6.66-10.0)
+        if (progressX < third) stats.zoneDefBlue++;
+        else if (progressX < 2 * third) stats.zoneMidBlue++;
+        else stats.zoneAttBlue++;
         
         if (owner.act === "carry") stats.carryFramesBlue++;
       } else {
         stats.possTotalRed++;
-        if (progressX < -thirdDist) stats.zoneDefRed++;
-        else if (progressX > thirdDist) stats.zoneAttRed++;
-        else stats.zoneMidRed++;
+        if (progressX < third) stats.zoneDefRed++;
+        else if (progressX < 2 * third) stats.zoneMidRed++;
+        else stats.zoneAttRed++;
         
         if (owner.act === "carry") stats.carryFramesRed++;
       }
