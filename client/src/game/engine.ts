@@ -120,9 +120,9 @@ export function give(ball: Ball, idx: number, pl: Player[]) {
   ball.lob = 0;
 }
 
-export function kick(st: State, dir: V, spd: number, shot: boolean, tgt: V, isLong: boolean = false, customErr?: number) {
+export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, tgt: V, isLong: boolean = false, customErr?: number) {
   const b = st.ball;
-  const kicker = b.owner !== null ? st.pl[b.owner] : null;
+  const kicker = st.pl[kickerIdx];
   if (b.owner !== null) b.lastTouchTeam = st.pl[b.owner].team;
   
   // ★ v7.2: Unified error handling with GK-specific safety
@@ -171,10 +171,19 @@ export function kick(st: State, dir: V, spd: number, shot: boolean, tgt: V, isLo
   const err = v(rng(-errRange, errRange), rng(-errRange, errRange));
   finalTarget = vadd(finalTarget, err);
   
-  st.trail = { start: { ...b.pos }, end: finalTarget, shot, longPass: isLong, t: PExt.trailDuration };
+  // v8.2 Fix: Calculate direction from kicker position (not ball position)
+  const dir = vnorm(vsub(finalTarget, kicker.pos));
+  
+  // v8.2 Fix: Reset ball position to kicker's foot (prevent dribble drift)
+  b.pos = vadd(kicker.pos, vscl(dir, 0.5));
+  
+  st.trail = { start: kicker.pos, end: finalTarget, shot, longPass: isLong, t: PExt.trailDuration };
   b.owner = null; b.free = true; b.shot = shot;
-  b.vel = vscl(vnorm(vsub(finalTarget, b.pos)), spd); b.dead = 0;
+  b.vel = vscl(dir, spd); b.dead = 0;
   b.lob = isLong ? 1.0 : 0;
+  
+  // Update kicker's face direction
+  kicker.face = dir;
 }
 
 export function nearest(st: State, pos: V, teamFilter?: number): number {
@@ -239,7 +248,8 @@ export function laneBlocked(st: State, from: V, to: V, team: number): boolean {
     const proj = vdot(toOpp, norm);
     if (proj < 0 || proj > dist) continue;
     const closest = vadd(from, vscl(norm, proj));
-    if (vdist(closest, opp.pos) < 0.8) return true;
+    // v8.3: Relax blocking radius from 0.8 to 0.4 to allow more passes through
+    if (vdist(closest, opp.pos) < 0.4) return true;
   }
   return false;
 }
@@ -258,8 +268,32 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
     const gp = (tm.pos.x - me.pos.x) * -me.team;
     score += gp * 2.0;
     score += openness(st, tm) * 3.0;
-    if (laneBlocked(st, me.pos, tm.pos, me.team)) score -= 4.0;
+    
+    const isBlocked = laneBlocked(st, me.pos, tm.pos, me.team);
+    // v8.3: Reduce blocking penalty for forward passes
+    const isForwardPass = gp > 2.0;
+    if (isBlocked) score -= (isForwardPass ? 2.0 : 4.0);
     if (isOffside(st, tm, me.pos)) score -= 100;
+    
+    // ★ v8.3: GK diagonal switch (side change) evaluation
+    if (me.isGK && Math.abs(tm.pos.y) > 3.0) {
+      // Pass from GK to wide SB/WM is effective press evasion
+      score += 6.0;
+    }
+    
+    // ★ v8.3: Attacking third penetration pass (line break) is top priority
+    const isIntoAttackingThird = (tm.pos.x * -me.team) > (PExt.pitchHalfW / 3);
+    const amINotInAttackingThird = (me.pos.x * -me.team) <= (PExt.pitchHalfW / 3);
+    if (isIntoAttackingThird && amINotInAttackingThird && gp > 0) {
+      if (!isBlocked) {
+        score += 15.0; // Unblocked pass into opponent deep territory is "must play"
+        if (Math.random() < 0.01) { // Log 1% of attempts
+          console.log(`[ATT 3RD PASS] P${me.idx}(${me.pos.x.toFixed(1)}) -> P${i}(${tm.pos.x.toFixed(1)}), score: ${score.toFixed(1)}`);
+        }
+      } else if (Math.random() < 0.01) {
+        console.log(`[ATT 3RD BLOCKED] P${me.idx} -> P${i}, blocked`);
+      }
+    }
     
     // v7.0: Up-Back-Through bonuses
     if (me.role === "FWD" && tm.role === "MID") score += 8.0;
@@ -326,8 +360,7 @@ export function doPassTo(st: State, idx: number, targetIdx: number) {
   if (inOwnHalf) baseErr *= 0.6;
   
   // v7.2: Remove pre-kick error - let kick() handle all error calculation
-  me.face = vnorm(vsub(tp, me.pos));
-  kick(st, me.face, PExt.passSpeed, false, tp, false, baseErr);
+  kick(st, idx, PExt.passSpeed, false, tp, false, baseErr);
 }
 
 export function doLongPassTo(st: State, idx: number, targetIdx: number) {
@@ -342,15 +375,14 @@ export function doLongPassTo(st: State, idx: number, targetIdx: number) {
   }
   const err = (1 - PExt.longPassAccuracy) * 2.5;
   // v7.2: Remove pre-kick error - let kick() handle all error calculation
-  me.face = vnorm(vsub(tp, me.pos));
-  kick(st, me.face, PExt.longPassSpeed, false, tp, true, err);
+  kick(st, idx, PExt.longPassSpeed, false, tp, true, err);
 }
 
 export function doDribble(st: State, idx: number) {
   const me = st.pl[idx];
   if (Math.random() > PExt.dribbleControl) {
     const fd = vnorm(v(rng(-1, 1), rng(-1, 1)));
-    kick(st, fd, 3, false, vadd(me.pos, vscl(fd, 2)));
+    kick(st, idx, 3, false, vadd(me.pos, vscl(fd, 2)));
     return;
   }
   const fwd = vnorm(v(-me.team + rng(-0.4, 0.4), rng(-0.6, 0.6)));
@@ -382,14 +414,28 @@ export function doCross(st: State, idx: number) {
     }
     const err = 1.2;
     // v7.2: Remove pre-kick error - let kick() handle all error calculation
-    me.face = vnorm(vsub(tp, me.pos));
-    kick(st, me.face, PExt.longPassSpeed * 1.1, false, tp, true, err);
+    kick(st, idx, PExt.longPassSpeed * 1.1, false, tp, true, err);
   }
 }
 
 export function decideHasBall(st: State, idx: number) {
   const me = st.pl[idx];
   const gc = v(-me.team * PExt.pitchHalfW, 0);
+  
+  // ★ v8.3: GK bait (press attraction)
+  if (me.isGK) {
+    let minEnemyDist = Infinity;
+    for (const e of st.pl) {
+      if (e.team === me.team) continue;
+      const d = vdist(me.pos, e.pos);
+      if (d < minEnemyDist) minEnemyDist = d;
+    }
+    // If enemy is far, don't rush - keep ball at feet to draw opponent FW
+    if (minEnemyDist > 6.0) {
+      me.act = "idle";
+      return;
+    }
+  }
   
   // ★ v6.1: Carry state lock - continue forward movement if no enemy nearby
   if (me.act === "carry") {
@@ -428,8 +474,10 @@ export function decideHasBall(st: State, idx: number) {
   const distToGoal = vdist(me.pos, gc);
   if (distToGoal > 3.0 && !me.isGK) {
     const toGoalDir = vnorm(vsub(gc, me.pos));
-    const searchDist = 4.0;
-    const coneAngle = 60;
+    // v8.3: Expand carry range significantly
+    const inOpponentHalf = me.pos.x * -me.team > 0;
+    const searchDist = inOpponentHalf ? 8.0 : 5.0;
+    const coneAngle = inOpponentHalf ? 90 : 60;
     
     let pathClear = true;
     for (const p of st.pl) {
@@ -446,8 +494,7 @@ export function decideHasBall(st: State, idx: number) {
     
     if (pathClear) {
       me.act = "carry" as any; // ★ Use "carry" state instead of "dribble" to enable lock
-      me.face = toGoalDir;
-      kick(st, toGoalDir, PExt.dribbleSpeed * 1.2, false, me.tgt);
+      kick(st, idx, PExt.dribbleSpeed * 1.2, false, me.tgt);
       return;
     }
   }
@@ -466,15 +513,17 @@ export function decideHasBall(st: State, idx: number) {
     return;
   }
   
-  // Try shot
-  if (distToGoal < PExt.shotRange) {
+  // Try shot (v8.2: Add opponent territory check)
+  const inOpponentHalf = me.pos.x * -me.team > 0;
+  if (inOpponentHalf && distToGoal < PExt.shotRange) {
     const toGoal = vsub(gc, me.pos);
     const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
+    console.log(`[SHOT CHECK] Player ${idx} at (${me.pos.x.toFixed(1)}, ${me.pos.y.toFixed(1)}), distToGoal: ${distToGoal.toFixed(1)}, angle: ${angle.toFixed(1)}, shotAngle: ${PExt.shotAngle}`);
     if (angle < PExt.shotAngle) {
       const err = (1 - PExt.shotAccuracy) * 2.5;
       const t = v(gc.x, gc.y + rng(-err, err));
-      me.face = vnorm(vsub(t, me.pos));
-      kick(st, me.face, PExt.shotSpeed, true, t);
+      console.log(`[SHOT!] Player ${idx} shoots at goal (${gc.x}, ${gc.y})`);
+      kick(st, idx, PExt.shotSpeed, true, t);
       return;
     }
   }
@@ -498,58 +547,93 @@ export function decideNoBall(st: State, idx: number) {
   const myTeamHasBall = ballOwner && ballOwner.team === me.team;
   
   if (myTeamHasBall) {
-    // ★ v7.0: Asymmetric 3-2-5 tactical positioning
+    // ★ v8.3: GK+1 buildup, dynamic stagger (3-1/3-2), Rest Defence
     const carrier = ballOwner;
-    const isCarrying = carrier && (carrier.act === "dribble" || (carrier.act as any) === "carry");
-    
-    if (me.role === "FWD") {
-      if (me.slot === 9) {
-        // Left FW: Drop down (False 9)
-        const dropTarget = v(me.home.x + 2.0, me.home.y);
-        me.act = "move";
-        me.tgt = dropTarget;
+    const targetGoalX = -me.team * PExt.pitchHalfW;
+    const isOwnHalf = (carrier.pos.x * me.team) > 0;
+    let baseTgt = v(me.home.x, me.home.y);
+
+    // ① GK's +1 buildup participation
+    if (me.isGK) {
+      if (isOwnHalf) {
+        // During own-half buildup, position in penalty area between CBs as "back +1"
+        baseTgt = v(me.team * (PExt.pitchHalfW - 3.5), carrier.pos.y * 0.3);
       } else {
-        // Right FW: Pin high
-        me.act = "move";
-        me.tgt = v(me.home.x - 3.0, me.home.y);
+        // When pushed into opponent half, maintain high line (sweeper keeper)
+        baseTgt = v(me.team * (PExt.pitchHalfW - 6.0), 0);
       }
-      
-      // Diagonal runs when carrier is dribbling
-      if (isCarrying) {
-        const penaltyBoxX = -me.team * (PExt.pitchHalfW - PExt.penAreaW);
-        const diagonalTarget = v(penaltyBoxX, me.pos.y * 0.85);
-        me.tgt = diagonalTarget;
-      }
-    } else if (me.role === "MID") {
-      // Squeeze into half-space (±2.5)
-      const halfSpaceY = me.home.y > 0 ? 2.5 : -2.5;
-      me.act = "move";
-      me.tgt = v(me.home.x, halfSpaceY);
-      
-      // Show for pass if ahead of ball
-      if ((me.pos.x - carrier.pos.x) * -me.team > 0) {
-        me.tgt = vadd(me.pos, v(-me.team * 5.0, halfSpaceY > 0 ? 4.0 : -4.0));
-      }
-    } else if (me.role === "DEF") {
-      if (me.slot === 3) {
-        // Left SB: High position (winger)
-        me.act = "move";
-        me.tgt = v(me.home.x - 6.0, me.home.y);
-      } else if (me.slot === 4) {
-        // Right SB: Low position (3-back)
-        me.act = "move";
-        me.tgt = v(me.home.x + 3.0, me.home.y);
-      } else {
-        // CBs: Stagger
-        const stagger = me.slot === 1 ? -1.0 : 1.0;
-        me.act = "move";
-        me.tgt = v(me.home.x + stagger, me.home.y);
-      }
-    } else {
-      // GK: Stay home
-      me.act = "move";
-      me.tgt = { ...me.home };
     }
+    // ② FWD role division (pin and drop)
+    else if (me.role === "FWD") {
+      if (me.idx % 2 === 0) {
+        // Dropping FW (False 9): Pull ball between opponent lines
+        baseTgt = vlerp(me.pos, carrier.pos, 0.45);
+      } else {
+        // Pinning FW: Pin opponent CBs, always target depth (behind)
+        baseTgt = v(targetGoalX * 0.85, me.home.y * 0.5);
+      }
+    }
+    // ③ CM's dynamic stagger (段差) and 3-1/3-2 formation
+    else if (me.role === "MID" && Math.abs(me.home.y) <= 3.0) {
+      const isClosestCM = nearest(st, carrier.pos, me.team, carrier.idx) === me.idx;
+      if (isOwnHalf && isClosestCM) {
+        // During own-half buildup, CM closest to ball drops to CB line to form "3-1" pivot
+        baseTgt = v(carrier.pos.x + me.team * 2.0, carrier.pos.y > 0 ? 2.0 : -2.0);
+      } else {
+        // Other CM takes high position as link man (vertical pass outlet)
+        baseTgt = v(carrier.pos.x - me.team * 5.0, me.home.y);
+      }
+    }
+    // ④ Wide MF (WM) half-space invasion
+    else if (me.role === "MID" && Math.abs(me.home.y) > 3.0) {
+      // Always tuck inside, occupy opponent's half-space
+      baseTgt = v(carrier.pos.x - me.team * 3.0, Math.sign(me.home.y) * 2.5);
+    }
+    // ⑤ SB and CB's Rest Defence (2-3/3-2 remaining defense)
+    else if (me.role === "DEF") {
+      if (Math.abs(me.home.y) > 3.0) {
+        const isBallSide = (carrier.pos.y * me.home.y) > 0;
+        if (isBallSide) {
+          // Ball-side SB provides width, outlet for progression
+          baseTgt = v(carrier.pos.x - me.team * 3.0, Math.sign(me.home.y) * 5.5);
+        } else {
+          // ★ Far-side SB doesn't push up, tucks inside to form "3-back" against counters (Rest Defence)
+          baseTgt = v(carrier.pos.x + me.team * 4.0, Math.sign(me.home.y) * 2.0);
+        }
+      } else {
+        // CB: Always support below (diagonally behind) ball while managing risk
+        baseTgt = v(carrier.pos.x + me.team * 5.0, me.home.y * 0.5);
+      }
+    }
+
+    // --- Dynamic pass lane creation (Hide & Show) ---
+    const carrierFacingBack = (carrier.face.x * me.team) > 0;
+    if (!carrierFacingBack && !me.isGK && (me.pos.x * -me.team) > (carrier.pos.x * -me.team)) {
+      const dirToMe = vnorm(vsub(baseTgt, carrier.pos));
+      let isShadowed = false;
+      const enemies = st.pl.filter(e => e.team !== me.team);
+      
+      for (const e of enemies) {
+        const toEnemy = vsub(e.pos, carrier.pos);
+        const dot = toEnemy.x * dirToMe.x + toEnemy.y * dirToMe.y;
+        if (dot > 0 && dot < vlen(vsub(baseTgt, carrier.pos))) {
+          const proj = vadd(carrier.pos, vscl(dirToMe, dot));
+          if (vdist(e.pos, proj) < 1.5) {
+            isShadowed = true;
+            break;
+          }
+        }
+      }
+      if (isShadowed) {
+        const perpDir = v(-dirToMe.y, dirToMe.x);
+        const shiftAmount = me.pos.y > 0 ? -2.0 : 2.0;
+        baseTgt = vadd(baseTgt, vscl(perpDir, shiftAmount));
+      }
+    }
+
+    me.tgt = pitchClamp(baseTgt);
+    me.act = "move";
+    return;
   } else {
     // ★ Fix: Prevent ball-swarming behavior
     const ballPos = b.free ? b.pos : (ballOwner ? ballOwner.pos : b.pos);
@@ -712,20 +796,33 @@ export const update = (st: State, dt: number) => {
       st.ball.vel = vscl(st.ball.vel, newSpd / spd);
     }
     
-    // 壁反射とゴール判定
+    // v8.2 Fix: Goal detection before wall bounce
     const b = st.ball;
+    
+    // Check Y-axis bounds first
     if (Math.abs(b.pos.y) > P.pitchHalfH) {
       b.pos.y = Math.sign(b.pos.y) * P.pitchHalfH;
       b.vel.y *= -0.4;
     }
+    
+    // Check X-axis: Goal detection BEFORE wall bounce
     if (Math.abs(b.pos.x) > P.pitchHalfW) {
       if (Math.abs(b.pos.y) <= P.goalHalfH) {
-         if (b.pos.x > 0) { st.sL++; st.flashTxt="GOAL!"; st.koSide = -1; }
-         else { st.sR++; st.flashTxt="GOAL!"; st.koSide = 1; }
+         // GOAL!
+         if (b.pos.x > 0) {
+           st.sL++; // Blue scores (left side)
+           console.log(`GOAL! Blue scores. Score: ${st.sL} - ${st.sR}`);
+         } else {
+           st.sR++; // Red scores (right side)
+           console.log(`GOAL! Red scores. Score: ${st.sL} - ${st.sR}`);
+         }
          st.paused = true;
          st.pauseT = P.goalResetDelay;
          st.flash = 1.8;
+         st.flashTxt = "GOAL!";
+         return; // Exit update immediately after goal
       } else {
+        // Out of bounds (not in goal)
         b.pos.x = Math.sign(b.pos.x) * P.pitchHalfW;
         b.vel.x *= -0.4;
       }
