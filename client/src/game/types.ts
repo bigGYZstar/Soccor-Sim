@@ -12,6 +12,21 @@ export type SpeedMode = "LOW" | "MID" | "FAST";
 
 export type SetPieceType = "throw-in" | "corner" | "free-kick" | null;
 
+export type MatchStats = {
+  ownGoals: number;
+  throwIns: number;
+  throwInsFromPassMiss: number;
+  corners: number;
+};
+
+export type SetPieceKind = "THROWIN" | "CORNER" | "GOALKICK";
+
+export interface SetPieceRestart {
+  kind: SetPieceKind;
+  team: number;  // Restarting team (-1 or +1)
+  pos: V;  // Restart position (on line)
+}
+
 export interface Trail {
   start: V;
   end: V;
@@ -36,7 +51,9 @@ export interface SetPieceAnim {
 }
 
 export interface Player {
+  idx: number;  // Player index in st.pl array (0-21)
   pos: V;
+  vel: V;  // Velocity vector for inertia
   team: number;
   num: number;
   home: V;
@@ -48,6 +65,10 @@ export interface Player {
   slot: number;
   role: Role;
   jumpY: number;
+  turnDebt: number;  // 0-1, turning inertia penalty
+  staminaShort: number;  // 0-1, short-term stamina
+  burstT: number;  // Off-the-ball burst timer
+  burstCD: number;  // Off-the-ball burst cooldown
 }
 
 export interface Ball {
@@ -60,6 +81,8 @@ export interface Ball {
   cooldown: number;
   lastTouchTeam: number;
   lob: number;
+  lastKickType?: "PASS" | "LONG" | "CROSS" | "SHOT" | "OTHER";
+  lastKickTeam?: number;
 }
 
 export interface State {
@@ -78,6 +101,8 @@ export interface State {
   restartT: number;
   speed: SpeedMode;
   setPiece: SetPieceAnim | null;
+  setPieceRestart: SetPieceRestart | null;
+  stats: MatchStats;
   atkLevelBlue: number;
   atkLevelRed: number;
 }

@@ -25,6 +25,12 @@ const stats = {
   possTotalBlue: 0, possTotalRed: 0,
   zoneDefBlue: 0, zoneMidBlue: 0, zoneAttBlue: 0,
   zoneDefRed: 0, zoneMidRed: 0, zoneAttRed: 0,
+  
+  // Match statistics
+  ownGoals: 0,
+  throwIns: 0,
+  throwInsFromPassMiss: 0,
+  corners: 0,
 };
 
 const startTime = Date.now();
@@ -104,6 +110,12 @@ for (let i = 1; i <= MATCHES; i++) {
   if (st.sL > st.sR) stats.winsBlue++;
   else if (st.sR > st.sL) stats.winsRed++;
   else stats.draws++;
+  
+  // Match statistics
+  stats.ownGoals += st.stats.ownGoals;
+  stats.throwIns += st.stats.throwIns;
+  stats.throwInsFromPassMiss += st.stats.throwInsFromPassMiss;
+  stats.corners += st.stats.corners;
 
   // 進捗バー (10試合ごと)
   if (i % 10 === 0) process.stdout.write(`[${i}/${MATCHES}] `);
@@ -146,4 +158,11 @@ console.log("\n💡 DIAGNOSIS GUIDE:");
 console.log("   - Zone DEF > 50%: U-shaped passing disease (stuck in own half)");
 console.log("   - Forward Pass < 30%: Too many sideways/backward passes");
 console.log("   - Zone ATT < 10%: Not reaching shooting positions");
+console.log("==================================================");
+console.log("\n📊 MATCH STATISTICS (Average per match)");
+console.log("==================================================");
+console.log(`   - Own Goals              : ${avg(stats.ownGoals)}`);
+console.log(`   - Throw-ins              : ${avg(stats.throwIns)}`);
+console.log(`   - Throw-ins (Pass Miss)  : ${avg(stats.throwInsFromPassMiss)}`);
+console.log(`   - Corners                : ${avg(stats.corners)}`);
 console.log("==================================================");

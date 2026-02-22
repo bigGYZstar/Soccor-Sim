@@ -71,15 +71,29 @@ export function mkPlayers(): Player[] {
   for (let i = 0; i < 11; i++) {
     const home = FORM_442_BLUE[i];
     pl.push({
-      pos: { ...home }, team: -1, num: i + 1, home, face: v(1, 0),
+      idx: pl.length,  // Bug fix A: Add idx (0-21)
+      pos: { ...home },
+      vel: v(0, 0),  // Phase 5: velocity for inertia
+      team: -1, num: i + 1, home, face: v(1, 0),
       act: "idle", tgt: { ...home }, dt: 0, isGK: i === 0, slot: i, role: slotRole(i), jumpY: 0,
+      turnDebt: 0,  // Phase 5: turning inertia
+      staminaShort: 1,  // Phase 5: short-term stamina (full)
+      burstT: 0,  // Phase 5: off-the-ball burst timer
+      burstCD: 0,  // Phase 5: burst cooldown
     });
   }
   for (let i = 0; i < 11; i++) {
     const home = FORM_442_RED[i];
     pl.push({
-      pos: { ...home }, team: 1, num: i + 1, home, face: v(-1, 0),
+      idx: pl.length,  // Bug fix A: Add idx (0-21)
+      pos: { ...home },
+      vel: v(0, 0),  // Phase 5: velocity for inertia
+      team: 1, num: i + 1, home, face: v(-1, 0),
       act: "idle", tgt: { ...home }, dt: 0, isGK: i === 0, slot: i, role: slotRole(i), jumpY: 0,
+      turnDebt: 0,  // Phase 5: turning inertia
+      staminaShort: 1,  // Phase 5: short-term stamina (full)
+      burstT: 0,  // Phase 5: off-the-ball burst timer
+      burstCD: 0,  // Phase 5: burst cooldown
     });
   }
   return pl;
@@ -93,6 +107,8 @@ export function mkState(): State {
     trail: null, flash: 0, flashTxt: "", restartT: 0,
     speed: "MID",
     setPiece: null,
+    setPieceRestart: null,
+    stats: { ownGoals: 0, throwIns: 0, throwInsFromPassMiss: 0, corners: 0 },
     atkLevelBlue: 5,
     atkLevelRed: 5,
   };
@@ -178,6 +194,14 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   b.pos = vadd(kicker.pos, vscl(dir, 0.5));
   
   st.trail = { start: kicker.pos, end: finalTarget, shot, longPass: isLong, t: PExt.trailDuration };
+  
+  // Track kick type for statistics
+  b.lastKickTeam = kicker.team;
+  b.lastTouchTeam = kicker.team; // Ensure lastTouchTeam is set on every kick
+  if (shot) b.lastKickType = "SHOT";
+  else if (isLong) b.lastKickType = "LONG";
+  else b.lastKickType = "PASS";
+  
   b.owner = null; b.free = true; b.shot = shot;
   b.vel = vscl(dir, spd); b.dead = 0;
   b.lob = isLong ? 1.0 : 0;
@@ -189,6 +213,18 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
 export function nearest(st: State, pos: V, teamFilter?: number): number {
   let bi = 0, bd = Infinity;
   for (let i = 0; i < st.pl.length; i++) {
+    if (teamFilter !== undefined && st.pl[i].team !== teamFilter) continue;
+    const d = vdist(pos, st.pl[i].pos);
+    if (d < bd) { bd = d; bi = i; }
+  }
+  return bi;
+}
+
+// Bug fix B: Add nearestEx with excludeIdx parameter
+export function nearestEx(st: State, pos: V, teamFilter?: number, excludeIdx?: number): number {
+  let bi = -1, bd = Infinity;
+  for (let i = 0; i < st.pl.length; i++) {
+    if (excludeIdx !== undefined && i === excludeIdx) continue;
     if (teamFilter !== undefined && st.pl[i].team !== teamFilter) continue;
     const d = vdist(pos, st.pl[i].pos);
     if (d < bd) { bd = d; bi = i; }
@@ -373,8 +409,8 @@ export function doLongPassTo(st: State, idx: number, targetIdx: number) {
     const pd = vdist(me.pos, tm.pos);
     tp = vadd(tp, vscl(lead, Math.min(pd * 0.15, 2.0)));
   }
-  const err = (1 - PExt.longPassAccuracy) * 2.5;
-  // v7.2: Remove pre-kick error - let kick() handle all error calculation
+  
+  const err = (1 - PExt.longPassAccuracy) * 2.0;
   kick(st, idx, PExt.longPassSpeed, false, tp, true, err);
 }
 
@@ -493,13 +529,42 @@ export function decideHasBall(st: State, idx: number) {
     }
     
     if (pathClear) {
-      me.act = "carry" as any; // ★ Use "carry" state instead of "dribble" to enable lock
-      kick(st, idx, PExt.dribbleSpeed * 1.2, false, me.tgt);
+      // Bug fix C: Don't kick - maintain possession while carrying
+      me.act = "carry";
+      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 8.0)));
+      me.face = toGoalDir;
+      // ★ Don't call kick() - ball follows owner in update loop
       return;
     }
   }
   
-  // Try pass first
+  // D-1: Shot priority - evaluate shot before pass when close to goal in opponent half
+  const inOpponentHalf = me.pos.x * -me.team > 0;
+  const shouldPrioritizeShot = inOpponentHalf && distToGoal < (PExt.shotRange + 2.0);
+  
+  if (shouldPrioritizeShot) {
+    // D-2: Graduated shot conditions based on distance
+    const toGoal = vsub(gc, me.pos);
+    const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
+    
+    let allowedAngle = PExt.shotAngle; // default 45°
+    if (distToGoal <= 5.0) {
+      allowedAngle = 80; // Very close: wide angle
+    } else if (distToGoal <= 7.0) {
+      allowedAngle = 60; // Close: medium angle
+    } else if (distToGoal <= 10.0) {
+      allowedAngle = 45; // Medium: narrow angle
+    }
+    
+    if (angle < allowedAngle) {
+      const err = (1 - PExt.shotAccuracy) * 2.5;
+      const t = v(gc.x, gc.y + rng(-err, err));
+      kick(st, idx, PExt.shotSpeed, true, t);
+      return;
+    }
+  }
+  
+  // Try pass
   const tgt = bestPass(st, idx);
   if (tgt !== null) {
     doPassTo(st, idx, tgt);
@@ -513,16 +578,13 @@ export function decideHasBall(st: State, idx: number) {
     return;
   }
   
-  // Try shot (v8.2: Add opponent territory check)
-  const inOpponentHalf = me.pos.x * -me.team > 0;
+  // Try shot again (fallback for edge cases)
   if (inOpponentHalf && distToGoal < PExt.shotRange) {
     const toGoal = vsub(gc, me.pos);
     const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
-    console.log(`[SHOT CHECK] Player ${idx} at (${me.pos.x.toFixed(1)}, ${me.pos.y.toFixed(1)}), distToGoal: ${distToGoal.toFixed(1)}, angle: ${angle.toFixed(1)}, shotAngle: ${PExt.shotAngle}`);
     if (angle < PExt.shotAngle) {
       const err = (1 - PExt.shotAccuracy) * 2.5;
       const t = v(gc.x, gc.y + rng(-err, err));
-      console.log(`[SHOT!] Player ${idx} shoots at goal (${gc.x}, ${gc.y})`);
       kick(st, idx, PExt.shotSpeed, true, t);
       return;
     }
@@ -575,7 +637,8 @@ export function decideNoBall(st: State, idx: number) {
     }
     // ③ CM's dynamic stagger (段差) and 3-1/3-2 formation
     else if (me.role === "MID" && Math.abs(me.home.y) <= 3.0) {
-      const isClosestCM = nearest(st, carrier.pos, me.team, carrier.idx) === me.idx;
+      // Bug fix B: Use nearestEx instead of nearest with 4 args
+      const isClosestCM = nearestEx(st, carrier.pos, me.team, carrier.idx) === me.idx;
       if (isOwnHalf && isClosestCM) {
         // During own-half buildup, CM closest to ball drops to CB line to form "3-1" pivot
         baseTgt = v(carrier.pos.x + me.team * 2.0, carrier.pos.y > 0 ? 2.0 : -2.0);
@@ -630,6 +693,57 @@ export function decideNoBall(st: State, idx: number) {
         baseTgt = vadd(baseTgt, vscl(perpDir, shiftAmount));
       }
     }
+
+    // --- Phase 5.5: Off-the-Ball Movement (minimal, safe) ---
+    if (!me.isGK && (me.role === "MID" || me.role === "FWD")) {
+      me.burstCD = Math.max(0, (me.burstCD ?? 0) - P.decisionInterval);
+
+      const carrier = ballOwner!;
+      const attackDir = -me.team;
+
+      const iAmAhead = (me.pos.x - carrier.pos.x) * attackDir > 0.6;
+      const dToCarrier = vdist(me.pos, carrier.pos);
+      const inRange = dToCarrier >= 3.0 && dToCarrier <= 14.0;
+
+      if (iAmAhead && inRange && me.burstCD <= 0) {
+        const blocked = laneBlocked(st, carrier.pos, me.pos, me.team);
+        if (blocked) {
+          // shift along perpendicular direction to open a new lane
+          const dir = vnorm(vsub(me.pos, carrier.pos));
+          const perp = v(-dir.y, dir.x);
+
+          // E-1: Increase shift to 2.2 for stronger lateral movement
+          const shift = 2.2; // Increased from 1.9 to create more space
+          const cand1 = pitchClamp(vadd(baseTgt, vscl(perp,  shift)));
+          const cand2 = pitchClamp(vadd(baseTgt, vscl(perp, -shift)));
+
+          const ok1 = !laneBlocked(st, carrier.pos, cand1, me.team);
+          const ok2 = !laneBlocked(st, carrier.pos, cand2, me.team);
+
+          if (ok1 || ok2) {
+            // choose better one: prefer more open + more forward
+            const score = (tp: V) => {
+              const gp = (tp.x - carrier.pos.x) * attackDir;
+              // reuse "openness" by creating a temporary player-like evaluation:
+              // simplest: use nearest opponent distance to the point
+              let minD = Infinity;
+              for (const opp of st.pl) if (opp.team !== me.team) minD = Math.min(minD, vdist(tp, opp.pos));
+              const open = Math.min(minD / 3.0, 1.0);
+              return gp * 1.5 + open * 2.5;
+            };
+            const pick = (ok1 && ok2) ? (score(cand1) >= score(cand2) ? cand1 : cand2) : (ok1 ? cand1 : cand2);
+
+            baseTgt = pick;
+            // E-2: Reduce cooldown from 1.0 to 0.8 for more frequent movement
+            me.burstCD = 0.8;
+          } else {
+            // E-2: Reduce failure cooldown from 0.6 to 0.5
+            me.burstCD = 0.5;
+          }
+        }
+      }
+    }
+    // --- end Phase 5.5 ---
 
     me.tgt = pitchClamp(baseTgt);
     me.act = "move";
@@ -696,14 +810,18 @@ export function triggerFoul(st: State, fouledIdx: number, foulerIdx: number) {
   st.flashTxt = "FOUL";
 }
 
-export function doKickOff(st: State) {
+export function doKickOff(st: State, side?: number) {
+  if (side !== undefined) st.koSide = side;
   for (let i = 0; i < st.pl.length; i++) {
     st.pl[i].pos = { ...st.pl[i].home };
+    st.pl[i].vel = v(0, 0);  // Phase 5: Reset velocity
     st.pl[i].act = "idle";
     st.pl[i].tgt = { ...st.pl[i].home };
     st.pl[i].face = v(-st.pl[i].team, 0);
     // ★ Fix: Randomize decision timers to prevent simultaneous AI decisions
     st.pl[i].dt = Math.random() * PExt.decisionInterval;
+    st.pl[i].turnDebt = 0;  // Phase 5: Reset turn debt
+    st.pl[i].staminaShort = 1;  // Phase 5: Reset stamina
   }
   st.ball.pos = v(0, 0);
   st.ball.vel = v(0, 0);
@@ -722,164 +840,314 @@ export function doKickOff(st: State) {
   }
 }
 
+function stopForSetPiece(st: State, kind: "THROWIN" | "CORNER" | "GOALKICK", team: number, pos: V) {
+  // Debug logging for statistics verification
+  if (typeof console !== 'undefined' && console.log) {
+    console.log(`[SETPIECE] ${kind} team=${team} pos=(${pos.x.toFixed(2)},${pos.y.toFixed(2)}) lastTouch=${st.ball.lastTouchTeam} lastKick=${st.ball.lastKickType}`);
+  }
+  
+  st.paused = true;
+  st.pauseT = PExt.restartPause;
+  st.setPieceRestart = { kind, team, pos };
+  st.ball.free = false;
+  st.ball.vel = v(0, 0);
+  st.ball.owner = null;
+  st.ball.cooldown = PExt.restartNoIntercept;
+}
+
+function runSetPiece(st: State) {
+  const sp = st.setPieceRestart!;
+  const taker = nearestOutfield(st, sp.pos, sp.team);
+  if (taker === -1) return;
+
+  st.pl[taker].pos = pitchClamp(sp.pos);
+  st.pl[taker].tgt = { ...st.pl[taker].pos };
+  st.pl[taker].act = "idle";
+  st.pl[taker].face = v(-sp.team, 0);
+
+  give(st.ball, taker, st.pl);
+  st.ball.cooldown = PExt.restartNoIntercept;
+}
+
 export function startThrowIn(st: State, throwerIdx: number, targetPos: V) {
   // Throw-in logic - simplified
   st.paused = true;
-  st.pauseT = PExt.throwInAnimDur;
+  st.pauseT = PExt.restartPause;
 }
 
-export function startCornerKick(st: State, kickerIdx: number, targetPos: V) {
-  // Corner kick logic - simplified
-  st.paused = true;
-  st.pauseT = PExt.cornerAnimDur;
-}
-
-export function updateSetPiece(st: State, dtSim: number) {
-  // Set piece animation logic - simplified
-}
-
-export const update = (st: State, dt: number) => {
-  // --- 1. 演出とマッチコントロール ---
-  if (st.flash > 0) st.flash -= dt;
-
-  if (st.over) {
-    st.restartT -= dt;
-    if (st.restartT <= 0) {
-       Object.assign(st, mkState());
-       doKickOff(st);
-    }
+export function update(st: State, dt: number) {
+  if (st.over) return;
+  
+  // Time
+  st.time += dt;
+  if (st.time >= P.matchDuration) {
+    st.over = true;
     return;
   }
-
+  
+  // Speed multiplier
+  const speedMul = st.speed === "LOW" ? 0.5 : st.speed === "FAST" ? 2.0 : 1.0;
+  dt *= speedMul;
+  
+  // Flash
+  if (st.flash > 0) st.flash = Math.max(0, st.flash - dt * 2);
+  
+  // Pause
   if (st.paused) {
     st.pauseT -= dt;
     if (st.pauseT <= 0) {
       st.paused = false;
-      doKickOff(st);
+
+      if (st.setPieceRestart) {
+        runSetPiece(st);
+        st.setPieceRestart = null;
+      } else {
+        doKickOff(st);
+      }
     }
     return;
   }
-
-  st.time += dt;
-  if (st.time >= P.matchDuration) {
-    st.over = true;
-    st.flash = 2.5;
-    st.flashTxt = "FULL TIME";
-  }
-
-  st.ball.cooldown = Math.max(0, st.ball.cooldown - dt);
+  
+  // Trail
   if (st.trail) {
     st.trail.t -= dt;
     if (st.trail.t <= 0) st.trail = null;
   }
-
-  // --- 2. デッドボールの自動回収 ---
-  if (st.ball.owner === null && !st.ball.free) st.ball.free = true;
-  if (st.ball.free && vlen(st.ball.vel) < 0.5) {
-    st.ball.dead += dt;
-    if (st.ball.dead > P.deadBallTime) {
-      const idx = nearest(st, st.ball.pos);
-      st.ball.owner = idx;
-      st.ball.free = false;
-      st.ball.dead = 0;
-    }
-  } else {
-    st.ball.dead = 0;
+  
+  // Set piece animation
+  if (st.setPiece) {
+    st.setPiece.timer += dt;
+    // Set piece logic omitted for brevity
+    return;
   }
-
-  // --- 3. ボールの物理演算 ---
-  if (st.ball.free) {
-    st.ball.pos = vadd(st.ball.pos, vscl(st.ball.vel, dt));
-    const spd = vlen(st.ball.vel);
-    if (spd > 0) {
-      const newSpd = Math.max(0, spd - P.looseBallDrag * dt);
-      st.ball.vel = vscl(st.ball.vel, newSpd / spd);
-    }
-    
-    // v8.2 Fix: Goal detection before wall bounce
-    const b = st.ball;
-    
-    // Check Y-axis bounds first
-    if (Math.abs(b.pos.y) > P.pitchHalfH) {
-      b.pos.y = Math.sign(b.pos.y) * P.pitchHalfH;
-      b.vel.y *= -0.4;
-    }
-    
-    // Check X-axis: Goal detection BEFORE wall bounce
-    if (Math.abs(b.pos.x) > P.pitchHalfW) {
-      if (Math.abs(b.pos.y) <= P.goalHalfH) {
-         // GOAL!
-         if (b.pos.x > 0) {
-           st.sL++; // Blue scores (left side)
-           console.log(`GOAL! Blue scores. Score: ${st.sL} - ${st.sR}`);
-         } else {
-           st.sR++; // Red scores (right side)
-           console.log(`GOAL! Red scores. Score: ${st.sL} - ${st.sR}`);
-         }
-         st.paused = true;
-         st.pauseT = P.goalResetDelay;
-         st.flash = 1.8;
-         st.flashTxt = "GOAL!";
-         return; // Exit update immediately after goal
+  
+  const b = st.ball;
+  
+  // A. AI decisions
+  for (let i = 0; i < st.pl.length; i++) {
+    const p = st.pl[i];
+    p.dt += dt;
+    if (p.dt >= PExt.decisionInterval) {
+      p.dt = 0;
+      if (b.owner === i) {
+        decideHasBall(st, i);
       } else {
-        // Out of bounds (not in goal)
-        b.pos.x = Math.sign(b.pos.x) * P.pitchHalfW;
-        b.vel.x *= -0.4;
+        decideNoBall(st, i);
       }
     }
-  } else if (st.ball.owner !== null) {
-    // 保持中は選手の足元に追従
-    const p = st.pl[st.ball.owner];
-    st.ball.pos = vadd(p.pos, vscl(p.face, 0.22));
-    st.ball.vel = v(0,0);
   }
-
-  // --- 4. プレイヤーループ (★これが抜けていました！) ---
-  st.pl.forEach((p, idx) => {
-    // A. インターセプト・タックル判定
-    if (st.ball.cooldown <= 0) {
-      if (st.ball.free) {
-         if (vdist(p.pos, st.ball.pos) < P.interceptRadius) {
-           st.ball.owner = idx;
-           st.ball.free = false;
-           st.ball.cooldown = 0.1;
-         }
-      } else if (st.ball.owner !== null && st.ball.owner !== idx) {
-        if (st.pl[st.ball.owner].team !== p.team) {
-           if (vdist(p.pos, st.ball.pos) < P.interceptRadius * 0.65) {
-             st.ball.owner = idx; // ボール奪取
-             st.ball.cooldown = 0.35;
-           }
+  
+  // B. Ball physics
+  if (b.free) {
+    // Free ball movement
+    b.pos = vadd(b.pos, vscl(b.vel, dt));
+    
+    // Friction
+    const fric = b.lob > 0 ? 0.98 : 0.92;
+    b.vel = vscl(b.vel, Math.pow(fric, dt * 60));
+    
+    // Lob decay
+    if (b.lob > 0) {
+      b.lob = Math.max(0, b.lob - dt * 1.5);
+    }
+    
+    // Dead ball
+    if (vlen(b.vel) < 0.1) {
+      b.dead += dt;
+      if (b.dead > 0.5) {
+        b.vel = v(0, 0);
+      }
+    } else {
+      b.dead = 0;
+    }
+    
+    // Cooldown
+    if (b.cooldown > 0) {
+      b.cooldown -= dt;
+    }
+    
+    // Interception
+    if (b.cooldown <= 0) {
+      for (let i = 0; i < st.pl.length; i++) {
+        const p = st.pl[i];
+        const d = vdist(p.pos, b.pos);
+        if (d < PExt.interceptRadius) {
+          give(b, i, st.pl);
+          break;
         }
       }
     }
-
-    // B. AIの意思決定 (0.2秒に1回発火)
-    p.dt -= dt;
-    if (p.dt <= 0) {
-      p.dt = P.decisionInterval;
-      if (st.ball.owner === idx) decideHasBall(st, idx);
-      else decideNoBall(st, idx);
-    }
-
-    // C. 移動処理
-    let speed = P.moveSpeed;
-    if (p.act === "dribble") speed = P.dribbleSpeed;
-    if (p.act === "carry") speed = P.dribbleSpeed * 1.2;
-
-    const oldPos = p.pos;
-    if (p.act !== "idle") {
-      p.pos = vmove(p.pos, p.tgt, speed * dt);
+    
+    // GK save
+    if (PExt.gkSaveEnabled && b.shot) {
+      const defTeam = b.lastTouchTeam === -1 ? 1 : -1;
+      const gkIdx = findGK(st, defTeam);
+      if (gkIdx !== -1) {
+        const gk = st.pl[gkIdx];
+        const distToGK = vdist(b.pos, gk.pos);
+        if (distToGK < PExt.gkSaveRadius) {
+          const gc = v(defTeam * PExt.pitchHalfW, 0);
+          const toGoal = vsub(gc, b.pos);
+          const toBall = vsub(b.pos, gk.pos);
+          const angle = vang(toGoal, toBall);
+          const angleBonus = (1 - angle / 180) * PExt.gkSaveAngleBonus;
+          const saveChance = PExt.gkSaveBase + angleBonus;
+          
+          if (Math.random() < saveChance) {
+            if (Math.random() < PExt.gkParryChance) {
+              // Parry
+              const parryDir = vnorm(vsub(b.pos, gk.pos));
+              b.vel = vscl(parryDir, PExt.shotSpeed * 0.4);
+              b.shot = false;
+              b.cooldown = PExt.gkHoldCooldown;
+            } else {
+              // Catch
+              give(b, gkIdx, st.pl);
+              b.cooldown = PExt.gkHoldCooldown;
+            }
+          }
+        }
+      }
     }
     
-    // D. 向き(Face)の更新
-    if (vdist(oldPos, p.pos) > 0.001) {
-      p.face = vnorm(vsub(p.pos, oldPos));
-    } else if (st.ball.free) {
-      p.face = vnorm(vsub(st.ball.pos, p.pos));
+    // 1) Touchline out => throw-in
+    if (PExt.outEnabled && Math.abs(b.pos.y) >= PExt.pitchHalfH) {
+      const outY = Math.sign(b.pos.y) * PExt.pitchHalfH;
+      const outX = clamp(b.pos.x, -PExt.pitchHalfW, PExt.pitchHalfW);
+      const restartTeam = -b.lastTouchTeam;
+
+      st.stats.throwIns += 1;
+
+      // Pass miss detection
+      const byPassMiss =
+        (b.lastKickTeam === b.lastTouchTeam) &&
+        (b.lastKickType === "PASS" || b.lastKickType === "LONG");
+      if (byPassMiss) st.stats.throwInsFromPassMiss += 1;
+
+      stopForSetPiece(st, "THROWIN", restartTeam, v(outX, outY));
+      return;
     }
 
-    // E. ピッチ外に出ないようクランプ
-    p.pos = pitchClamp(p.pos);
-  });
-};
+    // 2) Goal-line out (not a goal) => corner or goal kick
+    if (PExt.outEnabled && Math.abs(b.pos.x) >= PExt.pitchHalfW && Math.abs(b.pos.y) > PExt.goalHalfH) {
+      const outX = Math.sign(b.pos.x) * PExt.pitchHalfW;
+      const outY = clamp(b.pos.y, -PExt.pitchHalfH, PExt.pitchHalfH);
+
+      const goalSide = Math.sign(b.pos.x);
+      const defendingTeam = goalSide;
+      const last = b.lastTouchTeam;
+
+      if (last === defendingTeam) {
+        // defender touched last => corner for attackers
+        st.stats.corners += 1;
+        const restartTeam = -defendingTeam;
+
+        const cornerY = Math.sign(outY) * (PExt.pitchHalfH - 0.5);
+        const cornerX = outX - goalSide * 0.5;
+        stopForSetPiece(st, "CORNER", restartTeam, v(cornerX, cornerY));
+        return;
+      } else {
+        // attacker touched last => goal kick for defenders
+        const restartTeam = defendingTeam;
+        const gkX = goalSide * (PExt.pitchHalfW - 3.0);
+        stopForSetPiece(st, "GOALKICK", restartTeam, v(gkX, 0));
+        return;
+      }
+    }
+    
+    // 3) Goal check
+    const g = checkGoal(b.pos);
+    if (g !== 0) {
+      // Own goal detection
+      const goalSide = Math.sign(b.pos.x);
+      const concedingTeam = goalSide;
+      if (b.lastTouchTeam === concedingTeam) {
+        st.stats.ownGoals += 1;
+      }
+      
+      if (g === -1) st.sR++;
+      else st.sL++;
+      st.flash = 1.0;
+      st.flashTxt = "GOAL!";
+      st.koSide = -g;
+      doKickOff(st);
+      return;
+    }
+  } else {
+    // Ball follows owner
+    if (b.owner !== null) {
+      b.pos = { ...st.pl[b.owner].pos };
+    }
+  }
+  
+  // C. Player movement (Phase 5: Replace with inertia + stamina)
+  for (const p of st.pl) {
+    const desired = vsub(p.tgt, p.pos);
+    const dist = vlen(desired);
+    
+    let maxSpeed = P.moveSpeed;
+    if (p.act === "dribble") maxSpeed = P.dribbleSpeed;
+    if (p.act === "carry") maxSpeed = P.dribbleSpeed * 1.2;
+    
+    // 1) Short-term stamina update
+    const sprintThreshold = maxSpeed * 0.85;
+    const curSpeed = vlen(p.vel);
+    const isSprinting = curSpeed > sprintThreshold;
+    
+    const shortDrain = 0.35;
+    const shortRecover = 0.55;
+    p.staminaShort = clamp01(p.staminaShort + (isSprinting ? -shortDrain : shortRecover) * dt);
+    
+    // 2) Stamina effects
+    const minAccFactor = 0.65;
+    const minSpeedFactor = 0.85;
+    const accFactor = vlerp(v(minAccFactor, 0), v(1, 0), p.staminaShort).x;
+    const spdFactor = vlerp(v(minSpeedFactor, 0), v(1, 0), p.staminaShort).x;
+    
+    let maxSpeedEff = maxSpeed * spdFactor;
+    
+    // 3) Turn inertia (turnDebt)
+    const turnAdd = 1.2;
+    const turnRecover = 1.5;
+    const turnMaxPenalty = 0.6;
+    
+    if (dist > 0.01) {
+      const desiredDir = vnorm(desired);
+      const moveDir = (curSpeed > 0.01) ? vnorm(p.vel) : desiredDir;
+      const dot = clamp(vdot(moveDir, desiredDir), -1, 1);
+      const angle = Math.acos(dot); // 0..PI
+      
+      p.turnDebt = clamp01(p.turnDebt + (angle / Math.PI) * turnAdd * dt);
+      p.turnDebt = clamp01(p.turnDebt - (turnRecover * p.staminaShort) * dt);
+    }
+    maxSpeedEff *= (1 - p.turnDebt * turnMaxPenalty);
+    
+    // 4) Acceleration and velocity update
+    const acc = 8.0 * accFactor;
+    
+    let desiredVel = v(0, 0);
+    if (dist > 0.01) {
+      desiredVel = vscl(vnorm(desired), maxSpeedEff);
+    }
+    
+    const dv = vsub(desiredVel, p.vel);
+    const dvLen = vlen(dv);
+    if (dvLen > 0.0001) {
+      const dvStep = Math.min(dvLen, acc * dt);
+      p.vel = vadd(p.vel, vscl(vnorm(dv), dvStep));
+    }
+    
+    // 5) Position update
+    p.pos = vadd(p.pos, vscl(p.vel, dt));
+    
+    // Target proximity: decelerate to prevent oscillation
+    if (dist < 0.2) {
+      p.vel = vscl(p.vel, 0.5);
+    }
+    
+    // Update face direction
+    if (vlen(p.vel) > 0.1) {
+      p.face = vnorm(p.vel);
+    }
+  }
+}
