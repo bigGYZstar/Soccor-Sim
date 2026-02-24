@@ -103,7 +103,7 @@ export function mkState(): State {
   return {
     pl: mkPlayers(),
     ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0, holdT: 0, holdAX0: 0, holdT0: 0, phaseBBlockedPassStreak: 0 },
-    sL: 0, sR: 0, time: 0, over: false, paused: false, pauseT: 0, koSide: -1,
+    sL: 0, sR: 0, time: 0, over: false, paused: false, pauseT: 0, koSide: Math.random() < 0.5 ? -1 : 1,  // Randomize initial kickoff
     trail: null, flash: 0, flashTxt: "", restartT: 0,
     speed: "MID",
     setPiece: null,
@@ -1370,7 +1370,7 @@ export function update(st: State, dt: number) {
       else st.sL++;
       st.flash = 1.0;
       st.flashTxt = "GOAL!";
-      st.koSide = -g;
+      st.koSide = g;  // Fixed: scoring team's opponent gets kickoff
       doKickOff(st);
       return;
     }
