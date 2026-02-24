@@ -1267,15 +1267,24 @@ export function update(st: State, dt: number) {
       b.cooldown -= dt;
     }
     
-    // Interception
+    // Interception - find closest player within radius
     if (b.cooldown <= 0) {
+      let closestIdx = -1;
+      let minD = PExt.interceptRadius;
+      
       for (let i = 0; i < st.pl.length; i++) {
         const p = st.pl[i];
         const d = vdist(p.pos, b.pos);
-        if (d < PExt.interceptRadius) {
-          give(b, i, st.pl, st);
-          break;
+        // Only update if this player is closer than any previous
+        if (d < minD) {
+          minD = d;
+          closestIdx = i;
         }
+      }
+      
+      // Give ball to the closest player found
+      if (closestIdx !== -1) {
+        give(b, closestIdx, st.pl, st);
       }
     }
     
