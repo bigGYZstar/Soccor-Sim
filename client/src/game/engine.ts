@@ -1346,8 +1346,9 @@ export function update(st: State, dt: number) {
     
     // 1) Touchline out => throw-in
     if (PExt.outEnabled && Math.abs(b.pos.y) >= PExt.pitchHalfH) {
-      const outY = Math.sign(b.pos.y) * PExt.pitchHalfH;
-      const outX = clamp(b.pos.x, -PExt.pitchHalfW, PExt.pitchHalfW);
+      // ★ 修正: throwInInset を適用し、境界線ぴったりに配置されることによる即時アウト判定を防ぐ
+      const outY = Math.sign(b.pos.y) * (PExt.pitchHalfH - PExt.throwInInset);
+      const outX = clamp(b.pos.x, -PExt.pitchHalfW + PExt.throwInInset, PExt.pitchHalfW - PExt.throwInInset);
       const restartTeam = -b.lastTouchTeam;
 
       st.stats.throwIns += 1;
@@ -1364,10 +1365,8 @@ export function update(st: State, dt: number) {
 
     // 2) Goal-line out (not a goal) => corner or goal kick
     if (PExt.outEnabled && Math.abs(b.pos.x) >= PExt.pitchHalfW && Math.abs(b.pos.y) > PExt.goalHalfH) {
-      const outX = Math.sign(b.pos.x) * PExt.pitchHalfW;
-      const outY = clamp(b.pos.y, -PExt.pitchHalfH, PExt.pitchHalfH);
-
       const goalSide = Math.sign(b.pos.x);
+      const outYSide = Math.sign(b.pos.y); // 出たY方向の符号を保持
       const defendingTeam = goalSide;
       const last = b.lastTouchTeam;
 
@@ -1376,15 +1375,16 @@ export function update(st: State, dt: number) {
         st.stats.corners += 1;
         const restartTeam = -defendingTeam;
 
-        // Corner kick from corner arc (goal line and sideline intersection)
-        const cornerX = goalSide * PExt.pitchHalfW;
-        const cornerY = Math.sign(outY) * PExt.pitchHalfH;
+        // ★ 修正: cornerInset を適用して、ボールをピッチの内側に少しずらす
+        const cornerX = goalSide * (PExt.pitchHalfW - PExt.cornerInset);
+        const cornerY = outYSide * (PExt.pitchHalfH - PExt.cornerInset);
         stopForSetPiece(st, "CORNER", restartTeam, v(cornerX, cornerY));
         return;
       } else {
         // attacker touched last => goal kick for defenders
         const restartTeam = defendingTeam;
-        const gkX = goalSide * (PExt.pitchHalfW - 3.0);
+        // ★ 修正: ハードコードされた 3.0 を廃止し、専用の定数 goalKickX を使用する
+        const gkX = goalSide * PExt.goalKickX;
         stopForSetPiece(st, "GOALKICK", restartTeam, v(gkX, 0));
         return;
       }
