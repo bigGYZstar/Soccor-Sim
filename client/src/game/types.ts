@@ -17,6 +17,15 @@ export type MatchStats = {
   throwIns: number;
   throwInsFromPassMiss: number;
   corners: number;
+  // v8.7.4: Counter-press and attacking third retention metrics
+  turnoverPressHits: { blue: number; red: number };  // Successful ball recoveries during turnoverT window
+  attPossStreakFrames: { blue: number; red: number };  // Total frames of possession in attacking third
+  attPossStreakCount: { blue: number; red: number };  // Number of attacking third possession streaks
+  // v8.7.5: Phase B shot diagnostic metrics
+  phaseBEligibleFrames: { blue: number; red: number };  // Frames in Phase B with distToGoal < 7.5
+  phaseBShots: { blue: number; red: number };  // Shots taken in Phase B
+  phaseBBlockedPassCount: { blue: number; red: number };  // Blocked passes in Phase B
+  forcedShotsFromBlocked: { blue: number; red: number };  // Shots forced by blocked pass streak
 };
 
 export type SetPieceKind = "THROWIN" | "CORNER" | "GOALKICK";
@@ -84,6 +93,9 @@ export interface Ball {
   lastKickType?: "PASS" | "LONG" | "CROSS" | "SHOT" | "OTHER";
   lastKickTeam?: number;
   holdT: number;  // v8.7.1: Time since current owner acquired ball (safety valve)
+  holdAX0: number;  // v8.7.4: Ball ax when owner acquired (for progress check)
+  holdT0: number;  // v8.7.4: Time when owner acquired (for progress check)
+  phaseBBlockedPassStreak: number;  // v8.7.5: Consecutive blocked passes in Phase B
 }
 
 export interface State {
@@ -106,4 +118,6 @@ export interface State {
   stats: MatchStats;
   atkLevelBlue: number;
   atkLevelRed: number;
+  turnoverT: number;  // v8.7.4: Time since turnover (1.2s counter-press window)
+  turnoverTeam: number;  // v8.7.4: Team that lost possession (-1, 0, or +1)
 }

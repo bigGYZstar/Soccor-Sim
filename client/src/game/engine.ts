@@ -102,15 +102,29 @@ export function mkPlayers(): Player[] {
 export function mkState(): State {
   return {
     pl: mkPlayers(),
-    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0, holdT: 0 },
+    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0, holdT: 0, holdAX0: 0, holdT0: 0, phaseBBlockedPassStreak: 0 },
     sL: 0, sR: 0, time: 0, over: false, paused: false, pauseT: 0, koSide: -1,
     trail: null, flash: 0, flashTxt: "", restartT: 0,
     speed: "MID",
     setPiece: null,
     setPieceRestart: null,
-    stats: { ownGoals: 0, throwIns: 0, throwInsFromPassMiss: 0, corners: 0 },
+    stats: { 
+      ownGoals: 0, 
+      throwIns: 0, 
+      throwInsFromPassMiss: 0, 
+      corners: 0,
+      turnoverPressHits: { blue: 0, red: 0 },
+      attPossStreakFrames: { blue: 0, red: 0 },
+      attPossStreakCount: { blue: 0, red: 0 },
+      phaseBEligibleFrames: { blue: 0, red: 0 },
+      phaseBShots: { blue: 0, red: 0 },
+      phaseBBlockedPassCount: { blue: 0, red: 0 },
+      forcedShotsFromBlocked: { blue: 0, red: 0 }
+    },
     atkLevelBlue: 5,
     atkLevelRed: 5,
+    turnoverT: 0,  // v8.7.4: Counter-press timer
+    turnoverTeam: 0,  // v8.7.4: Team that lost possession
   };
 }
 
@@ -129,12 +143,39 @@ export function checkGoal(pos: V): number {
   return 0;
 }
 
-export function give(ball: Ball, idx: number, pl: Player[]) {
+export function give(ball: Ball, idx: number, pl: Player[], st: State) {
+  // v8.7.4: Detect turnover and activate counter-press
+  const prevOwnerTeam = ball.lastTouchTeam;
+  const newOwnerTeam = pl[idx].team;
+  
+  // Track successful counter-press recovery BEFORE updating turnover state
+  if (st.turnoverT > 0 && prevOwnerTeam !== 0 && prevOwnerTeam !== newOwnerTeam) {
+    // Ball changed hands during counter-press window
+    // Check if the team that lost possession (turnoverTeam) is winning it back
+    if (st.turnoverTeam === newOwnerTeam) {
+      // Counter-press success! The team that lost possession won it back
+      if (newOwnerTeam === -1) {
+        st.stats.turnoverPressHits.blue++;
+      } else {
+        st.stats.turnoverPressHits.red++;
+      }
+    }
+  }
+  
+  if (prevOwnerTeam !== 0 && prevOwnerTeam !== newOwnerTeam) {
+    // Turnover detected - activate counter-press for losing team
+    st.turnoverT = 1.2;  // 1.2s counter-press window
+    st.turnoverTeam = prevOwnerTeam;  // Team that lost possession
+  }
+  
   ball.owner = idx; ball.free = false; ball.shot = false;
   ball.pos = { ...pl[idx].pos }; ball.vel = v(0, 0);
   ball.lastTouchTeam = pl[idx].team;
-  ball.lob = 0;
-  ball.holdT = 0;  // ★ v8.7.1: Reset hold time on owner change
+  ball.holdT = 0;  // v8.7.1: Reset hold timer when new owner acquired
+  // v8.7.4: Record ax and time for progress check
+  const ax = ball.pos.x * (-pl[idx].team);
+  ball.holdAX0 = ax;
+  ball.holdT0 = st.time;
 }
 
 export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, tgt: V, isLong: boolean = false, customErr?: number) {
@@ -319,7 +360,8 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
     const ax = me.pos.x * (-me.team);
     const w = PExt.pitchHalfW;
     const isPhaseA = ax < (2 * w / 3); // Phase A: ax < 6.66
-    if (isBlocked) score -= (isPhaseA ? 2.0 : 4.0);
+    // v8.7.4: Phase A completely ignores laneBlocked (0 penalty), Phase B uses -2.0
+    if (isBlocked && !isPhaseA) score -= 2.0;
     if (isOffside(st, tm, me.pos)) score -= 100;
     
     // ★ v8.3: GK diagonal switch (side change) evaluation
@@ -337,8 +379,15 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
         if (Math.random() < 0.01) { // Log 1% of attempts
           console.log(`[ATT 3RD PASS] P${me.idx}(${me.pos.x.toFixed(1)}) -> P${i}(${tm.pos.x.toFixed(1)}), score: ${score.toFixed(1)}`);
         }
-      } else if (Math.random() < 0.01) {
-        console.log(`[ATT 3RD BLOCKED] P${me.idx} -> P${i}, blocked`);
+      } else {
+        // v8.7.5: Track blocked passes in Phase B for safety valve
+        if (!isPhaseA) {
+          // This is Phase B and pass is blocked - will count if this pass is chosen
+          // (actual counting happens in decideHasBall when bestPass returns blocked target)
+        }
+        if (Math.random() < 0.01) {
+          console.log(`[ATT 3RD BLOCKED] P${me.idx} -> P${i}, blocked`);
+        }
       }
     }
     
@@ -474,21 +523,21 @@ export function decideHasBall(st: State, idx: number) {
   let targetIdx = -1;
   const shouldLog = Math.random() < 0.01;
   
-  // ★ v8.7.2: GK bait with 0.5s safety valve (reduced frequency)
-  if (me.isGK && st.ball.holdT < 0.5) {
-    let minEnemyDist = Infinity;
-    for (const e of st.pl) {
-      if (e.team === me.team) continue;
-      const d = vdist(me.pos, e.pos);
-      if (d < minEnemyDist) minEnemyDist = d;
-    }
-    // If enemy is far, wait to draw opponent FW (max 0.5s)
-    if (minEnemyDist > 8.0) {
-      me.act = "idle";
-      chosenAction = "idle-GKbait";
-      return;
-    }
-  }
+  // ★ v8.7.3: GK bait COMPLETELY DISABLED for testing
+  // if (me.isGK && st.ball.holdT < 0.5) {
+  //   let minEnemyDist = Infinity;
+  //   for (const e of st.pl) {
+  //     if (e.team === me.team) continue;
+  //     const d = vdist(me.pos, e.pos);
+  //     if (d < minEnemyDist) minEnemyDist = d;
+  //   }
+  //   // If enemy is far, wait to draw opponent FW (max 0.5s)
+  //   if (minEnemyDist > 8.0) {
+  //     me.act = "idle";
+  //     chosenAction = "idle-GKbait";
+  //     return;
+  //   }
+  // }
   
   // ★ v6.1: Carry state lock - continue forward movement if no enemy nearby
   if (me.act === "carry") {
@@ -507,22 +556,22 @@ export function decideHasBall(st: State, idx: number) {
     }
   }
   
-  // ★ v8.7.2: CB baiting with 0.5s safety valve (reduced frequency)
-  if (me.role === "DEF" && me.team * me.pos.x > 0 && st.ball.holdT < 0.5) {
-    let closestEnemy = Infinity;
-    for (const p of st.pl) {
-      if (p.team === me.team) continue;
-      const d = vdist(me.pos, p.pos);
-      if (d < closestEnemy) closestEnemy = d;
-    }
-    
-    if (closestEnemy > 6.0) {
-      me.act = "idle";
-      me.tgt = { ...me.pos };
-      chosenAction = "idle-CBbait";
-      return; // Stand still to bait press (max 0.5s)
-    }
-  }
+  // ★ v8.7.3: CB baiting COMPLETELY DISABLED for testing
+  // if (me.role === "DEF" && me.team * me.pos.x > 0 && st.ball.holdT < 0.5) {
+  //   let closestEnemy = Infinity;
+  //   for (const p of st.pl) {
+  //     if (p.team === me.team) continue;
+  //     const d = vdist(me.pos, p.pos);
+  //     if (d < closestEnemy) closestEnemy = d;
+  //   }
+  //   
+  //   if (closestEnemy > 6.0) {
+  //     me.act = "idle";
+  //     me.tgt = { ...me.pos };
+  //     chosenAction = "idle-CBbait";
+  //     return; // Stand still to bait press (max 0.5s)
+  //   }
+  // }
   
   // ★ v8.7.1: Redesigned Progressive carry with minConeDist
   const distToGoal = vdist(me.pos, gc);
@@ -532,10 +581,10 @@ export function decideHasBall(st: State, idx: number) {
     const w = PExt.pitchHalfW;
     const isPhaseA = ax < (2 * w / 3);
     
-    // v8.7.2: Increased carry success rate (minConeDist reduced)
-    const coneAngle = isPhaseA ? 120 : 140; // Phase A: 120°, Phase B: 140°
+    // v8.7.4: Further relaxed carry success rate
+    const coneAngle = isPhaseA ? 150 : 160; // Phase A: 150°, Phase B: 160°
     const searchDist = 10.0; // Fixed
-    const minConeDist = isPhaseA ? 2.0 : 1.5; // Phase A: 2.0, Phase B: 1.5
+    const minConeDist = isPhaseA ? 1.5 : 1.1; // Phase A: 1.5, Phase B: 1.1
     
     let closestInCone = Infinity;
     for (const p of st.pl) {
@@ -553,25 +602,30 @@ export function decideHasBall(st: State, idx: number) {
     
     if (pathClear) {
       me.act = "carry";
-      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 8.0)));
+      // v8.7.4: Normal carry distance reduced to 6.5 for stability
+      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 6.5)));
       me.face = toGoalDir;
       chosenAction = "carry";
       return;
     }
   }
   
-  // ★ v8.7.1: Forward progress guarantee - force action if stuck
+  // ★ v8.7.4: Forward progress guarantee - strengthened (0.5s threshold + progress check)
   const ax = me.pos.x * (-me.team); // Attack direction normalized (0 → pitchHalfW)
   const w = PExt.pitchHalfW; // 10.0
   const isPhaseA = ax < (2 * w / 3); // Phase A: advance (ax < 6.66)
   const isPhaseB = ax >= (2 * w / 3); // Phase B: finish (ax >= 6.66)
   
-  if (st.ball.holdT >= 0.8) {
-    // Stuck for 0.8s - force forward movement
+  // Check if stuck: holdT >= 0.5s AND no progress (ax advance < 0.25)
+  const axAdvance = ax - st.ball.holdAX0;
+  const isStuck = st.ball.holdT >= 0.5 && axAdvance < 0.25;
+  
+  if (isStuck) {
+    // Stuck for 0.5s with no progress - force forward movement
     const toGoalDir = vnorm(vsub(gc, me.pos));
     
-    // Try forced carry with relaxed minConeDist
-    const relaxedMinConeDist = 1.4;
+    // Try forced carry with very relaxed minConeDist
+    const relaxedMinConeDist = 0.9;
     let closestInCone = Infinity;
     for (const p of st.pl) {
       if (p.team === me.team) continue;
@@ -585,9 +639,10 @@ export function decideHasBall(st: State, idx: number) {
     }
     
     if (closestInCone >= relaxedMinConeDist) {
-      // Forced carry
+      // Forced carry with extended distance
       me.act = "carry";
-      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 6.0)));
+      // v8.7.4: Stuck carry distance increased to 8.0
+      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 8.0)));
       me.face = toGoalDir;
       chosenAction = "carry-forced";
       return;
@@ -606,6 +661,33 @@ export function decideHasBall(st: State, idx: number) {
   
   // Phase B (finish): Shot-first evaluation
   if (isPhaseB) {
+    // ★ v8.7.5: Safety valve - force shot when blocked pass streak >= 3
+    if (st.ball.phaseBBlockedPassStreak >= 3 && distToGoal < 8.2) {
+      const toGoal = vsub(gc, me.pos);
+      const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
+      
+      if (angle < 60) {  // Relaxed angle for safety valve
+        const err = (1 - PExt.shotAccuracy) * 2.5;
+        const t = v(gc.x, gc.y + rng(-err, err));
+        kick(st, idx, PExt.shotSpeed, true, t);
+        
+        // Track forced shot and reset streak
+        if (me.team === -1) {
+          st.stats.forcedShotsFromBlocked.blue++;
+        } else {
+          st.stats.forcedShotsFromBlocked.red++;
+        }
+        st.ball.phaseBBlockedPassStreak = 0;
+        
+        if (Math.random() < 0.01) {
+          console.log(`[FORCED SHOT] P${idx} streak=${st.ball.phaseBBlockedPassStreak} dist=${distToGoal.toFixed(1)}`);
+        }
+        chosenAction = "shot-forced";
+        return;
+      }
+    }
+    
+    // v8.7.5: Reverted from 7.0 to 7.5 to fix shot deficiency
     const shouldPrioritizeShot = distToGoal < 7.5;
     
     if (shouldPrioritizeShot) {
@@ -626,6 +708,14 @@ export function decideHasBall(st: State, idx: number) {
         const err = (1 - PExt.shotAccuracy) * 2.5;
         const t = v(gc.x, gc.y + rng(-err, err));
         kick(st, idx, PExt.shotSpeed, true, t);
+        // v8.7.5: Reset blocked pass streak and track Phase B shot
+        st.ball.phaseBBlockedPassStreak = 0;
+        if (me.team === -1) {
+          st.stats.phaseBShots.blue++;
+        } else {
+          st.stats.phaseBShots.red++;
+        }
+        chosenAction = "shot";
         return;
       }
     }
@@ -636,6 +726,26 @@ export function decideHasBall(st: State, idx: number) {
   // Try pass
   const tgt = bestPass(st, idx);
   if (tgt !== null) {
+    // v8.7.5: Track blocked passes in Phase B
+    if (isPhaseB) {
+      const tm = st.pl[tgt];
+      const isBlocked = laneBlocked(st, me.pos, tm.pos, me.team);
+      if (isBlocked) {
+        st.ball.phaseBBlockedPassStreak++;
+        if (me.team === -1) {
+          st.stats.phaseBBlockedPassCount.blue++;
+        } else {
+          st.stats.phaseBBlockedPassCount.red++;
+        }
+      } else {
+        // Successful unblocked pass - reset streak
+        st.ball.phaseBBlockedPassStreak = 0;
+      }
+    } else {
+      // Phase A - reset streak
+      st.ball.phaseBBlockedPassStreak = 0;
+    }
+    
     doPassTo(st, idx, tgt);
     return;
   }
@@ -643,6 +753,8 @@ export function decideHasBall(st: State, idx: number) {
   // Try long pass
   const ltgt = bestLongPass(st, idx);
   if (ltgt !== null) {
+    // v8.7.5: Reset blocked pass streak on long pass
+    st.ball.phaseBBlockedPassStreak = 0;
     doLongPassTo(st, idx, ltgt);
     return;
   }
@@ -655,6 +767,16 @@ export function decideHasBall(st: State, idx: number) {
       const err = (1 - PExt.shotAccuracy) * 2.5;
       const t = v(gc.x, gc.y + rng(-err, err));
       kick(st, idx, PExt.shotSpeed, true, t);
+      // v8.7.5: Reset blocked pass streak on shot
+      st.ball.phaseBBlockedPassStreak = 0;
+      // Track Phase B shot
+      if (isPhaseB) {
+        if (me.team === -1) {
+          st.stats.phaseBShots.blue++;
+        } else {
+          st.stats.phaseBShots.red++;
+        }
+      }
       return;
     }
   }
@@ -685,6 +807,22 @@ export function decideNoBall(st: State, idx: number) {
   const b = st.ball;
   const ballOwner = b.owner !== null ? st.pl[b.owner] : null;
   const myTeamHasBall = ballOwner && ballOwner.team === me.team;
+  
+  // ★ v8.7.4: Counter-press - immediate ball recovery after turnover (HIGHEST PRIORITY)
+  if (st.turnoverT > 0 && me.team === st.turnoverTeam && !me.isGK) {
+    // Team just lost possession - all outfield players press ball immediately
+    const distToBall = vlen(vsub(b.pos, me.pos));
+    if (distToBall > 0.8) {
+      // Move towards ball (avoid clustering)
+      me.tgt = pitchClamp(b.pos);
+      me.face = vnorm(vsub(b.pos, me.pos));
+      return;
+    } else {
+      // Too close - stop to avoid collision
+      me.tgt = me.pos;
+      return;
+    }
+  }
   
   if (myTeamHasBall) {
     // ★ v8.3: GK+1 buildup, dynamic stagger (3-1/3-2), Rest Defence
@@ -943,7 +1081,7 @@ function runSetPiece(st: State) {
   st.pl[taker].act = "idle";
   st.pl[taker].face = v(-sp.team, 0);
 
-  give(st.ball, taker, st.pl);
+  give(st.ball, taker, st.pl, st);
   st.ball.cooldown = PExt.restartNoIntercept;
 }
 
@@ -992,6 +1130,43 @@ export function update(st: State, dt: number) {
     if (st.trail.t <= 0) st.trail = null;
   }
   
+  // ★ v8.7.4: Counter-press timer decrement
+  if (st.turnoverT > 0) {
+    st.turnoverT = Math.max(0, st.turnoverT - dt);
+  }
+  
+  // ★ v8.7.4: Track attacking third possession streaks
+  let b = st.ball;
+  if (b.owner !== null) {
+    const owner = st.pl[b.owner];
+    const ax = b.pos.x * (-owner.team);
+    const w = PExt.pitchHalfW;
+    const isAttThird = ax >= (2 * w / 3);  // ax >= 6.66
+    const isPhaseB = ax >= (2 * w / 3);  // Phase B: ax >= 6.66
+    
+    if (isAttThird) {
+      // In attacking third - accumulate frames
+      if (owner.team === -1) {
+        st.stats.attPossStreakFrames.blue++;
+      } else {
+        st.stats.attPossStreakFrames.red++;
+      }
+    }
+    
+    // ★ v8.7.5: Track Phase B eligible frames (distToGoal < 7.5)
+    if (isPhaseB) {
+      const gc = v(-owner.team * PExt.pitchHalfW, 0);
+      const distToGoal = vdist(owner.pos, gc);
+      if (distToGoal < 7.5) {
+        if (owner.team === -1) {
+          st.stats.phaseBEligibleFrames.blue++;
+        } else {
+          st.stats.phaseBEligibleFrames.red++;
+        }
+      }
+    }
+  }
+  
   // Set piece animation
   if (st.setPiece) {
     st.setPiece.timer += dt;
@@ -999,7 +1174,7 @@ export function update(st: State, dt: number) {
     return;
   }
   
-  const b = st.ball;
+  b = st.ball;  // Re-assign for clarity
   
   // A. AI decisions
   // ★ v8.7.1: Fix dt timer - restore subtract-based logic
@@ -1051,7 +1226,7 @@ export function update(st: State, dt: number) {
         const p = st.pl[i];
         const d = vdist(p.pos, b.pos);
         if (d < PExt.interceptRadius) {
-          give(b, i, st.pl);
+          give(b, i, st.pl, st);
           break;
         }
       }
@@ -1081,7 +1256,7 @@ export function update(st: State, dt: number) {
               b.cooldown = PExt.gkHoldCooldown;
             } else {
               // Catch
-              give(b, gkIdx, st.pl);
+              give(b, gkIdx, st.pl, st);
               b.cooldown = PExt.gkHoldCooldown;
             }
           }
@@ -1158,8 +1333,26 @@ export function update(st: State, dt: number) {
       b.pos = { ...st.pl[b.owner].pos };
       // ★ v8.7.1: Track hold time for safety valve
       b.holdT += dt;
+      
+      // ★ v8.7.4: Turnover detection (owner team changed)
+      const currentOwnerTeam = st.pl[b.owner].team;
+      if (b.lastTouchTeam !== 0 && b.lastTouchTeam !== currentOwnerTeam) {
+        // Turnover detected: ball changed teams
+        st.turnoverT = 1.2;  // 1.2s counter-press window
+        st.turnoverTeam = b.lastTouchTeam;  // Team that lost possession
+      }
+      b.lastTouchTeam = currentOwnerTeam;
     } else {
       b.holdT = 0;
+    }
+  }
+  
+  // ★ v8.7.4: Decrement turnover timer
+  if (st.turnoverT > 0) {
+    st.turnoverT -= dt;
+    if (st.turnoverT < 0) {
+      st.turnoverT = 0;
+      st.turnoverTeam = 0;
     }
   }
   
