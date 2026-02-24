@@ -1,4 +1,4 @@
-// Type definitions for futsal simulation engine
+// Type definitions for soccer simulation engine
 // Extracted from Home.tsx for UI-independent testing
 
 export interface V {

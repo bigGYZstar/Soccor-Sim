@@ -58,11 +58,12 @@ function slotRole(slot: number): Role {
 }
 
 // Formation definitions
+// 4-4-2 Formation for soccer pitch (105m x 68m)
 const FORM_442_BLUE = [
-  v(-9.7, 0),    // GK
-  v(-7.5, -4.0), v(-7.5, -1.3), v(-7.5, 1.3), v(-7.5, 4.0), // DEF
-  v(-3.5, -4.5), v(-3.5, -1.5), v(-3.5, 1.5), v(-3.5, 4.5), // MID
-  v(-0.5, -2.0), v(-0.5, 2.0),  // FWD
+  v(-48.0, 0),     // GK
+  v(-35.0, -20.0), v(-35.0, -7.0), v(-35.0, 7.0), v(-35.0, 20.0), // DEF (back 4)
+  v(-15.0, -22.0), v(-15.0, -7.5), v(-15.0, 7.5), v(-15.0, 22.0), // MID (midfield 4)
+  v(-5.0, -10.0), v(-5.0, 10.0),  // FWD (strikers)
 ];
 const FORM_442_RED = FORM_442_BLUE.map((p) => v(-p.x, -p.y));
 
@@ -588,8 +589,8 @@ export function decideHasBall(st: State, idx: number) {
     
     // v8.7.4: Further relaxed carry success rate
     const coneAngle = isPhaseA ? 150 : 160; // Phase A: 150°, Phase B: 160°
-    const searchDist = 10.0; // Fixed
-    const minConeDist = isPhaseA ? 1.5 : 1.1; // Phase A: 1.5, Phase B: 1.1
+    const searchDist = 25.0; // Adjusted for soccer pitch
+    const minConeDist = isPhaseA ? 3.5 : 2.5; // Adjusted for soccer: Phase A: 3.5m, Phase B: 2.5m
     
     let closestInCone = Infinity;
     for (const p of st.pl) {
@@ -607,8 +608,8 @@ export function decideHasBall(st: State, idx: number) {
     
     if (pathClear) {
       me.act = "carry";
-      // v8.7.4: Normal carry distance reduced to 6.5 for stability
-      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 6.5)));
+      // Adjusted for soccer: Normal carry distance scaled to 15m
+      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 15.0)));
       me.face = toGoalDir;
       chosenAction = "carry";
       return;
@@ -642,8 +643,8 @@ export function decideHasBall(st: State, idx: number) {
     // Stuck for 0.5s with no progress - force forward movement
     const toGoalDir = vnorm(vsub(gc, me.pos));
     
-    // Try forced carry with very relaxed minConeDist
-    const relaxedMinConeDist = 0.9;
+    // Try forced carry with very relaxed minConeDist (adjusted for soccer)
+    const relaxedMinConeDist = 2.0;
     let closestInCone = Infinity;
     for (const p of st.pl) {
       if (p.team === me.team) continue;
@@ -659,8 +660,8 @@ export function decideHasBall(st: State, idx: number) {
     if (closestInCone >= relaxedMinConeDist) {
       // Forced carry with extended distance
       me.act = "carry";
-      // v8.7.4: Stuck carry distance increased to 8.0
-      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 8.0)));
+      // Adjusted for soccer: Stuck carry distance scaled to 18m
+      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 18.0)));
       me.face = toGoalDir;
       chosenAction = "carry-forced";
       return;

@@ -1,35 +1,38 @@
-// Tunable parameters for futsal simulation
+// Tunable parameters for soccer simulation
 // Extracted from Home.tsx for centralized configuration
 
 export const P = {
   matchDuration: 120,
   goalResetDelay: 2.0,
 
-  pitchHalfW: 10.5,
-  pitchHalfH: 6.8,
-  goalHalfH: 1.22,
-  goalDepth: 0.4,
-  penAreaW: 2.75,
-  penAreaH: 3.35,
-  goalAreaW: 0.92,
-  goalAreaH: 1.55,
-  centreCircleR: 1.53,
-  penSpotDist: 1.83,
-  cornerArcR: 0.17,
+  // Soccer pitch dimensions (105m x 68m)
+  pitchHalfW: 52.5,  // Half of 105m
+  pitchHalfH: 34.0,  // Half of 68m
+  goalHalfH: 3.66,   // Goal width 7.32m
+  goalDepth: 2.0,
+  penAreaW: 16.5,    // Penalty area width 40.3m
+  penAreaH: 16.5,    // Penalty area depth 16.5m
+  goalAreaW: 5.5,    // Goal area width 18.32m
+  goalAreaH: 5.5,    // Goal area depth 5.5m
+  centreCircleR: 9.15,
+  penSpotDist: 11.0, // Penalty spot 11m from goal
+  cornerArcR: 1.0,
 
-  moveSpeed: 4.8,
-  dribbleSpeed: 3.8,
-  passSpeed: 12,
-  shotSpeed: 18,
-  longPassSpeed: 10,
+  // Adjusted speeds for soccer (larger pitch)
+  moveSpeed: 7.0,
+  dribbleSpeed: 5.5,
+  passSpeed: 18,
+  shotSpeed: 25,
+  longPassSpeed: 15,
   passAccuracy: 0.88,
   shotAccuracy: 0.60,
   longPassAccuracy: 0.65,
   dribbleControl: 0.90,
-  interceptRadius: 0.75,
-  decisionInterval: 0.20,
-  shotRange: 5.5,
-  shotAngle: 55,
+  // Adjusted for soccer pitch
+  interceptRadius: 1.5,  // Larger interception radius for soccer
+  decisionInterval: 0.25,  // Slightly longer decision time
+  shotRange: 18.0,  // Increased shot range for soccer
+  shotAngle: 45,  // Narrower angle for longer distances
 
   looseBallDrag: 3.5,
   deadBallTime: 0.7,
@@ -63,12 +66,12 @@ export const P = {
   // Speed toggle
   speedMult: { LOW: 0.75, MID: 1.0, FAST: 1.35 } as Record<string, number>,
 
-  // Long pass
-  longPassMinDist: 8,
-  longPassMaxDist: 22,
+  // Long pass (adjusted for soccer)
+  longPassMinDist: 25,
+  longPassMaxDist: 60,
 
-  // Throw-in / Corner animation
-  throwInMaxDist: 12,
+  // Throw-in / Corner animation (adjusted for soccer)
+  throwInMaxDist: 20,
   throwInAnimDur: 0.5,
   cornerAnimDur: 0.4,
   headingContestRadius: 2.5,
@@ -85,17 +88,17 @@ export const P = {
   directFKShotChance: 0.65,
 };
 
-// 4-4-2 Formation
+// 4-4-2 Formation (scaled for 105m x 68m soccer pitch)
 export const FORM_442 = [
-  { x: -9.8, y: 0 },       // 0  GK
-  { x: -7.5, y: -4.5 },    // 1  LB
-  { x: -7.5, y: -1.5 },    // 2  CB
-  { x: -7.5, y: 1.5 },     // 3  CB
-  { x: -7.5, y: 4.5 },     // 4  RB
-  { x: -4.5, y: -5.0 },    // 5  LM
-  { x: -4.5, y: -1.5 },    // 6  CM
-  { x: -4.5, y: 1.5 },     // 7  CM
-  { x: -4.5, y: 5.0 },     // 8  RM
-  { x: -1.5, y: -1.8 },    // 9  ST
-  { x: -1.5, y: 1.8 },     // 10 ST
+  { x: -48.0, y: 0 },       // 0  GK
+  { x: -36.0, y: -24.0 },   // 1  LB
+  { x: -36.0, y: -8.0 },    // 2  CB
+  { x: -36.0, y: 8.0 },     // 3  CB
+  { x: -36.0, y: 24.0 },    // 4  RB
+  { x: -20.0, y: -28.0 },   // 5  LM
+  { x: -20.0, y: -9.0 },    // 6  CM
+  { x: -20.0, y: 9.0 },     // 7  CM
+  { x: -20.0, y: 28.0 },    // 8  RM
+  { x: -8.0, y: -10.0 },    // 9  ST
+  { x: -8.0, y: 10.0 },     // 10 ST
 ];
