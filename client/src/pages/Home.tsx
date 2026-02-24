@@ -212,27 +212,15 @@ export default function Home() {
     doKickOff(stRef.current);
 
     const onResize = () => {
-      const dpr = window.devicePixelRatio || 1;
-      // Calculate proper canvas size with padding to prevent cutoff
-      const maxWidth = window.innerWidth;
-      const maxHeight = window.innerHeight;
+      // Use viewport dimensions directly
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
       
-      // Futsal pitch aspect ratio with padding (20m wide x 12m tall + UI space)
-      const pitchAspect = (P.pitchHalfW * 2 + 5) / (P.pitchHalfH * 2 + 7);
-      
-      let canvasWidth = maxWidth;
-      let canvasHeight = maxWidth / pitchAspect;
-      
-      if (canvasHeight > maxHeight) {
-        canvasHeight = maxHeight;
-        canvasWidth = maxHeight * pitchAspect;
-      }
-      
-      canvas.width = canvasWidth * dpr;
-      canvas.height = canvasHeight * dpr;
-      canvas.style.width = canvasWidth + "px";
-      canvas.style.height = canvasHeight + "px";
-      ctx.scale(dpr, dpr);
+      // Set canvas to viewport size (CSS pixels)
+      canvas.width = vw;
+      canvas.height = vh;
+      canvas.style.width = vw + "px";
+      canvas.style.height = vh + "px";
     };
     window.addEventListener('resize', onResize);
     onResize();
