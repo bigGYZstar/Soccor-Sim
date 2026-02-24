@@ -1104,8 +1104,17 @@ function stopForSetPiece(st: State, kind: "THROWIN" | "CORNER" | "GOALKICK", tea
 
 function runSetPiece(st: State) {
   const sp = st.setPieceRestart!;
-  const taker = nearestOutfield(st, sp.pos, sp.team);
-  if (taker === -1) return;
+  
+  // Goal kicks must be taken by goalkeeper
+  let taker: number;
+  if (sp.kind === "GOALKICK") {
+    taker = findGK(st, sp.team);
+    if (taker === -1) return; // No GK found
+  } else {
+    // Corner kicks and throw-ins taken by nearest outfield player
+    taker = nearestOutfield(st, sp.pos, sp.team);
+    if (taker === -1) return;
+  }
 
   st.pl[taker].pos = pitchClamp(sp.pos);
   st.pl[taker].tgt = { ...st.pl[taker].pos };
@@ -1366,8 +1375,9 @@ export function update(st: State, dt: number) {
         st.stats.corners += 1;
         const restartTeam = -defendingTeam;
 
-        const cornerY = Math.sign(outY) * (PExt.pitchHalfH - 0.5);
-        const cornerX = outX - goalSide * 0.5;
+        // Corner kick from corner arc (goal line and sideline intersection)
+        const cornerX = goalSide * PExt.pitchHalfW;
+        const cornerY = Math.sign(outY) * PExt.pitchHalfH;
         stopForSetPiece(st, "CORNER", restartTeam, v(cornerX, cornerY));
         return;
       } else {
