@@ -1224,8 +1224,14 @@ export function update(st: State, dt: number) {
   b = st.ball;  // Re-assign for clarity
   
   // A. AI decisions
-  // ★ v8.7.1: Fix dt timer - restore subtract-based logic
-  for (let i = 0; i < st.pl.length; i++) {
+  // ★ v8.7.7 Patch 1: Randomize evaluation order to eliminate index bias
+  const evalOrder = Array.from({length: st.pl.length}, (_, i) => i);
+  for (let i = evalOrder.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [evalOrder[i], evalOrder[j]] = [evalOrder[j], evalOrder[i]];
+  }
+  
+  for (const i of evalOrder) {
     const p = st.pl[i];
     p.dt -= dt;
     if (p.dt <= 0) {
@@ -1268,6 +1274,7 @@ export function update(st: State, dt: number) {
     }
     
     // Interception - find closest player within radius
+    // ★ v8.7.7 Patch 2: Add coin-flip tie-breaking for same-distance players
     if (b.cooldown <= 0) {
       let closestIdx = -1;
       let minD = PExt.interceptRadius;
@@ -1275,10 +1282,17 @@ export function update(st: State, dt: number) {
       for (let i = 0; i < st.pl.length; i++) {
         const p = st.pl[i];
         const d = vdist(p.pos, b.pos);
-        // Only update if this player is closer than any previous
+        
+        // Update if this player is closer
         if (d < minD) {
           minD = d;
           closestIdx = i;
+        }
+        // Tie-breaking: if same distance (within 0.1mm), coin flip
+        else if (Math.abs(d - minD) < 0.0001) {
+          if (Math.random() < 0.5) {
+            closestIdx = i;
+          }
         }
       }
       
