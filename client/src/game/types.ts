@@ -120,4 +120,9 @@ export interface State {
   atkLevelRed: number;
   turnoverT: number;  // v8.7.4: Time since turnover (1.2s counter-press window)
   turnoverTeam: number;  // v8.7.4: Team that lost possession (-1, 0, or +1)
+  stackDetection: {
+    lastBallPos: V;
+    stableTime: number;  // Time ball has been in roughly same position
+    isStacked: boolean;  // Whether stack is currently detected
+  };
 }

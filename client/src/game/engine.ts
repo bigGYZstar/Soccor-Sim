@@ -125,6 +125,11 @@ export function mkState(): State {
     atkLevelRed: 5,
     turnoverT: 0,  // v8.7.4: Counter-press timer
     turnoverTeam: 0,  // v8.7.4: Team that lost possession
+    stackDetection: {
+      lastBallPos: v(0, 0),
+      stableTime: 0,
+      isStacked: false
+    }
   };
 }
 
@@ -616,6 +621,19 @@ export function decideHasBall(st: State, idx: number) {
   const isPhaseA = ax < (2 * w / 3); // Phase A: advance (ax < 6.66)
   const isPhaseB = ax >= (2 * w / 3); // Phase B: finish (ax >= 6.66)
   
+  // ★ Stack resolution: Force long kick when stack detected (HIGHEST PRIORITY)
+  if (st.stackDetection.isStacked) {
+    const forwardDir = v(-me.team + rng(-0.3, 0.3), rng(-0.5, 0.5));
+    const kickTarget = vadd(me.pos, vscl(vnorm(forwardDir), 8.0));
+    kick(st, idx, PExt.longPassSpeed, false, pitchClamp(kickTarget), true);
+    st.stackDetection.isStacked = false;  // Reset stack after resolution
+    st.stackDetection.stableTime = 0;
+    if (Math.random() < 0.05) {
+      console.log(`[STACK RESOLVED] P${idx} forced long kick to break cluster`);
+    }
+    return;
+  }
+  
   // Check if stuck: holdT >= 0.5s AND no progress (ax advance < 0.25)
   const axAdvance = ax - st.ball.holdAX0;
   const isStuck = st.ball.holdT >= 0.5 && axAdvance < 0.25;
@@ -807,6 +825,19 @@ export function decideNoBall(st: State, idx: number) {
   const b = st.ball;
   const ballOwner = b.owner !== null ? st.pl[b.owner] : null;
   const myTeamHasBall = ballOwner && ballOwner.team === me.team;
+  
+  // ★ Stack dispersion: Force players away from clustered ball area (HIGHEST PRIORITY)
+  if (st.stackDetection.isStacked && !me.isGK) {
+    const distToBall = vlen(vsub(b.pos, me.pos));
+    if (distToBall < 3.0) {
+      // Player is in clustered area - move away radially
+      const awayDir = vnorm(vsub(me.pos, b.pos));
+      const disperseTarget = vadd(b.pos, vscl(awayDir, 4.0 + Math.random() * 2.0));
+      me.tgt = pitchClamp(disperseTarget);
+      me.face = awayDir;
+      return;
+    }
+  }
   
   // ★ v8.7.4: Counter-press - immediate ball recovery after turnover (HIGHEST PRIORITY)
   if (st.turnoverT > 0 && me.team === st.turnoverTeam && !me.isGK) {
@@ -1133,6 +1164,22 @@ export function update(st: State, dt: number) {
   // ★ v8.7.4: Counter-press timer decrement
   if (st.turnoverT > 0) {
     st.turnoverT = Math.max(0, st.turnoverT - dt);
+  }
+  
+  // ★ Stack detection: Check if ball is stuck in same position
+  const ballMoveDist = vdist(st.ball.pos, st.stackDetection.lastBallPos);
+  if (ballMoveDist < 0.5) {
+    // Ball hasn't moved much
+    st.stackDetection.stableTime += dt;
+    if (st.stackDetection.stableTime > 2.0) {
+      // Ball stuck for 2+ seconds - stack detected
+      st.stackDetection.isStacked = true;
+    }
+  } else {
+    // Ball moved - reset
+    st.stackDetection.stableTime = 0;
+    st.stackDetection.isStacked = false;
+    st.stackDetection.lastBallPos = { ...st.ball.pos };
   }
   
   // ★ v8.7.4: Track attacking third possession streaks
