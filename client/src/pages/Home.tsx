@@ -213,10 +213,25 @@ export default function Home() {
 
     const onResize = () => {
       const dpr = window.devicePixelRatio || 1;
-      canvas.width = window.innerWidth * dpr;
-      canvas.height = window.innerHeight * dpr;
-      canvas.style.width = window.innerWidth + "px";
-      canvas.style.height = window.innerHeight + "px";
+      // Calculate proper canvas size with padding to prevent cutoff
+      const maxWidth = window.innerWidth;
+      const maxHeight = window.innerHeight;
+      
+      // Futsal pitch aspect ratio with padding (20m wide x 12m tall + UI space)
+      const pitchAspect = (P.pitchHalfW * 2 + 5) / (P.pitchHalfH * 2 + 7);
+      
+      let canvasWidth = maxWidth;
+      let canvasHeight = maxWidth / pitchAspect;
+      
+      if (canvasHeight > maxHeight) {
+        canvasHeight = maxHeight;
+        canvasWidth = maxHeight * pitchAspect;
+      }
+      
+      canvas.width = canvasWidth * dpr;
+      canvas.height = canvasHeight * dpr;
+      canvas.style.width = canvasWidth + "px";
+      canvas.style.height = canvasHeight + "px";
       ctx.scale(dpr, dpr);
     };
     window.addEventListener('resize', onResize);
@@ -248,15 +263,23 @@ export default function Home() {
   }, []);
 
   return (
-    <canvas 
-      ref={cvsRef}
-      style={{ 
-        display: "block", 
-        width: "100vw", 
-        height: "100vh", 
-        background: "#0a0a10", 
-        touchAction: "none" 
-      }}
-    />
+    <div style={{ 
+      display: "flex", 
+      alignItems: "center", 
+      justifyContent: "center", 
+      width: "100vw", 
+      height: "100vh", 
+      background: "#0a0a10",
+      overflow: "hidden"
+    }}>
+      <canvas 
+        ref={cvsRef}
+        style={{ 
+          display: "block", 
+          background: "#0a0a10", 
+          touchAction: "none" 
+        }}
+      />
+    </div>
   );
 }
