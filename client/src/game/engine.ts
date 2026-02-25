@@ -1549,6 +1549,27 @@ export function update(st: State, dt: number) {
       // ★ v8.7.1: Track hold time for safety valve
       b.holdT += dt;
       
+      // ★ v8.8.6: Goal detection during possession (enables dribble goals)
+      const g = checkGoal(b.pos);
+      if (g !== 0) {
+        // Own goal detection
+        const goalSide = Math.sign(b.pos.x);
+        const concedingTeam = goalSide;
+        if (b.lastTouchTeam === concedingTeam) {
+          // Own goal (rare but possible)
+          const concedingKey = concedingTeam === -1 ? 'blue' : 'red';
+          st.stats.ownGoals = (st.stats.ownGoals || 0) + 1;
+        }
+        
+        if (g === -1) st.sR++;
+        else st.sL++;
+        st.flash = 1.0;
+        st.flashTxt = "GOAL!";
+        st.koSide = g;
+        doKickOff(st);
+        return;
+      }
+      
       // v8.8.2: Track possession frames
       const ownerTeam = st.pl[b.owner].team === -1 ? 'blue' : 'red';
       st.stats.possessionFrames[ownerTeam]++;
