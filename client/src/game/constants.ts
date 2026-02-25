@@ -107,6 +107,39 @@ export const P = {
   defaultDominantFoot: "R" as const,  // All players start right-footed
   defaultWeakFootFreq: 0,             // 0/10: never use weak foot initially
   defaultWeakFootAccuracy: 5,         // 5/10: average weak foot accuracy
+  
+  // ★ v8.9.1: Dribble ball separation physics
+  /**
+   * During dribble, the ball cycles between "touch" (foot contact) and "push" (ball ahead of foot).
+   * ballControl (0-10) determines how far the ball separates during push phase.
+   *   10 = ball barely leaves foot (Messi-like close control)
+   *    0 = ball pushed far ahead (poor control, vulnerable to tackle)
+   *    5 = average control (default)
+   *
+   * Touch cycle:
+   *   touchPhase: 0..1 oscillates via sin(). 0 = ball at foot, 1 = ball at max push distance
+   *   pushDistMin: minimum push distance (high control) in meters
+   *   pushDistMax: maximum push distance (low control) in meters
+   *   touchCycleSpeed: how fast the touch cycle oscillates (radians/sec)
+   */
+  defaultBallControl: 5,       // 5/10: average ball control for all players
+  dribblePushDistMin: 0.15,    // High control: ball stays 0.15m from foot
+  dribblePushDistMax: 2.5,     // Low control: ball pushed up to 2.5m ahead
+  dribbleTouchCycleSpeed: 5.0, // Oscillation speed (rad/s) - ~0.6s per touch cycle
+  dribbleTouchFootSwing: 0.12, // How far foot swings forward during touch (meters)
+  
+  // ★ v8.9.1: Foot animation parameters
+  /**
+   * Feet animate during actions: kick swing, dribble touch, tackle lunge.
+   * footKickSwingDist: how far foot swings forward during kick (meters)
+   * footKickSwingDuration: duration of kick swing animation (seconds)
+   * footTackleLungeDist: how far foot extends during tackle (meters)
+   * footTackleLungeDuration: duration of tackle lunge animation (seconds)
+   */
+  footKickSwingDist: 0.30,      // Foot swings 0.30m forward during kick
+  footKickSwingDuration: 0.20,  // Kick animation lasts 0.20s
+  footTackleLungeDist: 0.35,    // Foot extends 0.35m during tackle
+  footTackleLungeDuration: 0.25, // Tackle animation lasts 0.25s
 };
 
 // 4-4-2 Formation (scaled for 105m x 68m soccer pitch)

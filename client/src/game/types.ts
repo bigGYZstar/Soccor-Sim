@@ -26,6 +26,10 @@ export interface Foot {
   side: FootSide;           // "L" or "R"
   pos: V;                   // World position of this foot
   offset: V;                // Offset from player center (in player-local space)
+  // ★ v8.9.1: Foot animation state
+  animOffset: V;            // Additional animation offset (kick swing, tackle lunge)
+  animTimer: number;        // Remaining animation time (0 = no animation)
+  animType: "none" | "kick" | "dribbleTouch" | "tackle"; // Current animation
 }
 
 /**
@@ -38,6 +42,7 @@ export interface FootParams {
   dominantFoot: FootSide;   // "R" for right-footed, "L" for left-footed
   weakFootFreq: number;     // 0-10: frequency of weak foot usage (0 = never)
   weakFootAccuracy: number; // 0-10: accuracy with weak foot (5 = average)
+  ballControl: number;      // 0-10: ball control during dribble (5 = average)
 }
 
 export type SpeedMode = "LOW" | "MID" | "FAST";
@@ -137,6 +142,8 @@ export interface Player {
   leftFoot: Foot;
   rightFoot: Foot;
   footParams: FootParams;
+  // ★ v8.9.1: Dribble touch cycle
+  dribbleTouchPhase: number;  // 0..2π oscillator for touch cycle
 }
 
 export interface Ball {

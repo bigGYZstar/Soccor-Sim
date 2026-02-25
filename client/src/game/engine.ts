@@ -156,13 +156,46 @@ export function footAccuracyModifier(player: Player, usedFoot: FootSide, ballPos
  * Update foot positions for a player based on current pos and face.
  * Called every frame in update().
  */
-function updatePlayerFeet(player: Player): void {
+function updatePlayerFeet(player: Player, dt?: number): void {
   const feet = calcFootPositions(player.pos, player.face);
+  
+  // Base foot positions
   player.leftFoot.pos = feet.left;
   player.rightFoot.pos = feet.right;
+  
+  // ★ v8.9.1: Apply animation offsets and decay timers
+  if (dt !== undefined) {
+    for (const foot of [player.leftFoot, player.rightFoot]) {
+      if (foot.animTimer > 0) {
+        foot.animTimer -= dt;
+        if (foot.animTimer <= 0) {
+          // Animation finished: reset
+          foot.animTimer = 0;
+          foot.animOffset = v(0, 0);
+          foot.animType = "none";
+        } else if (foot.animType === "kick" || foot.animType === "tackle") {
+          // Kick/tackle: swing out then retract (triangle wave)
+          const duration = foot.animType === "kick" ? PExt.footKickSwingDuration : PExt.footTackleLungeDuration;
+          const progress = 1 - (foot.animTimer / duration); // 0..1
+          // Triangle: 0→1→0 over duration (peak at 0.3 for quick snap)
+          const peakT = 0.3;
+          const swingFactor = progress < peakT 
+            ? progress / peakT 
+            : 1 - (progress - peakT) / (1 - peakT);
+          const maxDist = foot.animType === "kick" ? PExt.footKickSwingDist : PExt.footTackleLungeDist;
+          const animDir = vlen(foot.animOffset) > 0.001 ? vnorm(foot.animOffset) : vnorm(player.face);
+          foot.animOffset = vscl(animDir, maxDist * swingFactor);
+        }
+        // dribbleTouch animation is handled in ball-follows-owner section
+      }
+      // Apply animation offset to final foot position
+      foot.pos = vadd(foot.pos, foot.animOffset);
+    }
+  }
+  
   // Update offsets (for reference)
-  player.leftFoot.offset = vsub(feet.left, player.pos);
-  player.rightFoot.offset = vsub(feet.right, player.pos);
+  player.leftFoot.offset = vsub(player.leftFoot.pos, player.pos);
+  player.rightFoot.offset = vsub(player.rightFoot.pos, player.pos);
 }
 
 /** Create default foot params for a player */
@@ -171,6 +204,7 @@ function mkFootParams(): FootParams {
     dominantFoot: PExt.defaultDominantFoot as FootSide,
     weakFootFreq: PExt.defaultWeakFootFreq,
     weakFootAccuracy: PExt.defaultWeakFootAccuracy,
+    ballControl: PExt.defaultBallControl,
   };
 }
 
@@ -182,6 +216,9 @@ function mkFoot(side: FootSide, playerPos: V, face: V): Foot {
     side,
     pos,
     offset: vsub(pos, playerPos),
+    animOffset: v(0, 0),
+    animTimer: 0,
+    animType: "none" as const,
   };
 }
 
@@ -214,6 +251,7 @@ export function mkPlayers(): Player[] {
       leftFoot: mkFoot("L", home, face),
       rightFoot: mkFoot("R", home, face),
       footParams: mkFootParams(),
+      dribbleTouchPhase: 0,
     });
   }
   for (let i = 0; i < 11; i++) {
@@ -233,6 +271,7 @@ export function mkPlayers(): Player[] {
       leftFoot: mkFoot("L", home, face),
       rightFoot: mkFoot("R", home, face),
       footParams: mkFootParams(),
+      dribbleTouchPhase: 0,
     });
   }
   return pl;
@@ -510,6 +549,12 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   
   // Update kicker's face direction
   kicker.face = dir;
+  
+  // ★ v8.9.1: Trigger kick swing animation on the kicking foot
+  const kickFoot = usedFoot === "L" ? kicker.leftFoot : kicker.rightFoot;
+  kickFoot.animTimer = PExt.footKickSwingDuration;
+  kickFoot.animType = "kick";
+  kickFoot.animOffset = vscl(dir, PExt.footKickSwingDist);
   
   // ★ v8.7.1: Kick logging (1% sample)
   if (Math.random() < 0.01) {
@@ -1303,7 +1348,23 @@ export function decideNoBall(st: State, idx: number) {
     }
     
     // Enemy has ball: Press or block
+    // ★ v8.9.1: Target the BALL position, not the player.
+    // When ball is separated from dribbler (touch cycle push phase),
+    // defenders should target the ball to attempt a tackle.
     if (ballOwner && ballOwner.team !== me.team) {
+      // Calculate ball separation from dribbler
+      const ballSep = vdist(b.pos, ballOwner.pos);
+      const isDribblerPushed = ballSep > 0.5; // Ball is meaningfully separated
+      
+      // When ball is separated, nearby defenders rush to the ball (tackle opportunity)
+      if (isDribblerPushed && distToBall < 4.0) {
+        // ★ v8.9.1: Tackle targeting - aim for the ball, not the player
+        me.act = "move";
+        me.tgt = { ...b.pos }; // Target the actual ball position
+        me.face = vnorm(vsub(b.pos, me.pos));
+        return;
+      }
+      
       if (me.role === "FWD" && distToBall < 5.0) {
         // FWD: Press aggressively
         me.act = "move";
@@ -1312,6 +1373,10 @@ export function decideNoBall(st: State, idx: number) {
         // MID: Press moderately
         me.act = "move";
         me.tgt = vlerp(ballPos, v(me.team * PExt.pitchHalfW, 0), 0.15);
+      } else if (me.role === "DEF" && distToBall < 3.5) {
+        // ★ v8.9.1: DEF also presses when close enough
+        me.act = "move";
+        me.tgt = vlerp(ballPos, v(me.team * PExt.pitchHalfW, 0), 0.2);
       } else {
         // Others: Maintain formation with slight shift
         const shiftX = clamp((ballPos.x - me.home.x) * 0.5, -2.5, 2.5);
@@ -1592,6 +1657,18 @@ export function update(st: State, dt: number) {
       
       // Give ball to the closest player found
       if (closestIdx !== -1) {
+        // ★ v8.9.1: Trigger tackle/intercept foot animation
+        const interceptor = st.pl[closestIdx];
+        if (interceptor.leftFoot && interceptor.rightFoot) {
+          // Determine which foot is closer to the ball
+          const dL = vdist(interceptor.leftFoot.pos, b.pos);
+          const dR = vdist(interceptor.rightFoot.pos, b.pos);
+          const tackleFoot = dL < dR ? interceptor.leftFoot : interceptor.rightFoot;
+          const lungeDir = vnorm(vsub(b.pos, interceptor.pos));
+          tackleFoot.animTimer = PExt.footTackleLungeDuration;
+          tackleFoot.animType = "tackle";
+          tackleFoot.animOffset = vscl(lungeDir, PExt.footTackleLungeDist);
+        }
         give(b, closestIdx, st.pl, st);
       }
     }
@@ -1701,9 +1778,61 @@ export function update(st: State, dt: number) {
       return;
     }
   } else {
-    // Ball follows owner
+    // Ball follows owner (★ v8.9.1: with dribble touch cycle separation)
     if (b.owner !== null) {
-      b.pos = { ...st.pl[b.owner].pos };
+      const owner = st.pl[b.owner];
+      
+      // ★ v8.9.1: Dribble ball separation physics
+      // During dribble/carry, ball oscillates between foot contact and push-ahead.
+      // During idle/move (just received ball), ball stays at foot.
+      const isDribbling = owner.act === "dribble" || owner.act === "carry";
+      
+      if (isDribbling) {
+        // Advance touch cycle oscillator
+        owner.dribbleTouchPhase += PExt.dribbleTouchCycleSpeed * dt;
+        if (owner.dribbleTouchPhase > Math.PI * 2) owner.dribbleTouchPhase -= Math.PI * 2;
+        
+        // touchT: 0 at foot contact, 1 at max push distance
+        const touchT = (Math.sin(owner.dribbleTouchPhase) + 1) * 0.5; // 0..1
+        
+        // Push distance based on ballControl (0-10)
+        // control=10 → pushDist=pushDistMin, control=0 → pushDist=pushDistMax
+        const controlNorm = owner.footParams.ballControl / 10; // 0..1
+        const maxPush = PExt.dribblePushDistMin + (1 - controlNorm) * (PExt.dribblePushDistMax - PExt.dribblePushDistMin);
+        const pushDist = touchT * maxPush;
+        
+        // Ball position: dominant foot position + push in facing direction
+        const usedFoot = owner.footParams.dominantFoot === "R" ? owner.rightFoot : owner.leftFoot;
+        const footPos = usedFoot.pos;
+        const pushDir = vnorm(owner.face);
+        b.pos = vadd(footPos, vscl(pushDir, pushDist));
+        
+        // ★ v8.9.1: Animate dribbling foot (swing forward during touch)
+        const footSwing = touchT * PExt.dribbleTouchFootSwing;
+        const fwd = vnorm(owner.face);
+        if (owner.footParams.dominantFoot === "R") {
+          owner.rightFoot.animOffset = vscl(fwd, footSwing);
+          owner.rightFoot.animType = "dribbleTouch";
+          owner.leftFoot.animOffset = v(0, 0);
+          owner.leftFoot.animType = "none";
+        } else {
+          owner.leftFoot.animOffset = vscl(fwd, footSwing);
+          owner.leftFoot.animType = "dribbleTouch";
+          owner.rightFoot.animOffset = v(0, 0);
+          owner.rightFoot.animType = "none";
+        }
+      } else {
+        // Not dribbling: ball at dominant foot position
+        const usedFoot = owner.footParams.dominantFoot === "R" ? owner.rightFoot : owner.leftFoot;
+        b.pos = { ...usedFoot.pos };
+        owner.dribbleTouchPhase = 0;
+        // Reset foot animation
+        owner.leftFoot.animOffset = v(0, 0);
+        owner.leftFoot.animType = "none";
+        owner.rightFoot.animOffset = v(0, 0);
+        owner.rightFoot.animType = "none";
+      }
+      
       // ★ v8.7.1: Track hold time for safety valve
       b.holdT += dt;
       
@@ -1825,6 +1954,6 @@ export function update(st: State, dt: number) {
     }
     
     // ★ v8.9.0: Update foot positions every frame
-    updatePlayerFeet(p);
+    updatePlayerFeet(p, dt);
   }
 }
