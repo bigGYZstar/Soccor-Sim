@@ -8,6 +8,38 @@ export interface V {
 
 export type Role = "GK" | "DEF" | "MID" | "FWD";
 
+export type FootSide = "L" | "R";
+
+/**
+ * ★ v8.9.0: Foot system
+ * Each player has two physical feet that exist as sub-objects.
+ * 
+ * KEY INVARIANTS (MUST preserve):
+ * 1. Feet MUST NOT stray far from player body center.
+ *    Maximum offset is ~0.4m from body center.
+ * 2. Accuracy MUST decrease as foot-to-ball distance increases.
+ *    The further the foot reaches, the less precise the touch.
+ * 3. Dominant foot has full accuracy; weak foot accuracy is parameterized.
+ * 4. All actions (kick, dribble, tackle) use a specific foot.
+ */
+export interface Foot {
+  side: FootSide;           // "L" or "R"
+  pos: V;                   // World position of this foot
+  offset: V;                // Offset from player center (in player-local space)
+}
+
+/**
+ * Per-player foot skill parameters.
+ * dominantFoot: which foot is the player's strong foot
+ * weakFootFreq: 0-10, how often the player uses the weak foot (0 = never)
+ * weakFootAccuracy: 0-10, accuracy with weak foot (10 = same as dominant)
+ */
+export interface FootParams {
+  dominantFoot: FootSide;   // "R" for right-footed, "L" for left-footed
+  weakFootFreq: number;     // 0-10: frequency of weak foot usage (0 = never)
+  weakFootAccuracy: number; // 0-10: accuracy with weak foot (5 = average)
+}
+
 export type SpeedMode = "LOW" | "MID" | "FAST";
 
 export type SetPieceType = "throw-in" | "corner" | "free-kick" | null;
@@ -101,6 +133,10 @@ export interface Player {
   staminaShort: number;  // 0-1, short-term stamina
   burstT: number;  // Off-the-ball burst timer
   burstCD: number;  // Off-the-ball burst cooldown
+  // ★ v8.9.0: Foot system
+  leftFoot: Foot;
+  rightFoot: Foot;
+  footParams: FootParams;
 }
 
 export interface Ball {

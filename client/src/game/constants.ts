@@ -86,6 +86,27 @@ export const P = {
   wallPlayerCount: 3,
   directFKShotRange: 7.0,
   directFKShotChance: 0.65,
+
+  // ★ v8.9.0: Foot system parameters
+  /**
+   * KEY INVARIANT: Feet must stay close to body center.
+   * footOffsetForward: how far forward the foot sits from body center (meters)
+   * footOffsetLateral: how far left/right the foot sits from body center (meters)
+   * footMaxReach: maximum distance a foot can extend from body (meters)
+   * footSize: visual radius of foot for rendering (meters)
+   * footAccuracyDecay: accuracy multiplier per meter of foot extension beyond rest position
+   *   e.g., 0.15 means 15% accuracy loss per extra meter of reach
+   */
+  footOffsetForward: 0.20,   // Foot sits 0.20m ahead of body center
+  footOffsetLateral: 0.15,   // Foot sits 0.15m to the side of body center
+  footMaxReach: 0.40,        // Maximum 0.40m from body center
+  footSize: 0.15,            // Visual radius 0.15m (smaller than player 0.30m)
+  footAccuracyDecay: 0.15,   // 15% accuracy loss per meter of extra reach
+  
+  // Default foot parameters for all players (can be overridden per player)
+  defaultDominantFoot: "R" as const,  // All players start right-footed
+  defaultWeakFootFreq: 0,             // 0/10: never use weak foot initially
+  defaultWeakFootAccuracy: 5,         // 5/10: average weak foot accuracy
 };
 
 // 4-4-2 Formation (scaled for 105m x 68m soccer pitch)

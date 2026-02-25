@@ -1,7 +1,7 @@
 // Game engine - all logic extracted from Home.tsx
 // UI-independent, testable simulation core
 
-import { State, Player, Ball, Role, V, Trail } from './types';
+import { State, Player, Ball, Role, V, Trail, Foot, FootSide, FootParams } from './types';
 import { P } from './constants';
 import {
   v, vadd, vsub, vscl, vlen, vnorm, vdist, vdot, vlerp, vang,
@@ -57,6 +57,134 @@ function slotRole(slot: number): Role {
   return "FWD";
 }
 
+// ★ v8.9.0: Foot system helpers
+
+/**
+ * Calculate world-space foot positions based on player facing direction.
+ * Left foot is to the left of the facing direction, right foot to the right.
+ * Both feet are slightly forward of the body center.
+ * 
+ * KEY INVARIANT: Feet must never exceed footMaxReach from body center.
+ */
+function calcFootPositions(playerPos: V, face: V): { left: V; right: V } {
+  const fwd = vnorm(face);
+  const right = v(fwd.y, -fwd.x); // Perpendicular to facing (right side)
+  
+  // Left foot: forward + left offset
+  const leftOffset = vadd(
+    vscl(fwd, PExt.footOffsetForward),
+    vscl(right, -PExt.footOffsetLateral)
+  );
+  // Right foot: forward + right offset
+  const rightOffset = vadd(
+    vscl(fwd, PExt.footOffsetForward),
+    vscl(right, PExt.footOffsetLateral)
+  );
+  
+  return {
+    left: vadd(playerPos, leftOffset),
+    right: vadd(playerPos, rightOffset),
+  };
+}
+
+/**
+ * Determine which foot to use for an action based on ball position relative to player.
+ * Returns the foot closer to the ball, respecting dominant foot preference.
+ * 
+ * If weakFootFreq is 0, always returns dominant foot.
+ * Otherwise, uses the closer foot with probability based on weakFootFreq.
+ */
+export function chooseFootForAction(player: Player, ballPos: V): FootSide {
+  const params = player.footParams;
+  
+  // If weakFootFreq is 0, always use dominant foot
+  if (params.weakFootFreq === 0) {
+    return params.dominantFoot;
+  }
+  
+  // Calculate distance from each foot to ball
+  const distLeft = vdist(player.leftFoot.pos, ballPos);
+  const distRight = vdist(player.rightFoot.pos, ballPos);
+  
+  // Determine which foot is closer to ball
+  const closerFoot: FootSide = distLeft < distRight ? "L" : "R";
+  const closerIsDominant = closerFoot === params.dominantFoot;
+  
+  if (closerIsDominant) {
+    // Closer foot is dominant - always use it
+    return params.dominantFoot;
+  } else {
+    // Closer foot is weak foot - use it based on weakFootFreq
+    // weakFootFreq 10 = 100% chance to use weak foot when it's closer
+    const useWeakChance = params.weakFootFreq / 10;
+    if (Math.random() < useWeakChance) {
+      return closerFoot; // Use weak foot
+    } else {
+      return params.dominantFoot; // Override to dominant
+    }
+  }
+}
+
+/**
+ * Calculate accuracy modifier based on which foot is used and its distance from ball.
+ * 
+ * KEY INVARIANT: Accuracy decreases as foot-to-ball distance increases.
+ * Dominant foot: base accuracy = 1.0
+ * Weak foot: base accuracy = weakFootAccuracy / 10
+ * Distance penalty: -footAccuracyDecay per meter beyond rest position
+ */
+export function footAccuracyModifier(player: Player, usedFoot: FootSide, ballPos: V): number {
+  const params = player.footParams;
+  const foot = usedFoot === "L" ? player.leftFoot : player.rightFoot;
+  
+  // Base accuracy: 1.0 for dominant, weakFootAccuracy/10 for weak
+  let accuracy = usedFoot === params.dominantFoot ? 1.0 : params.weakFootAccuracy / 10;
+  
+  // Distance penalty: how far is the foot from the ball?
+  const footToBall = vdist(foot.pos, ballPos);
+  const restDist = Math.sqrt(
+    PExt.footOffsetForward * PExt.footOffsetForward +
+    PExt.footOffsetLateral * PExt.footOffsetLateral
+  );
+  const extraReach = Math.max(0, footToBall - restDist);
+  accuracy -= extraReach * PExt.footAccuracyDecay;
+  
+  return Math.max(0.1, Math.min(1.0, accuracy)); // Clamp to [0.1, 1.0]
+}
+
+/**
+ * Update foot positions for a player based on current pos and face.
+ * Called every frame in update().
+ */
+function updatePlayerFeet(player: Player): void {
+  const feet = calcFootPositions(player.pos, player.face);
+  player.leftFoot.pos = feet.left;
+  player.rightFoot.pos = feet.right;
+  // Update offsets (for reference)
+  player.leftFoot.offset = vsub(feet.left, player.pos);
+  player.rightFoot.offset = vsub(feet.right, player.pos);
+}
+
+/** Create default foot params for a player */
+function mkFootParams(): FootParams {
+  return {
+    dominantFoot: PExt.defaultDominantFoot as FootSide,
+    weakFootFreq: PExt.defaultWeakFootFreq,
+    weakFootAccuracy: PExt.defaultWeakFootAccuracy,
+  };
+}
+
+/** Create a foot at a given position */
+function mkFoot(side: FootSide, playerPos: V, face: V): Foot {
+  const feet = calcFootPositions(playerPos, face);
+  const pos = side === "L" ? feet.left : feet.right;
+  return {
+    side,
+    pos,
+    offset: vsub(pos, playerPos),
+  };
+}
+
 // Formation definitions
 // 4-4-2 Formation for soccer pitch (105m x 68m)
 const FORM_442_BLUE = [
@@ -71,30 +199,40 @@ export function mkPlayers(): Player[] {
   const pl: Player[] = [];
   for (let i = 0; i < 11; i++) {
     const home = FORM_442_BLUE[i];
+    const face = v(1, 0);
     pl.push({
-      idx: pl.length,  // Bug fix A: Add idx (0-21)
+      idx: pl.length,
       pos: { ...home },
-      vel: v(0, 0),  // Phase 5: velocity for inertia
-      team: -1, num: i + 1, home, face: v(1, 0),
+      vel: v(0, 0),
+      team: -1, num: i + 1, home, face,
       act: "idle", tgt: { ...home }, dt: Math.random() * PExt.decisionInterval, isGK: i === 0, slot: i, role: slotRole(i), jumpY: 0,
-      turnDebt: 0,  // Phase 5: turning inertia
-      staminaShort: 1,  // Phase 5: short-term stamina (full)
-      burstT: 0,  // Phase 5: off-the-ball burst timer
-      burstCD: 0,  // Phase 5: burst cooldown
+      turnDebt: 0,
+      staminaShort: 1,
+      burstT: 0,
+      burstCD: 0,
+      // ★ v8.9.0: Foot system
+      leftFoot: mkFoot("L", home, face),
+      rightFoot: mkFoot("R", home, face),
+      footParams: mkFootParams(),
     });
   }
   for (let i = 0; i < 11; i++) {
     const home = FORM_442_RED[i];
+    const face = v(-1, 0);
     pl.push({
-      idx: pl.length,  // Bug fix A: Add idx (0-21)
+      idx: pl.length,
       pos: { ...home },
-      vel: v(0, 0),  // Phase 5: velocity for inertia
-      team: 1, num: i + 1, home, face: v(-1, 0),
+      vel: v(0, 0),
+      team: 1, num: i + 1, home, face,
       act: "idle", tgt: { ...home }, dt: Math.random() * PExt.decisionInterval, isGK: i === 0, slot: i, role: slotRole(i), jumpY: 0,
-      turnDebt: 0,  // Phase 5: turning inertia
-      staminaShort: 1,  // Phase 5: short-term stamina (full)
-      burstT: 0,  // Phase 5: off-the-ball burst timer
-      burstCD: 0,  // Phase 5: burst cooldown
+      turnDebt: 0,
+      staminaShort: 1,
+      burstT: 0,
+      burstCD: 0,
+      // ★ v8.9.0: Foot system
+      leftFoot: mkFoot("L", home, face),
+      rightFoot: mkFoot("R", home, face),
+      footParams: mkFootParams(),
     });
   }
   return pl;
@@ -259,12 +397,19 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   const kicker = st.pl[kickerIdx];
   if (b.owner !== null) b.lastTouchTeam = st.pl[b.owner].team;
   
+  // ★ v8.9.0: Choose which foot to use and apply accuracy modifier
+  const usedFoot = chooseFootForAction(kicker, b.pos);
+  const footMod = footAccuracyModifier(kicker, usedFoot, b.pos);
+  
   // ★ v7.2: Unified error handling with GK-specific safety
+  // v8.9.0: Error range is scaled by foot accuracy (worse foot = more error)
   let finalTarget = { ...tgt };
-  let errRange = customErr !== undefined ? customErr : 
+  let baseErrRange = customErr !== undefined ? customErr : 
                  (shot ? (1 - PExt.shotAccuracy) * 3.0 : 
                   isLong ? (1 - PExt.longPassAccuracy) * 1.5 : 
                   (1 - PExt.passAccuracy) * 1.5);
+  // Apply foot accuracy: footMod=1.0 means no extra error, footMod=0.5 means 2x error
+  let errRange = baseErrRange / Math.max(0.1, footMod);
   
   if (!shot && kicker) {
     // Improvement 1: Detect back/lateral passes (gp <= 0)
@@ -308,8 +453,9 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   // v8.2 Fix: Calculate direction from kicker position (not ball position)
   const dir = vnorm(vsub(finalTarget, kicker.pos));
   
-  // v8.2 Fix: Reset ball position to kicker's foot (prevent dribble drift)
-  b.pos = vadd(kicker.pos, vscl(dir, 0.5));
+  // ★ v8.9.0: Reset ball position to the actual foot that kicked it
+  const kickingFoot = usedFoot === "L" ? kicker.leftFoot : kicker.rightFoot;
+  b.pos = vadd(kickingFoot.pos, vscl(dir, 0.15));
   
   st.trail = { start: kicker.pos, end: finalTarget, shot, longPass: isLong, t: PExt.trailDuration };
   
@@ -603,7 +749,14 @@ export function doDribble(st: State, idx: number) {
   // v8.8.2: Track dribble attempt
   st.stats.dribbleAttempts[team]++;
   
-  if (Math.random() > PExt.dribbleControl) {
+  // ★ v8.9.0: Foot affects dribble control
+  // Choose foot for dribble (ball is at player's feet)
+  const usedFoot = chooseFootForAction(me, st.ball.pos);
+  const footMod = footAccuracyModifier(me, usedFoot, st.ball.pos);
+  // Dribble control adjusted by foot accuracy
+  const effectiveControl = PExt.dribbleControl * footMod;
+  
+  if (Math.random() > effectiveControl) {
     const fd = vnorm(v(rng(-1, 1), rng(-1, 1)));
     kick(st, idx, 3, false, vadd(me.pos, vscl(fd, 2)));
     return;
@@ -1410,14 +1563,19 @@ export function update(st: State, dt: number) {
     }
     
     // Interception - find closest player within radius
-    // ★ v8.7.7 Patch 2: Add coin-flip tie-breaking for same-distance players
+    // ★ v8.9.0: Use foot distance for interception (closer foot counts)
     if (b.cooldown <= 0) {
       let closestIdx = -1;
       let minD = PExt.interceptRadius;
       
       for (let i = 0; i < st.pl.length; i++) {
         const p = st.pl[i];
-        const d = vdist(p.pos, b.pos);
+        // v8.9.0: Check distance to nearest foot, not just body center
+        const dBody = vdist(p.pos, b.pos);
+        // v8.9.0: Use foot distance if available, fallback to body distance
+        const dLeftFoot = p.leftFoot ? vdist(p.leftFoot.pos, b.pos) : dBody;
+        const dRightFoot = p.rightFoot ? vdist(p.rightFoot.pos, b.pos) : dBody;
+        const d = Math.min(dBody, dLeftFoot, dRightFoot);
         
         // Update if this player is closer
         if (d < minD) {
@@ -1665,5 +1823,8 @@ export function update(st: State, dt: number) {
     if (vlen(p.vel) > 0.1) {
       p.face = vnorm(p.vel);
     }
+    
+    // ★ v8.9.0: Update foot positions every frame
+    updatePlayerFeet(p);
   }
 }

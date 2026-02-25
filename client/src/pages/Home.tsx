@@ -114,14 +114,38 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // 選手の向き (Face) を示す線
-    const facePos = w2s(vadd(p.pos, vscl(p.face, P.playerRadius)));
+    // ★ v8.9.0: Draw both feet (with safety check for HMR compatibility)
+    if (p.leftFoot && p.rightFoot) {
+    const footR = sval(P.footSize); // Foot visual radius (smaller than player)
+    const leftFootPos = w2s(p.leftFoot.pos);
+    const rightFootPos = w2s(p.rightFoot.pos);
+    
+    // Left foot - slightly darker shade
     ctx.beginPath();
-    ctx.moveTo(pos.x, pos.y);
-    ctx.lineTo(facePos.x, facePos.y);
-    ctx.strokeStyle = "rgba(255,255,255,0.5)";
-    ctx.lineWidth = 2;
+    ctx.arc(leftFootPos.x, leftFootPos.y, Math.max(2, footR), 0, Math.PI * 2);
+    if (p.team === -1) {
+      ctx.fillStyle = p.footParams.dominantFoot === "L" ? "#93c5fd" : "#1e40af"; // Dominant=bright, Weak=dark
+    } else {
+      ctx.fillStyle = p.footParams.dominantFoot === "L" ? "#fca5a5" : "#7f1d1d";
+    }
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.6)";
+    ctx.lineWidth = 1;
     ctx.stroke();
+    
+    // Right foot
+    ctx.beginPath();
+    ctx.arc(rightFootPos.x, rightFootPos.y, Math.max(2, footR), 0, Math.PI * 2);
+    if (p.team === -1) {
+      ctx.fillStyle = p.footParams.dominantFoot === "R" ? "#93c5fd" : "#1e40af"; // Dominant=bright, Weak=dark
+    } else {
+      ctx.fillStyle = p.footParams.dominantFoot === "R" ? "#fca5a5" : "#7f1d1d";
+    }
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.6)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    } // end foot safety check
 
     // 背番号
     ctx.fillStyle = "white";
