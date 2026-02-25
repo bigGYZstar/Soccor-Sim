@@ -5,7 +5,7 @@ import { State, Player, Ball, Role, V, Trail } from './types';
 import { P } from './constants';
 import {
   v, vadd, vsub, vscl, vlen, vnorm, vdist, vdot, vlerp, vang,
-  clamp, rng, pitchClamp, vmove
+  clamp, rng, pitchClamp, vmove, distSegmentToPoint
 } from './math';
 
 // Additional math utilities
@@ -103,7 +103,7 @@ export function mkPlayers(): Player[] {
 export function mkState(): State {
   return {
     pl: mkPlayers(),
-    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0, holdT: 0, holdAX0: 0, holdT0: 0, phaseBBlockedPassStreak: 0 },
+    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0, holdT: 0, holdAX0: 0, holdT0: 0, phaseBBlockedPassStreak: 0, kickSeq: 0, kickKind: null, kickTeam: 0, intendedReceiverIdx: null, kickActive: false, prevPos: v(0, 0), lastKickTime: 0, lastKickerIdx: -1 },
     sL: 0, sR: 0, time: 0, over: false, paused: false, pauseT: 0, koSide: Math.random() < 0.5 ? -1 : 1,  // Randomize initial kickoff
     trail: null, flash: 0, flashTxt: "", restartT: 0,
     speed: "MID",
@@ -120,7 +120,24 @@ export function mkState(): State {
       phaseBEligibleFrames: { blue: 0, red: 0 },
       phaseBShots: { blue: 0, red: 0 },
       phaseBBlockedPassCount: { blue: 0, red: 0 },
-      forcedShotsFromBlocked: { blue: 0, red: 0 }
+      forcedShotsFromBlocked: { blue: 0, red: 0 },
+      // v8.8.2: Comprehensive statistics
+      passAttempts: { blue: 0, red: 0 },
+      passSuccess: { blue: 0, red: 0 },
+      passToIntended: { blue: 0, red: 0 },
+      passRecovered: { blue: 0, red: 0 },
+      longPassAttempts: { blue: 0, red: 0 },
+      longPassSuccess: { blue: 0, red: 0 },
+      dribbleAttempts: { blue: 0, red: 0 },
+      dribbleSuccess: { blue: 0, red: 0 },
+      shotsTotal: { blue: 0, red: 0 },
+      shotsOnTarget: { blue: 0, red: 0 },
+      interceptions: { blue: 0, red: 0 },
+      tackles: { blue: 0, red: 0 },
+      tackleSuccess: { blue: 0, red: 0 },
+      gkSaveAttempts: { blue: 0, red: 0 },
+      gkSaves: { blue: 0, red: 0 },
+      possessionFrames: { blue: 0, red: 0 }
     },
     atkLevelBlue: 5,
     atkLevelRed: 5,
@@ -149,10 +166,58 @@ export function checkGoal(pos: V): number {
   return 0;
 }
 
-export function give(ball: Ball, idx: number, pl: Player[], st: State) {
+export function give(ball: Ball, idx: number, pl: Player[], st: State, reason: "intercept" | "pickup" | "gkCatch" | "rebound" | "setpiece" | "receive" = "pickup") {
   // v8.7.4: Detect turnover and activate counter-press
   const prevOwnerTeam = ball.lastTouchTeam;
   const newOwnerTeam = pl[idx].team;
+  
+  // v8.8.4: Auto-infer reason from recent kick context
+  let inferredReason = reason;
+  const recentKick = (st.time - ball.lastKickTime) < 2.0;
+  const isPassLike = ball.kickKind === "PASS" || ball.kickKind === "LONG";
+  
+  if (recentKick && isPassLike && ball.kickTeam !== 0) {
+    inferredReason = (newOwnerTeam === ball.kickTeam) ? "receive" : "intercept";
+  }
+  
+  // v8.8.5: Kick event tracking - settle kick result ONCE
+  if (ball.kickActive) {
+    const team = ball.kickTeam === -1 ? 'blue' : 'red';
+    
+    // Exclude setpiece/gkCatch from pass statistics
+    const countable = (inferredReason !== "setpiece" && inferredReason !== "gkCatch");
+    
+    if (countable && (ball.kickKind === "PASS" || ball.kickKind === "LONG")) {
+      const sameTeam = (newOwnerTeam === ball.kickTeam);
+      const toIntended = (idx === ball.intendedReceiverIdx);
+      
+      if (ball.kickKind === "PASS") {
+        if (sameTeam) {
+          st.stats.passSuccess[team]++;
+          if (toIntended) {
+            st.stats.passToIntended[team]++;
+          } else {
+            st.stats.passRecovered[team]++;
+          }
+        }
+        // Attempt already counted in doPassTo
+      } else if (ball.kickKind === "LONG") {
+        if (sameTeam) {
+          st.stats.longPassSuccess[team]++;
+        }
+        // Attempt already counted in doLongPassTo
+      }
+    }
+    
+    ball.kickActive = false; // Kick settled
+  }
+  
+  // v8.8.4: Track interceptions based on inferred reason
+  if (inferredReason === "intercept" && prevOwnerTeam !== 0 && prevOwnerTeam !== newOwnerTeam) {
+    const newTeam = newOwnerTeam === -1 ? 'blue' : 'red';
+    st.stats.interceptions[newTeam]++;
+    st.stats.tackleSuccess[newTeam]++;
+  }
   
   // Track successful counter-press recovery BEFORE updating turnover state
   if (st.turnoverT > 0 && prevOwnerTeam !== 0 && prevOwnerTeam !== newOwnerTeam) {
@@ -182,6 +247,11 @@ export function give(ball: Ball, idx: number, pl: Player[], st: State) {
   const ax = ball.pos.x * (-pl[idx].team);
   ball.holdAX0 = ax;
   ball.holdT0 = st.time;
+  
+  // v8.8.3: Deactivate kick tracking when possession is established
+  if (reason === "setpiece" || reason === "gkCatch") {
+    ball.kickActive = false;
+  }
 }
 
 export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, tgt: V, isLong: boolean = false, customErr?: number) {
@@ -250,9 +320,47 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   else if (isLong) b.lastKickType = "LONG";
   else b.lastKickType = "PASS";
   
+  // v8.8.3: Kick event tracking for accurate statistics
+  b.kickSeq++;
+  b.kickKind = shot ? "SHOT" : isLong ? "LONG" : "PASS";
+  b.kickTeam = kicker.team;
+  // v8.8.5: Use finalTarget for intended receiver (not kicker position)
+  b.intendedReceiverIdx = tgt ? nearest(st, finalTarget, kicker.team) : null;
+  b.kickActive = true;
+  b.lastKickTime = st.time;
+  b.lastKickerIdx = kickerIdx;
+  
   b.owner = null; b.free = true; b.shot = shot;
   b.vel = vscl(dir, spd); b.dead = 0;
   b.lob = isLong ? 1.0 : 0;
+  
+  // v8.8.2: Track shot statistics
+  if (shot) {
+    const team = kicker.team === -1 ? 'blue' : 'red';
+    st.stats.shotsTotal[team]++;
+    
+    // v8.8.3: Check if shot is on target using goalline intersection
+    const goalX = -kicker.team * PExt.pitchHalfW;
+    const isTowardsGoal = (finalTarget.x - kicker.pos.x) * -kicker.team > 0;
+    
+    if (isTowardsGoal) {
+      // Calculate where shot trajectory crosses goalline
+      // Line from kicker.pos to finalTarget, find y when x = goalX
+      const dx = finalTarget.x - kicker.pos.x;
+      const dy = finalTarget.y - kicker.pos.y;
+      
+      if (Math.abs(dx) > 0.01) {
+        // t = (goalX - kicker.pos.x) / dx
+        const t = (goalX - kicker.pos.x) / dx;
+        const y_at_goalline = kicker.pos.y + t * dy;
+        
+        // On target if intersection is within goal posts
+        if (Math.abs(y_at_goalline) <= PExt.goalHalfH) {
+          st.stats.shotsOnTarget[team]++;
+        }
+      }
+    }
+  }
   
   // Update kicker's face direction
   kicker.face = dir;
@@ -262,7 +370,7 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
     const dirLen = vlen(dir);
     const ballVelLen = vlen(b.vel);
     const type = shot ? "SHOT" : isLong ? "LONG" : "PASS";
-    console.log(`[KICK] t=${st.time.toFixed(1)} P${kickerIdx}(${kicker.team === -1 ? 'B' : 'R'}) ${type} from(${kicker.pos.x.toFixed(1)},${kicker.pos.y.toFixed(1)}) to(${finalTarget.x.toFixed(1)},${finalTarget.y.toFixed(1)}) spd=${spd.toFixed(1)} dirLen=${dirLen.toFixed(3)} ballVelLen=${ballVelLen.toFixed(1)}`);
+    // Debug log removed for clean output
   }
 }
 
@@ -383,7 +491,7 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
       if (!isBlocked) {
         score += 15.0; // Unblocked pass into opponent deep territory is "must play"
         if (Math.random() < 0.01) { // Log 1% of attempts
-          console.log(`[ATT 3RD PASS] P${me.idx}(${me.pos.x.toFixed(1)}) -> P${i}(${tm.pos.x.toFixed(1)}), score: ${score.toFixed(1)}`);
+          // Debug log removed
         }
       } else {
         // v8.7.5: Track blocked passes in Phase B for safety valve
@@ -392,7 +500,7 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
           // (actual counting happens in decideHasBall when bestPass returns blocked target)
         }
         if (Math.random() < 0.01) {
-          console.log(`[ATT 3RD BLOCKED] P${me.idx} -> P${i}, blocked`);
+          // Debug log removed
         }
       }
     }
@@ -463,6 +571,10 @@ export function doPassTo(st: State, idx: number, targetIdx: number) {
   
   // v7.2: Remove pre-kick error - let kick() handle all error calculation
   kick(st, idx, PExt.passSpeed, false, tp, false, baseErr);
+  
+  // v8.8.2: Track pass attempt
+  const team = me.team === -1 ? 'blue' : 'red';
+  st.stats.passAttempts[team]++;
 }
 
 export function doLongPassTo(st: State, idx: number, targetIdx: number) {
@@ -478,15 +590,28 @@ export function doLongPassTo(st: State, idx: number, targetIdx: number) {
   
   const err = (1 - PExt.longPassAccuracy) * 2.0;
   kick(st, idx, PExt.longPassSpeed, false, tp, true, err);
+  
+  // v8.8.2: Track long pass attempt
+  const team = me.team === -1 ? 'blue' : 'red';
+  st.stats.longPassAttempts[team]++;
 }
 
 export function doDribble(st: State, idx: number) {
   const me = st.pl[idx];
+  const team = me.team === -1 ? 'blue' : 'red';
+  
+  // v8.8.2: Track dribble attempt
+  st.stats.dribbleAttempts[team]++;
+  
   if (Math.random() > PExt.dribbleControl) {
     const fd = vnorm(v(rng(-1, 1), rng(-1, 1)));
     kick(st, idx, 3, false, vadd(me.pos, vscl(fd, 2)));
     return;
   }
+  
+  // v8.8.2: Dribble success (not lost immediately)
+  st.stats.dribbleSuccess[team]++;
+  
   const fwd = vnorm(v(-me.team + rng(-0.4, 0.4), rng(-0.6, 0.6)));
   me.act = "dribble"; me.tgt = vadd(me.pos, vscl(fwd, 5));
   me.face = fwd; me.dt = 0;
@@ -630,7 +755,7 @@ export function decideHasBall(st: State, idx: number) {
     st.stackDetection.isStacked = false;  // Reset stack after resolution
     st.stackDetection.stableTime = 0;
     if (Math.random() < 0.05) {
-      console.log(`[STACK RESOLVED] P${idx} forced long kick to break cluster`);
+      // Debug log removed
     }
     return;
   }
@@ -699,7 +824,7 @@ export function decideHasBall(st: State, idx: number) {
         st.ball.phaseBBlockedPassStreak = 0;
         
         if (Math.random() < 0.01) {
-          console.log(`[FORCED SHOT] P${idx} streak=${st.ball.phaseBBlockedPassStreak} dist=${distToGoal.toFixed(1)}`);
+          // Debug log removed
         }
         chosenAction = "shot-forced";
         return;
@@ -815,7 +940,7 @@ export function decideHasBall(st: State, idx: number) {
     const ax = me.pos.x * (-me.team);
     const w = PExt.pitchHalfW;
     const phase = ax < (2 * w / 3) ? "A" : "B";
-    console.log(`[DECIDE] t=${st.time.toFixed(1)} P${idx}(${me.team === -1 ? 'B' : 'R'}) ${me.role}${me.isGK ? '-GK' : ''} ax=${ax.toFixed(1)} phase=${phase} action=${chosenAction} tgt=${targetIdx}`);
+    // Debug log removed
   }
 }
 
@@ -1090,9 +1215,7 @@ export function doKickOff(st: State, side?: number) {
 
 function stopForSetPiece(st: State, kind: "THROWIN" | "CORNER" | "GOALKICK", team: number, pos: V) {
   // Debug logging for statistics verification
-  if (typeof console !== 'undefined' && console.log) {
-    console.log(`[SETPIECE] ${kind} team=${team} pos=(${pos.x.toFixed(2)},${pos.y.toFixed(2)}) lastTouch=${st.ball.lastTouchTeam} lastKick=${st.ball.lastKickType}`);
-  }
+  // Debug log removed
   
   st.paused = true;
   st.pauseT = PExt.restartPause;
@@ -1256,6 +1379,9 @@ export function update(st: State, dt: number) {
   
   // B. Ball physics
   if (b.free) {
+    // v8.8.3: Store previous position for line-segment collision detection
+    b.prevPos = { ...b.pos };
+    
     // Free ball movement
     b.pos = vadd(b.pos, vscl(b.vel, dt));
     
@@ -1312,13 +1438,14 @@ export function update(st: State, dt: number) {
       }
     }
     
-    // GK save
+    // v8.8.3: GK save with line-segment detection
     if (PExt.gkSaveEnabled && b.shot) {
       const defTeam = b.lastTouchTeam === -1 ? 1 : -1;
       const gkIdx = findGK(st, defTeam);
       if (gkIdx !== -1) {
         const gk = st.pl[gkIdx];
-        const distToGK = vdist(b.pos, gk.pos);
+        // Check if shot trajectory (prevPos -> pos) crosses GK radius
+        const distToGK = distSegmentToPoint(b.prevPos, b.pos, gk.pos);
         if (distToGK < PExt.gkSaveRadius) {
           const gc = v(defTeam * PExt.pitchHalfW, 0);
           const toGoal = vsub(gc, b.pos);
@@ -1327,7 +1454,14 @@ export function update(st: State, dt: number) {
           const angleBonus = (1 - angle / 180) * PExt.gkSaveAngleBonus;
           const saveChance = PExt.gkSaveBase + angleBonus;
           
+          // v8.8.2: Track save attempt
+          const gkTeam = defTeam === -1 ? 'blue' : 'red';
+          st.stats.gkSaveAttempts[gkTeam]++;
+          
           if (Math.random() < saveChance) {
+            // v8.8.2: Track successful save
+            st.stats.gkSaves[gkTeam]++;
+            
             if (Math.random() < PExt.gkParryChance) {
               // Parry
               const parryDir = vnorm(vsub(b.pos, gk.pos));
@@ -1336,7 +1470,7 @@ export function update(st: State, dt: number) {
               b.cooldown = PExt.gkHoldCooldown;
             } else {
               // Catch
-              give(b, gkIdx, st.pl, st);
+              give(b, gkIdx, st.pl, st, "gkCatch");
               b.cooldown = PExt.gkHoldCooldown;
             }
           }
@@ -1414,6 +1548,10 @@ export function update(st: State, dt: number) {
       b.pos = { ...st.pl[b.owner].pos };
       // ★ v8.7.1: Track hold time for safety valve
       b.holdT += dt;
+      
+      // v8.8.2: Track possession frames
+      const ownerTeam = st.pl[b.owner].team === -1 ? 'blue' : 'red';
+      st.stats.possessionFrames[ownerTeam]++;
       
       // ★ v8.7.4: Turnover detection (owner team changed)
       const currentOwnerTeam = st.pl[b.owner].team;

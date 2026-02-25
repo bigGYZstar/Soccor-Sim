@@ -50,3 +50,25 @@ export const vmove = (from: V, to: V, d: number): V => {
   if (dist <= 0.001 || dist <= d) return v(to.x, to.y);
   return vadd(from, vscl(vsub(to, from), d / dist));
 };
+
+// v8.8.3: Distance from line segment (p1 -> p2) to point
+export const distSegmentToPoint = (p1: V, p2: V, point: V): number => {
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  const lengthSquared = dx * dx + dy * dy;
+  
+  if (lengthSquared === 0) {
+    // Segment is a point
+    return vdist(p1, point);
+  }
+  
+  // Project point onto line segment
+  // t = ((point - p1) · (p2 - p1)) / |p2 - p1|²
+  const t = Math.max(0, Math.min(1, 
+    ((point.x - p1.x) * dx + (point.y - p1.y) * dy) / lengthSquared
+  ));
+  
+  // Closest point on segment
+  const closest = v(p1.x + t * dx, p1.y + t * dy);
+  return vdist(closest, point);
+};

@@ -26,6 +26,29 @@ export type MatchStats = {
   phaseBShots: { blue: number; red: number };  // Shots taken in Phase B
   phaseBBlockedPassCount: { blue: number; red: number };  // Blocked passes in Phase B
   forcedShotsFromBlocked: { blue: number; red: number };  // Shots forced by blocked pass streak
+  
+  // v8.8.2: Comprehensive statistics for 1000-match analysis
+  passAttempts: { blue: number; red: number };  // Total pass attempts
+  passSuccess: { blue: number; red: number };  // Successful passes (reached any teammate)
+  passToIntended: { blue: number; red: number };  // v8.8.5: Passes to intended receiver
+  passRecovered: { blue: number; red: number };  // v8.8.5: Passes to different teammate
+  longPassAttempts: { blue: number; red: number };  // Long pass attempts
+  longPassSuccess: { blue: number; red: number };  // Successful long passes
+  
+  dribbleAttempts: { blue: number; red: number };  // Dribble attempts
+  dribbleSuccess: { blue: number; red: number };  // Successful dribbles (not intercepted)
+  
+  shotsTotal: { blue: number; red: number };  // Total shots
+  shotsOnTarget: { blue: number; red: number };  // Shots on target (towards goal)
+  
+  interceptions: { blue: number; red: number };  // Successful interceptions
+  tackles: { blue: number; red: number };  // Tackle attempts
+  tackleSuccess: { blue: number; red: number };  // Successful tackles
+  
+  gkSaveAttempts: { blue: number; red: number };  // Shots faced by GK
+  gkSaves: { blue: number; red: number };  // Successful saves by GK
+  
+  possessionFrames: { blue: number; red: number };  // Frames with ball possession
 };
 
 export type SetPieceKind = "THROWIN" | "CORNER" | "GOALKICK";
@@ -96,6 +119,15 @@ export interface Ball {
   holdAX0: number;  // v8.7.4: Ball ax when owner acquired (for progress check)
   holdT0: number;  // v8.7.4: Time when owner acquired (for progress check)
   phaseBBlockedPassStreak: number;  // v8.7.5: Consecutive blocked passes in Phase B
+  // v8.8.3: Kick event tracking for accurate statistics
+  kickSeq: number;  // Sequential kick ID
+  kickKind: "PASS" | "LONG" | "SHOT" | null;  // Type of current kick
+  kickTeam: number;  // Team that kicked (-1, 0, 1)
+  intendedReceiverIdx: number | null;  // Intended receiver player index
+  kickActive: boolean;  // Whether kick is still in flight/undecided
+  prevPos: V;  // Previous frame position for line-segment collision
+  lastKickTime: number;  // Time when last kick occurred
+  lastKickerIdx: number;  // Player index who kicked
 }
 
 export interface State {
