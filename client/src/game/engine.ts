@@ -284,7 +284,7 @@ export function mkPlayers(blueFormation: FormationId = "4-4-2", redFormation: Fo
 export function mkState(blueFormation: FormationId = "4-4-2", redFormation: FormationId = "4-4-2"): State {
   return {
     pl: mkPlayers(blueFormation, redFormation),
-    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0, holdT: 0, holdAX0: 0, holdT0: 0, phaseBBlockedPassStreak: 0, kickSeq: 0, kickKind: null, kickTeam: 0, intendedReceiverIdx: null, kickActive: false, prevPos: v(0, 0), lastKickTime: 0, lastKickerIdx: -1 },
+    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0, holdT: 0, holdAX0: 0, holdT0: 0, phaseBBlockedPassStreak: 0, kickSeq: 0, kickKind: null, kickTeam: 0, intendedReceiverIdx: null, kickActive: false, prevPos: v(0, 0), lastKickTime: 0, lastKickerIdx: -1, z: 0, vz: 0, spinX: 0, spinY: 0, spinDecay: 3.0, kickFoot: null, kickStyle: null },
     sL: 0, sR: 0, time: 0, over: false, paused: false, pauseT: 0, koSide: Math.random() < 0.5 ? -1 : 1,  // Randomize initial kickoff
     trail: null, flash: 0, flashTxt: "", restartT: 0,
     speed: "MID",
@@ -528,6 +528,55 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   // v9.2.0: Add cooldown after kick to prevent kicker from immediately re-intercepting
   b.cooldown = 0.15;  // 150ms cooldown before anyone can pick up the ball
   
+  // ★ v9.4.0: Spin physics - determine kick style and apply spin
+  b.kickFoot = usedFoot;
+  // Determine kick style based on context
+  // Short passes: inside foot (most common), Long passes: instep, Shots: instep or outside
+  if (shot) {
+    b.kickStyle = Math.random() < 0.7 ? "instep" : "outside";
+  } else if (isLong) {
+    b.kickStyle = "instep";
+  } else {
+    b.kickStyle = Math.random() < 0.85 ? "inside" : "outside";
+  }
+  
+  // Calculate side spin based on foot and kick style
+  // Right foot inside kick: ball curves left (spinX < 0)
+  // Right foot outside kick: ball curves right (spinX > 0)
+  // Left foot inside kick: ball curves right (spinX > 0)
+  // Left foot outside kick: ball curves left (spinX < 0)
+  const footSign = usedFoot === "R" ? 1 : -1;
+  const styleSign = b.kickStyle === "inside" ? -1 : b.kickStyle === "outside" ? 1 : 0;
+  const spinIntensity = shot ? 2.5 : isLong ? 1.8 : 1.0;
+  // Subtle spin: 0.3-1.5 rad/s depending on kick type
+  b.spinX = footSign * styleSign * spinIntensity * (0.3 + Math.random() * 0.5);
+  
+  // Backspin/topspin: lofted passes get backspin, ground passes get slight topspin
+  if (isLong) {
+    b.spinY = -(1.0 + Math.random() * 1.0); // Backspin on lofted balls
+  } else if (shot) {
+    b.spinY = 0.5 + Math.random() * 1.0; // Slight topspin on shots (dips)
+  } else {
+    b.spinY = Math.random() * 0.3; // Minimal spin on ground passes
+  }
+  b.spinDecay = 3.0;
+  
+  // Z-axis: lob/long passes go up, ground passes stay low
+  if (isLong) {
+    const dist = vdist(kicker.pos, finalTarget);
+    // Height proportional to distance: ~3-6m peak for 25-60m passes
+    b.vz = Math.min(8.0, dist * 0.12 + 1.5);
+    b.z = 0.3; // Initial lift
+  } else if (shot) {
+    // Shots can be low or rising
+    b.vz = Math.random() < 0.3 ? (1.0 + Math.random() * 2.0) : 0; // 30% chance of rising shot
+    b.z = 0;
+  } else {
+    // Ground passes
+    b.vz = 0;
+    b.z = 0;
+  }
+  
   // v8.8.2: Track shot statistics
   if (shot) {
     const team = kicker.team === -1 ? 'blue' : 'red';
@@ -764,8 +813,16 @@ export function doPassTo(st: State, idx: number, targetIdx: number) {
   const tm = st.pl[targetIdx];
   let tp = { ...tm.pos };
   
-  let baseErr = (1 - PExt.passAccuracy) * 1.5;
   const passDist = vdist(me.pos, tm.pos);
+  
+  // ★ v9.4.0: Lead pass - aim slightly ahead of moving teammate
+  if (tm.act === "move" || tm.act === "carry") {
+    const lead = vnorm(vsub(tm.tgt, tm.pos));
+    const leadDist = Math.min(passDist * 0.08, 1.5); // Subtle lead
+    tp = vadd(tp, vscl(lead, leadDist));
+  }
+  
+  let baseErr = (1 - PExt.passAccuracy) * 1.5;
   if (passDist < 4.0) baseErr *= 0.5;
   else if (passDist < 7.0) baseErr *= 0.7;
   const inOwnHalf = me.team * me.pos.x > 0;
@@ -774,8 +831,20 @@ export function doPassTo(st: State, idx: number, targetIdx: number) {
   // v9.2.0: Set intendedReceiverIdx BEFORE kick() so it's not overwritten
   st.ball.intendedReceiverIdx = targetIdx;
   
-  // v7.2: Remove pre-kick error - let kick() handle all error calculation
-  kick(st, idx, PExt.passSpeed, false, tp, false, baseErr);
+  // ★ v9.4.0: Distance-proportional pass speed
+  // Short passes (< 8m): slower, more controlled (12-16 m/s)
+  // Medium passes (8-20m): normal speed (16-20 m/s)
+  // Long passes (> 20m): full power (20 m/s)
+  let passSpd: number;
+  if (passDist < 5) {
+    passSpd = 10 + passDist * 0.8; // 10-14 m/s for very short
+  } else if (passDist < 12) {
+    passSpd = 14 + (passDist - 5) * 0.6; // 14-18.2 m/s
+  } else {
+    passSpd = Math.min(PExt.passSpeed, 16 + (passDist - 12) * 0.3); // 16-20 m/s
+  }
+  
+  kick(st, idx, passSpd, false, tp, false, baseErr);
   
   // v8.8.2: Track pass attempt
   const team = me.team === -1 ? 'blue' : 'red';
@@ -1701,8 +1770,53 @@ export function update(st: State, dt: number) {
     // Free ball movement
     b.pos = vadd(b.pos, vscl(b.vel, dt));
     
-    // Friction
-    const fric = b.lob > 0 ? 0.98 : 0.92;
+    // ★ v9.4.0: Apply spin curve to ball trajectory
+    // Side spin causes lateral deflection (Magnus effect)
+    if (Math.abs(b.spinX) > 0.05) {
+      // Perpendicular to velocity direction
+      const speed = vlen(b.vel);
+      if (speed > 0.5) {
+        const perpX = -b.vel.y / speed;
+        const perpY = b.vel.x / speed;
+        // Curve force proportional to spin and speed
+        const curveMag = b.spinX * speed * 0.008 * dt; // Subtle curve
+        b.vel.x += perpX * curveMag;
+        b.vel.y += perpY * curveMag;
+      }
+    }
+    
+    // ★ v9.4.0: Z-axis physics (gravity, bounce)
+    if (b.z > 0 || b.vz > 0) {
+      b.z += b.vz * dt;
+      b.vz -= 9.81 * dt; // Gravity
+      
+      // Ground bounce
+      if (b.z <= 0 && b.vz < 0) {
+        b.z = 0;
+        // Backspin reduces bounce (ball dies on landing)
+        const bounceFactor = b.spinY < -0.5 ? 0.2 : 0.4; // Backspin = less bounce
+        b.vz = -b.vz * bounceFactor;
+        // Backspin also reduces forward speed on bounce
+        if (b.spinY < -0.5) {
+          b.vel = vscl(b.vel, 0.7); // Ball slows significantly with backspin
+        }
+        // Small bounces just stop
+        if (Math.abs(b.vz) < 0.3) {
+          b.vz = 0;
+          b.z = 0;
+        }
+      }
+    }
+    
+    // ★ v9.4.0: Spin decay over time
+    if (Math.abs(b.spinX) > 0.01 || Math.abs(b.spinY) > 0.01) {
+      const decay = Math.exp(-b.spinDecay * dt);
+      b.spinX *= decay;
+      b.spinY *= decay;
+    }
+    
+    // Friction (ground only - airborne balls have less friction)
+    const fric = b.z > 0.3 ? 0.995 : (b.lob > 0 ? 0.98 : 0.92);
     b.vel = vscl(b.vel, Math.pow(fric, dt * 60));
     
     // Lob decay
@@ -1727,7 +1841,9 @@ export function update(st: State, dt: number) {
     
     // Interception - find closest player within radius
     // ★ v8.9.0: Use foot distance for interception (closer foot counts)
-    if (b.cooldown <= 0) {
+    // ★ v9.4.0: Airborne balls (z > 1.5m) cannot be intercepted on the ground
+    const canIntercept = b.z < 1.5; // Ball must be below head height
+    if (b.cooldown <= 0 && canIntercept) {
       let closestIdx = -1;
       let minD = PExt.interceptRadius;
       

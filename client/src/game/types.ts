@@ -171,6 +171,14 @@ export interface Ball {
   prevPos: V;  // Previous frame position for line-segment collision
   lastKickTime: number;  // Time when last kick occurred
   lastKickerIdx: number;  // Player index who kicked
+  // ★ v9.4.0: Z-axis and spin physics
+  z: number;         // Ball height above ground (meters)
+  vz: number;        // Vertical velocity (m/s)
+  spinX: number;     // Side spin (rad/s) - positive = curves right, negative = curves left
+  spinY: number;     // Top/back spin (rad/s) - positive = topspin, negative = backspin
+  spinDecay: number; // Spin decay rate per second
+  kickFoot: "L" | "R" | null;  // Which foot kicked the ball (for spin direction)
+  kickStyle: "inside" | "outside" | "instep" | "toe" | null;  // Kick technique
 }
 
 export interface State {

@@ -373,84 +373,157 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
     ctx.setLineDash([]);
   }
 
-  // 6. 選手
+  // 6. 選手 (SFC-style pixel art with separated body and feet)
+  // Helper: draw a pixel-art rectangle (snapped to pixel grid for retro feel)
+  const px = (x: number) => Math.round(x);
+  const drawPixelRect = (x: number, y: number, w: number, h: number, color: string) => {
+    ctx.fillStyle = color;
+    ctx.fillRect(px(x), px(y), Math.max(1, px(w)), Math.max(1, px(h)));
+  };
+
   st.pl.forEach(p => {
     const pos = w2s(p.pos);
     const r = sval(P.playerRadius);
+    const unit = Math.max(2.0, r * 0.45); // Pixel unit size (v9.4.0: increased for visibility)
     
+    // Team colors (SFC palette - limited, saturated colors)
+    const isBlue = p.team === -1;
+    const shirtColor = isBlue 
+      ? (p.isGK ? "#00a0e0" : "#2060d0") 
+      : (p.isGK ? "#e0a000" : "#d02020");
+    const shirtHighlight = isBlue
+      ? (p.isGK ? "#40c0ff" : "#4080ff")
+      : (p.isGK ? "#ffc040" : "#ff4040");
+    const shirtShadow = isBlue
+      ? (p.isGK ? "#006090" : "#103080")
+      : (p.isGK ? "#906000" : "#801010");
+    const shortsColor = isBlue ? "#1040a0" : "#f0f0f0";
+    const skinColor = "#f0c090";
+    const skinShadow = "#c09060";
+    const hairColor = isBlue ? "#302010" : "#101010";
+    const bootColor = isBlue ? "#f0f0f0" : "#101010";
+    const bootHighlight = isBlue ? "#ffffff" : "#303030";
+    
+    // Ball holder indicator
     if (st.ball.owner === p.slot + (p.team===1?11:0)) {
-       ctx.beginPath();
-       ctx.arc(pos.x, pos.y, r * 1.5, 0, Math.PI*2);
-       ctx.strokeStyle = p.team === -1 ? "rgba(37,99,235,0.8)" : "rgba(220,38,38,0.8)";
-       ctx.lineWidth = 3;
-       ctx.stroke();
+      ctx.strokeStyle = isBlue ? "#60a0ff" : "#ff6060";
+      ctx.lineWidth = Math.max(2, unit * 0.8);
+      ctx.strokeRect(pos.x - r*1.3, pos.y - r*1.6, r*2.6, r*2.8);
     }
-
+    
+    // Shadow on ground
+    ctx.fillStyle = "rgba(0,0,0,0.3)";
     ctx.beginPath();
-    ctx.arc(pos.x, pos.y, r, 0, Math.PI*2);
-    const grad = ctx.createRadialGradient(pos.x-r*0.3, pos.y-r*0.3, r*0.1, pos.x, pos.y, r);
-    if (p.team === -1) { 
-      grad.addColorStop(0, p.isGK ? "#3b82f6" : "#60a5fa"); 
-      grad.addColorStop(1, p.isGK ? "#1d4ed8" : "#2563eb"); 
-    } else { 
-      grad.addColorStop(0, p.isGK ? "#ef4444" : "#f87171"); 
-      grad.addColorStop(1, p.isGK ? "#b91c1c" : "#dc2626"); 
-    }
-    ctx.fillStyle = grad;
+    ctx.ellipse(pos.x, pos.y + unit*3.5, unit*2.5, unit*1.0, 0, 0, Math.PI*2);
     ctx.fill();
-
-    // Feet
+    
+    // === FEET (drawn first, behind body) ===
     if (p.leftFoot && p.rightFoot) {
-      const footR = sval(P.footSize);
       const leftFootPos = w2s(p.leftFoot.pos);
       const rightFootPos = w2s(p.rightFoot.pos);
+      const footW = Math.max(2, unit * 1.8);
+      const footH = Math.max(2, unit * 1.2);
       
-      ctx.beginPath();
-      ctx.arc(leftFootPos.x, leftFootPos.y, Math.max(2, footR), 0, Math.PI * 2);
-      if (p.team === -1) {
-        ctx.fillStyle = p.footParams.dominantFoot === "L" ? "#93c5fd" : "#1e40af";
-      } else {
-        ctx.fillStyle = p.footParams.dominantFoot === "L" ? "#fca5a5" : "#7f1d1d";
-      }
-      ctx.fill();
-      ctx.strokeStyle = "rgba(255,255,255,0.6)";
-      ctx.lineWidth = 1;
-      ctx.stroke();
+      // Left boot
+      drawPixelRect(leftFootPos.x - footW/2, leftFootPos.y - footH/2 + unit*1.5, footW, footH, bootColor);
+      drawPixelRect(leftFootPos.x - footW/2, leftFootPos.y - footH/2 + unit*1.5, footW * 0.4, footH * 0.6, bootHighlight);
       
-      ctx.beginPath();
-      ctx.arc(rightFootPos.x, rightFootPos.y, Math.max(2, footR), 0, Math.PI * 2);
-      if (p.team === -1) {
-        ctx.fillStyle = p.footParams.dominantFoot === "R" ? "#93c5fd" : "#1e40af";
-      } else {
-        ctx.fillStyle = p.footParams.dominantFoot === "R" ? "#fca5a5" : "#7f1d1d";
-      }
-      ctx.fill();
-      ctx.strokeStyle = "rgba(255,255,255,0.6)";
-      ctx.lineWidth = 1;
-      ctx.stroke();
+      // Right boot
+      drawPixelRect(rightFootPos.x - footW/2, rightFootPos.y - footH/2 + unit*1.5, footW, footH, bootColor);
+      drawPixelRect(rightFootPos.x - footW/2, rightFootPos.y - footH/2 + unit*1.5, footW * 0.4, footH * 0.6, bootHighlight);
+      
+      // Socks (small rectangles above boots)
+      const sockColor = isBlue ? "#f0f0f0" : "#d02020";
+      drawPixelRect(leftFootPos.x - unit*0.6, leftFootPos.y - footH/2 + unit*0.3, unit*1.2, unit*1.2, sockColor);
+      drawPixelRect(rightFootPos.x - unit*0.6, rightFootPos.y - footH/2 + unit*0.3, unit*1.2, unit*1.2, sockColor);
     }
-
-    // 背番号
-    ctx.fillStyle = "white";
-    ctx.font = `bold ${Math.max(8, r)}px 'Roboto Condensed'`;
+    
+    // === BODY (torso - shirt) ===
+    const bodyW = unit * 4;
+    const bodyH = unit * 3;
+    // Main shirt
+    drawPixelRect(pos.x - bodyW/2, pos.y - unit*1.5, bodyW, bodyH, shirtColor);
+    // Shirt highlight (left side light)
+    drawPixelRect(pos.x - bodyW/2, pos.y - unit*1.5, unit*1.2, bodyH - unit*0.5, shirtHighlight);
+    // Shirt shadow (right side)
+    drawPixelRect(pos.x + bodyW/2 - unit*1.0, pos.y - unit*0.5, unit*1.0, bodyH - unit*1.0, shirtShadow);
+    
+    // Shorts
+    drawPixelRect(pos.x - bodyW/2 + unit*0.3, pos.y + unit*1.5, bodyW - unit*0.6, unit*1.5, shortsColor);
+    
+    // === HEAD ===
+    const headW = unit * 2.8;
+    const headH = unit * 2.5;
+    // Hair (behind head)
+    drawPixelRect(pos.x - headW/2 - unit*0.2, pos.y - unit*4.2, headW + unit*0.4, unit*1.5, hairColor);
+    // Face/skin
+    drawPixelRect(pos.x - headW/2, pos.y - unit*3.8, headW, headH, skinColor);
+    // Face shadow
+    drawPixelRect(pos.x + headW/2 - unit*0.8, pos.y - unit*3.0, unit*0.8, unit*1.5, skinShadow);
+    
+    // === JERSEY NUMBER (on shirt) ===
+    ctx.fillStyle = isBlue ? "#ffffff" : "#ffffff";
+    const fontSize = Math.max(6, unit * 2.2);
+    ctx.font = `bold ${fontSize}px ${RETRO_FONT}, monospace`;
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(p.num.toString(), pos.x, pos.y);
+    ctx.fillText(p.num.toString(), pos.x, pos.y + unit*0.2);
   });
 
-  // 7. ボール
+  // 7. ボール (SFC-style with Z-axis height visualization)
   const bp = w2s(st.ball.pos);
   const br = sval(P.ballRadius);
+  const ballZ = st.ball.z || 0;
+  const ballLift = sval(ballZ * 0.5); // Visual lift for Z-axis (0.5m per meter height)
   
-  ctx.fillStyle = "rgba(0,0,0,0.5)";
-  ctx.beginPath(); ctx.ellipse(bp.x, bp.y + br*0.5, br, br*0.6, 0, 0, Math.PI*2); ctx.fill();
-
+  // Ground shadow (gets smaller and lighter as ball goes higher)
+  const shadowScale = Math.max(0.3, 1.0 - ballZ * 0.1);
+  const shadowAlpha = Math.max(0.1, 0.5 - ballZ * 0.05);
+  ctx.fillStyle = `rgba(0,0,0,${shadowAlpha})`;
   ctx.beginPath();
-  ctx.arc(bp.x, bp.y, br, 0, Math.PI*2);
-  const bgrad = ctx.createRadialGradient(bp.x-br*0.3, bp.y-br*0.3, 0, bp.x, bp.y, br);
-  bgrad.addColorStop(0, "white"); bgrad.addColorStop(1, "#ccc");
-  ctx.fillStyle = bgrad;
+  ctx.ellipse(bp.x, bp.y + br*0.5, br * shadowScale, br * 0.5 * shadowScale, 0, 0, Math.PI*2);
   ctx.fill();
-  ctx.strokeStyle = "black"; ctx.lineWidth = 1; ctx.stroke();
+
+  // Ball (lifted by Z-axis)
+  const ballY = bp.y - ballLift;
+  const ballR = Math.max(2, br * 1.1);
+  
+  // SFC-style ball: white pentagon pattern
+  ctx.beginPath();
+  ctx.arc(bp.x, ballY, ballR, 0, Math.PI*2);
+  ctx.fillStyle = "#f8f8f8";
+  ctx.fill();
+  ctx.strokeStyle = "#303030"; ctx.lineWidth = Math.max(1, ballR * 0.15); ctx.stroke();
+  
+  // Pentagon pattern (simplified SFC-style)
+  const penR = ballR * 0.35;
+  // Rotate pentagon pattern based on spin
+  const spinAngle = (st.ball.spinX || 0) * st.time * 0.5;
+  ctx.fillStyle = "#202020";
+  // Center pentagon
+  ctx.beginPath();
+  for (let i = 0; i < 5; i++) {
+    const a = spinAngle + (i / 5) * Math.PI * 2 - Math.PI/2;
+    const px = bp.x + Math.cos(a) * penR;
+    const py = ballY + Math.sin(a) * penR;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fill();
+  // Side pentagons (smaller)
+  for (let j = 0; j < 5; j++) {
+    const baseA = spinAngle + (j / 5) * Math.PI * 2 - Math.PI/2;
+    const cx = bp.x + Math.cos(baseA) * ballR * 0.65;
+    const cy = ballY + Math.sin(baseA) * ballR * 0.65;
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const a = spinAngle + (i / 5) * Math.PI * 2;
+      const px = cx + Math.cos(a) * penR * 0.5;
+      const py = cy + Math.sin(a) * penR * 0.5;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
 
   // 8. GOAL! フラッシュ
   if (st.flash > 0) {
