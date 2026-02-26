@@ -1,4 +1,5 @@
 // ★ v9.9.0: Action Log System - SFC-style real-time commentary
+// ★ v9.15.0: Position labels show sub-position only (RM, RWG, LST etc.)
 import type { State, ActionLogEntry, Player } from "./types";
 
 const MAX_LOG_ENTRIES = 12;
@@ -8,19 +9,18 @@ function teamName(team: number): string {
   return team === -1 ? "BLUE" : "RED";
 }
 
-function roleName(role: string): string {
-  switch (role) {
+// ★ v9.15.0: Use posLabel (sub-position) directly for display
+// e.g., RM, LM, RWG, LWG, LST, RST, LCM, RCM, LCB, RCB, CDM, CAM, GK
+// Falls back to abbreviated role only if posLabel is not set
+function posName(p: Player): string {
+  if (p.posLabel) return p.posLabel;
+  switch (p.role) {
     case "GK": return "GK";
     case "DEF": return "DF";
     case "MID": return "MF";
     case "FWD": return "FW";
-    default: return role;
+    default: return p.role;
   }
-}
-
-// ★ v9.11.0: Use detailed position label for display
-function posName(p: Player): string {
-  return p.posLabel || roleName(p.role);
 }
 
 function playerLabel(p: Player): string {
@@ -50,21 +50,22 @@ export function updateLogTTL(st: State, dt: number) {
 
 // --- Commentary generators ---
 
-export function logPass(st: State, passer: Player, targetNum: number, dist: number, isLong: boolean) {
+export function logPass(st: State, passer: Player, targetNum: number, dist: number, isLong: boolean, usedFoot?: "L" | "R") {
   const distLabel = dist < 8 ? "ショート" : dist < 18 ? "ミドル" : "ロング";
   const typeLabel = isLong ? "ロングパス" : "パス";
-  
+  const footLabel = usedFoot ? (usedFoot === "R" ? "右足" : "左足") : "";
+
   const texts = [
-    `${playerLabel(passer)} ${distLabel}${typeLabel}！ → #${targetNum}へ`,
-    `${playerLabel(passer)} ボールを展開！ #${targetNum}へ${typeLabel}`,
-    `${playerLabel(passer)}(${roleName(passer.role)}) ${typeLabel}を選択 → #${targetNum}`,
+    `${playerLabel(passer)} ${footLabel}${distLabel}${typeLabel}！ → #${targetNum}へ`,
+    `${playerLabel(passer)} ${footLabel}でボールを展開！ #${targetNum}へ${typeLabel}`,
+    `${playerLabel(passer)} ${typeLabel}を選択 → #${targetNum} ${footLabel ? `(${footLabel})` : ""}`,
   ];
-  
+
   emitLog(st, {
     time: st.time,
     team: passer.team,
     playerNum: passer.num,
-    playerRole: passer.posLabel || passer.role,
+    playerRole: posName(passer),
     action: isLong ? "longPass" : "pass",
     detail: texts[Math.floor(Math.random() * texts.length)],
     targetNum,
@@ -78,7 +79,7 @@ export function logPassReceive(st: State, receiver: Player, passerNum: number) {
     time: st.time,
     team: receiver.team,
     playerNum: receiver.num,
-    playerRole: receiver.posLabel || receiver.role,
+    playerRole: posName(receiver),
     action: "passReceive",
     detail: `${playerLabel(receiver)} パスを受ける`,
     success: true,
@@ -91,14 +92,14 @@ export function logShot(st: State, shooter: Player, dist: number) {
   const texts = [
     `${playerLabel(shooter)} ${distLabel}シュート！！`,
     `${playerLabel(shooter)} 打った！！ ${distLabel}からのシュート！`,
-    `${playerLabel(shooter)}(${roleName(shooter.role)}) シュートを放つ！！`,
+    `${playerLabel(shooter)} シュートを放つ！！`,
   ];
-  
+
   emitLog(st, {
     time: st.time,
     team: shooter.team,
     playerNum: shooter.num,
-    playerRole: shooter.posLabel || shooter.role,
+    playerRole: posName(shooter),
     action: "shot",
     detail: texts[Math.floor(Math.random() * texts.length)],
     success: true,
@@ -110,14 +111,14 @@ export function logDribbleAttempt(st: State, dribbler: Player) {
   const texts = [
     `${playerLabel(dribbler)} ドリブル突破を試みる！`,
     `${playerLabel(dribbler)} 仕掛けた！ ドリブルで突破を狙う！`,
-    `${playerLabel(dribbler)}(${roleName(dribbler.role)}) 勝負に出る！`,
+    `${playerLabel(dribbler)} 勝負に出る！`,
   ];
-  
+
   emitLog(st, {
     time: st.time,
     team: dribbler.team,
     playerNum: dribbler.num,
-    playerRole: dribbler.posLabel || dribbler.role,
+    playerRole: posName(dribbler),
     action: "dribble",
     detail: texts[Math.floor(Math.random() * texts.length)],
     success: true,
@@ -131,12 +132,12 @@ export function logDribbleSuccess(st: State, dribbler: Player) {
     `${playerLabel(dribbler)} 相手をかわした！ ドリブル突破！`,
     `${playerLabel(dribbler)} 華麗なドリブルで抜き去る！！`,
   ];
-  
+
   emitLog(st, {
     time: st.time,
     team: dribbler.team,
     playerNum: dribbler.num,
-    playerRole: dribbler.posLabel || dribbler.role,
+    playerRole: posName(dribbler),
     action: "dribbleSuccess",
     detail: texts[Math.floor(Math.random() * texts.length)],
     success: true,
@@ -150,12 +151,12 @@ export function logDribbleFail(st: State, dribbler: Player, tacklerNum: number) 
     `${playerLabel(dribbler)} 突破失敗… #${tacklerNum}に止められた`,
     `#${tacklerNum}が${playerLabel(dribbler)}のドリブルを阻止！`,
   ];
-  
+
   emitLog(st, {
     time: st.time,
     team: dribbler.team,
     playerNum: dribbler.num,
-    playerRole: dribbler.posLabel || dribbler.role,
+    playerRole: posName(dribbler),
     action: "dribbleFail",
     detail: texts[Math.floor(Math.random() * texts.length)],
     targetNum: tacklerNum,
@@ -168,14 +169,14 @@ export function logTackle(st: State, tackler: Player, targetNum: number, success
   if (success) {
     const texts = [
       `${playerLabel(tackler)} ナイスタックル！ ボール奪取！`,
-      `${playerLabel(tackler)}(${roleName(tackler.role)}) 見事なタックルでボールを奪う！`,
+      `${playerLabel(tackler)} 見事なタックルでボールを奪う！`,
       `${playerLabel(tackler)} タックル成功！ #${targetNum}からボールを奪った！`,
     ];
     emitLog(st, {
       time: st.time,
       team: tackler.team,
       playerNum: tackler.num,
-      playerRole: tackler.posLabel || tackler.role,
+      playerRole: posName(tackler),
       action: "tackle",
       detail: texts[Math.floor(Math.random() * texts.length)],
       targetNum,
@@ -188,15 +189,15 @@ export function logTackle(st: State, tackler: Player, targetNum: number, success
 export function logIntercept(st: State, interceptor: Player) {
   const texts = [
     `${playerLabel(interceptor)} インターセプト！`,
-    `${playerLabel(interceptor)}(${roleName(interceptor.role)}) パスカット！`,
+    `${playerLabel(interceptor)} パスカット！`,
     `${playerLabel(interceptor)} 読みが冴える！ パスをカット！`,
   ];
-  
+
   emitLog(st, {
     time: st.time,
     team: interceptor.team,
     playerNum: interceptor.num,
-    playerRole: interceptor.posLabel || interceptor.role,
+    playerRole: posName(interceptor),
     action: "intercept",
     detail: texts[Math.floor(Math.random() * texts.length)],
     success: true,
@@ -208,14 +209,14 @@ export function logGoal(st: State, scorer: Player) {
   const texts = [
     `⚽ GOAL！！ ${playerLabel(scorer)} ゴーーール！！！`,
     `⚽ ${playerLabel(scorer)} 決めた！！ ゴーーール！！！`,
-    `⚽ ゴール！！ ${playerLabel(scorer)}(${roleName(scorer.role)})！！！`,
+    `⚽ ゴール！！ ${playerLabel(scorer)}！！！`,
   ];
-  
+
   emitLog(st, {
     time: st.time,
     team: scorer.team,
     playerNum: scorer.num,
-    playerRole: scorer.posLabel || scorer.role,
+    playerRole: posName(scorer),
     action: "goal",
     detail: texts[Math.floor(Math.random() * texts.length)],
     success: true,
@@ -229,12 +230,12 @@ export function logSave(st: State, keeper: Player) {
     `${playerLabel(keeper)} 好セーブ！ シュートを止めた！`,
     `GK${playerLabel(keeper)} ファインセーブ！！`,
   ];
-  
+
   emitLog(st, {
     time: st.time,
     team: keeper.team,
     playerNum: keeper.num,
-    playerRole: keeper.posLabel || keeper.role,
+    playerRole: posName(keeper),
     action: "save",
     detail: texts[Math.floor(Math.random() * texts.length)],
     success: true,
@@ -247,13 +248,34 @@ export function logTurnover(st: State, player: Player) {
     `${playerLabel(player)} ボールロスト！`,
     `${playerLabel(player)} ボールを失った…`,
   ];
-  
+
   emitLog(st, {
     time: st.time,
     team: player.team,
     playerNum: player.num,
-    playerRole: player.posLabel || player.role,
+    playerRole: posName(player),
     action: "turnover",
+    detail: texts[Math.floor(Math.random() * texts.length)],
+    success: false,
+    excitement: 0,
+  });
+}
+
+// ★ v9.15.0: Log trap failure (ball bounced away on reception)
+export function logTrapFail(st: State, player: Player, receiveFoot: "L" | "R") {
+  const footLabel = receiveFoot === "R" ? "右足" : "左足";
+  const texts = [
+    `${playerLabel(player)} ${footLabel}トラップミス！ ボールがこぼれる`,
+    `${playerLabel(player)} ${footLabel}でのコントロールが乱れる！`,
+    `${playerLabel(player)} トラップが大きくなる！`,
+  ];
+
+  emitLog(st, {
+    time: st.time,
+    team: player.team,
+    playerNum: player.num,
+    playerRole: posName(player),
+    action: "passReceive",
     detail: texts[Math.floor(Math.random() * texts.length)],
     success: false,
     excitement: 0,

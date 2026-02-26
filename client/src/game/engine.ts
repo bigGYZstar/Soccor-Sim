@@ -8,8 +8,8 @@ import {
   clamp, rng, pitchClamp, vmove, distSegmentToPoint
 } from './math';
 import {
-  logPass, logShot, logDribbleAttempt, logDribbleSuccess, logDribbleFail,
-  logTackle, logIntercept, logGoal, logSave, logTurnover,
+  logPass, logPassReceive, logShot, logDribbleAttempt, logDribbleSuccess, logDribbleFail,
+  logTackle, logIntercept, logGoal, logSave, logTurnover, logTrapFail,
   updateLogTTL
 } from './actionLog';
 
@@ -770,7 +770,7 @@ function receiverHasProgressivePass(st: State, receiverIdx: number, passerIdx: n
  * - Score candidate positions by: openness, forward progress, pass lane to carrier, offside safety
  * - Minimal home anchor: only a slight bias toward home.y to prevent crossing to wrong side
  */
-function findBestSpaceForWide(st: State, me: Player, carrier: Player): V {
+function findBestSpaceForWide(st: State, me: Player, carrier: Player, forwardRunMode: boolean = false): V {
   const attackDir = -me.team; // Direction of attack
   const mySide = Math.sign(me.home.y); // -1 = left side, +1 = right side
   const pitchW = PExt.pitchHalfW;
@@ -779,17 +779,19 @@ function findBestSpaceForWide(st: State, me: Player, carrier: Player): V {
   // Generate candidate positions: grid of points on my side, from current x to well ahead of carrier
   const candidates: { pos: V; score: number }[] = [];
   
-  // Scan range: from slightly behind carrier to well ahead
-  const startX = carrier.pos.x; // Start from carrier's position
-  const endX = carrier.pos.x - attackDir * 35.0; // Up to 35m ahead of carrier
+  // ★ v9.15.0: In forward run mode, scan much further ahead
+  const scanAhead = forwardRunMode ? 45.0 : 35.0;
+  const startX = forwardRunMode ? me.pos.x : carrier.pos.x; // Forward run starts from current pos
+  const endX = startX - attackDir * scanAhead;
   
   // Y range: stay on my side, but allow some central drift
-  const yCenter = me.home.y * 0.7; // Bias toward my side but allow some central movement
-  const yRange = 12.0; // ±12m lateral range
+  const yCenter = me.home.y * 0.7;
+  const yRange = forwardRunMode ? 10.0 : 12.0; // Tighter lateral range during forward run
   
-  // Generate 5x4 grid of candidate positions
-  for (let xi = 0; xi < 5; xi++) {
-    const t = xi / 4;
+  // Generate 6x4 grid of candidate positions (more forward resolution)
+  const xSteps = forwardRunMode ? 6 : 5;
+  for (let xi = 0; xi < xSteps; xi++) {
+    const t = xi / (xSteps - 1);
     const candX = startX + (endX - startX) * t;
     
     for (let yi = 0; yi < 4; yi++) {
@@ -811,33 +813,34 @@ function findBestSpaceForWide(st: State, me: Player, carrier: Player): V {
         const d = vdist(pos, opp.pos);
         if (d < minOppDist) minOppDist = d;
       }
-      const open = Math.min(minOppDist / 5.0, 1.0); // Normalize to 0-1 over 5m
-      score += open * 8.0; // Strong weight on openness
+      const open = Math.min(minOppDist / 5.0, 1.0);
+      score += open * (forwardRunMode ? 10.0 : 8.0); // Stronger openness weight in forward run
       
-      // 2. Forward progress from carrier (how far ahead is this point?)
+      // 2. Forward progress - ★ v9.15.0: Much stronger in forward run mode
       const forwardGain = (pos.x - carrier.pos.x) * attackDir;
       if (forwardGain > 0) {
-        score += Math.min(forwardGain / 10.0, 1.0) * 6.0; // Up to +6 for forward progress
+        const fwdWeight = forwardRunMode ? 10.0 : 6.0;
+        score += Math.min(forwardGain / 15.0, 1.0) * fwdWeight;
       } else {
-        score += forwardGain * 0.3; // Mild penalty for being behind carrier
+        score += forwardGain * (forwardRunMode ? 1.0 : 0.3); // Stronger penalty in forward run
       }
       
       // 3. Pass lane to carrier is open
       if (!laneBlocked(st, carrier.pos, pos, me.team)) {
-        score += 5.0; // Big bonus for open pass lane
+        score += 5.0;
       } else {
-        score -= 4.0; // Penalty for blocked lane
+        score -= forwardRunMode ? 2.0 : 4.0; // Less penalty in forward run (long pass can lob over)
       }
       
       // 4. Stay on my side (soft constraint)
       const sideMatch = (pos.y * mySide > 0) ? 1.0 : 0.0;
-      score += sideMatch * 3.0; // Bonus for staying on correct side
+      score += sideMatch * 3.0;
       
       // 5. Not too far from carrier (realistic pass distance)
       const distToCarrier = vdist(pos, carrier.pos);
-      if (distToCarrier > 30.0) score -= 3.0;
-      if (distToCarrier < 5.0) score -= 2.0; // Too close
-      if (distToCarrier >= 8.0 && distToCarrier <= 22.0) score += 2.0; // Ideal pass range
+      if (distToCarrier > 35.0) score -= 3.0;
+      if (distToCarrier < 5.0) score -= 2.0;
+      if (distToCarrier >= 8.0 && distToCarrier <= 25.0) score += 2.0;
       
       // 6. Not too close to teammates (avoid clustering)
       let minTeammateDist = Infinity;
@@ -850,7 +853,7 @@ function findBestSpaceForWide(st: State, me: Player, carrier: Player): V {
       
       // 7. Offside check
       if (isOffside(st, { ...me, pos } as Player, carrier.pos)) {
-        score -= 50.0; // Heavy penalty for offside
+        score -= 50.0;
       }
       
       // 8. Space ahead from this position (can I advance further after receiving?)
@@ -858,13 +861,21 @@ function findBestSpaceForWide(st: State, me: Player, carrier: Player): V {
       for (const opp of st.pl) {
         if (opp.team === me.team) continue;
         const toOpp = vsub(opp.pos, pos);
-        const proj = toOpp.x * attackDir * -1; // How far ahead is opponent
+        const proj = toOpp.x * attackDir * -1;
         if (proj > 0 && proj < spaceAheadFromPos) {
           const lateral = Math.abs(toOpp.y);
           if (lateral < 4.0) spaceAheadFromPos = proj;
         }
       }
-      score += Math.min(spaceAheadFromPos / 8.0, 1.0) * 3.0;
+      score += Math.min(spaceAheadFromPos / 8.0, 1.0) * (forwardRunMode ? 5.0 : 3.0);
+      
+      // ★ v9.15.0: Forward run bonus - prefer positions that are ahead of current position
+      if (forwardRunMode) {
+        const progressFromCurrent = (pos.x - me.pos.x) * attackDir;
+        if (progressFromCurrent > 3.0) {
+          score += Math.min(progressFromCurrent / 10.0, 1.0) * 4.0;
+        }
+      }
       
       candidates.push({ pos, score });
     }
@@ -873,7 +884,6 @@ function findBestSpaceForWide(st: State, me: Player, carrier: Player): V {
   // Sort by score and pick the best
   candidates.sort((a, b) => b.score - a.score);
   
-  // Return the best candidate, or fall back to home if no good options
   if (candidates.length > 0 && candidates[0].score > 0) {
     return candidates[0].pos;
   }
@@ -1126,8 +1136,8 @@ export function bestLongPass(st: State, idx: number): number | null {
     if (st.pl[i].team !== me.team || i === idx) continue;
     const tm = st.pl[i];
     const dist = vdist(me.pos, tm.pos);
-    // ★ v9.13.0: Reduced minimum distance from 25m to 18m to allow more long passes
-    if (dist < 18.0 || dist > PExt.longPassMaxDist) continue;
+    // ★ v9.15.0: Reduced minimum distance to 14m for lofted passes
+    if (dist < 14.0 || dist > PExt.longPassMaxDist) continue;
     
     let score = 0;
     const gp = (tm.pos.x - me.pos.x) * -me.team;
@@ -1159,6 +1169,14 @@ export function doPassTo(st: State, idx: number, targetIdx: number) {
   
   const passDist = vdist(me.pos, tm.pos);
   
+  // ★ v9.15.0: Auto-convert to lofted long pass when distance > 16m and target is ahead
+  // Long-distance passes on the ground are unrealistic; they should be lofted
+  const gp = (tm.pos.x - me.pos.x) * -me.team;
+  if (passDist > 16.0 && gp > 2.0) {
+    doLongPassTo(st, idx, targetIdx);
+    return;
+  }
+  
   // ★ v9.4.0: Lead pass - aim slightly ahead of moving teammate
   if (tm.act === "move" || tm.act === "carry") {
     const lead = vnorm(vsub(tm.tgt, tm.pos));
@@ -1172,23 +1190,22 @@ export function doPassTo(st: State, idx: number, targetIdx: number) {
   const inOwnHalf = me.team * me.pos.x > 0;
   if (inOwnHalf) baseErr *= 0.6;
   
+  // ★ v9.15.0: Choose kicking foot and apply foot accuracy modifier
+  const usedFoot = chooseFootForAction(me, st.ball.pos);
+  const footMod = footAccuracyModifier(me, usedFoot, st.ball.pos);
+  // Weak foot adds error to short passes too (but less than long passes)
+  const footErr = (1.0 - footMod) * 0.3;
+  baseErr += footErr;
+  
   // v9.2.0: Set intendedReceiverIdx BEFORE kick() so it's not overwritten
   st.ball.intendedReceiverIdx = targetIdx;
   st.ball.lastPasserIdx = idx; // ★ v9.13.0: Track passer for anti-pingpong
   
   // ★ v9.8.0: Physics-based pass speed calculation
-  // With fric=0.985, the relationship is approximately:
-  //   distance = speed * (1/60) / (1 - 0.985) = speed / 0.9
-  //   So speed ≈ distance * 0.9 (m/s per meter of target distance)
-  // We add ~20% overshoot so the ball arrives with some residual speed
-  // (receiver can control a moving ball, not chase a dead one)
-  const targetDist = vdist(me.pos, tp); // Distance to actual target point
-  const neededSpeed = targetDist * 0.9; // Base speed to reach target
-  const overshootFactor = 1.25; // Ball should arrive with ~25% residual speed
+  const targetDist = vdist(me.pos, tp);
+  const neededSpeed = targetDist * 0.9;
+  const overshootFactor = 1.25;
   let passSpd = Math.max(6.0, Math.min(22.0, neededSpeed * overshootFactor));
-  // Short passes (< 5m): gentler touch, minimum 6 m/s
-  // Medium passes (5-15m): proportional
-  // Long passes (> 15m): capped at 22 m/s to stay realistic
   
   kick(st, idx, passSpd, false, tp, false, baseErr);
   
@@ -1286,8 +1303,8 @@ export function doPassTo(st: State, idx: number, targetIdx: number) {
   const team = me.team === -1 ? 'blue' : 'red';
   st.stats.passAttempts[team]++;
   
-  // ★ v9.9.0: Action log
-  logPass(st, me, tm.num, passDist, false);
+  // ★ v9.15.0: Action log with foot info
+  logPass(st, me, tm.num, passDist, false, usedFoot);
 }
 
 export function doLongPassTo(st: State, idx: number, targetIdx: number) {
@@ -1303,20 +1320,45 @@ export function doLongPassTo(st: State, idx: number, targetIdx: number) {
   
   // v9.2.0: Set intendedReceiverIdx BEFORE kick() so it's not overwritten
   st.ball.intendedReceiverIdx = targetIdx;
+  st.ball.lastPasserIdx = idx; // Track passer for anti-pingpong
   
-  // ★ v9.8.0: Distance-based long pass speed (lob has less friction: 0.99)
-  // With fric=0.99, distance ≈ speed / 0.6, so speed ≈ distance * 0.6
+  // ★ v9.15.0: Lofted long pass physics
+  // Long passes are ALWAYS lofted (floating balls) with:
+  // - Higher arc (more z-axis movement)
+  // - More deviation due to wind/bounce
+  // - Harder to trap on reception
   const lpDist = vdist(me.pos, tp);
+  
+  // ★ v9.15.0: Choose kicking foot and apply foot accuracy
+  const usedFoot = chooseFootForAction(me, st.ball.pos);
+  const footMod = footAccuracyModifier(me, usedFoot, st.ball.pos);
+  
+  // Speed: proportional to distance, but lofted balls travel differently
   const lpSpeed = Math.max(12.0, Math.min(28.0, lpDist * 0.7));
-  const err = (1 - PExt.longPassAccuracy) * 2.0;
-  kick(st, idx, lpSpeed, false, tp, true, err);
+  
+  // ★ v9.15.0: Error increases with distance AND foot accuracy
+  // Base error from accuracy stat, amplified by distance and foot quality
+  const baseErr = (1 - PExt.longPassAccuracy) * 2.0;
+  const distErr = Math.max(0, (lpDist - 15.0) * 0.03); // Extra error for very long passes
+  const footErr = (1.0 - footMod) * 0.5; // Weak foot adds error
+  const totalErr = baseErr + distErr + footErr;
+  
+  kick(st, idx, lpSpeed, false, tp, true, totalErr);
+  
+  // ★ v9.15.0: Mark ball as lofted long pass for trap difficulty calculation
+  st.ball.lob = 1.0;
+  // Ensure proper z-axis for lofted ball (kick() already sets this, but reinforce)
+  if (st.ball.z < 0.3) {
+    st.ball.z = 0.3;
+    st.ball.vz = Math.min(8.0, lpDist * 0.12 + 1.5);
+  }
   
   // v8.8.2: Track long pass attempt
   const team = me.team === -1 ? 'blue' : 'red';
   st.stats.longPassAttempts[team]++;
   
-  // ★ v9.9.0: Action log
-  logPass(st, me, tm.num, lpDist, true);
+  // ★ v9.15.0: Action log with foot info
+  logPass(st, me, tm.num, lpDist, true, usedFoot);
 }
 
 export function doDribble(st: State, idx: number) {
@@ -1486,6 +1528,31 @@ export function decideHasBall(st: State, idx: number) {
       // No pass available: forced dribble to break out
       doDribble(st, idx);
       return;
+    }
+    
+    // ★ v9.15.0: During carry, check for proactive long pass to wide player making run
+    if (carryTime > 0.15 && !me.isGK) {
+      let bestLPTarget: number | null = null;
+      let bestLPScore = 0;
+      for (let i = 0; i < st.pl.length; i++) {
+        const tm = st.pl[i];
+        if (tm.team !== me.team || i === idx) continue;
+        if (!tm.wantsBall) continue;
+        const isWide = Math.abs(tm.home.y) > 15.0 || (tm.role === "FWD" && me.role !== "FWD");
+        if (!isWide) continue;
+        const dist = vdist(me.pos, tm.pos);
+        if (dist < 10.0 || dist > 40.0) continue;
+        const gp = (tm.pos.x - me.pos.x) * -me.team;
+        if (gp < 2.0) continue;
+        const op = openness(st, tm);
+        if (op < 1.5) continue;
+        const score = gp * 1.5 + op * 2.0 + 8.0;
+        if (score > bestLPScore) { bestLPScore = score; bestLPTarget = i; }
+      }
+      if (bestLPTarget !== null && bestLPScore > 10.0 && Math.random() < 0.18) {
+        doLongPassTo(st, idx, bestLPTarget);
+        return;
+      }
     }
     
     // ★ v9.14.0: Check for pass after grace period
@@ -1703,6 +1770,36 @@ export function decideHasBall(st: State, idx: number) {
   }
   
   // ★ v9.5.0: DECISION FLOW - enemy in front → pass first; open space → carry first
+  // ★ v9.15.0: Proactive long pass to wide player making a forward run
+  // Before normal pass decision, check if a wide player is ahead in space and wants ball
+  if (!me.isGK && me.role !== "FWD") {
+    let bestWideTarget: number | null = null;
+    let bestWideScore = 0;
+    for (let i = 0; i < st.pl.length; i++) {
+      const tm = st.pl[i];
+      if (tm.team !== me.team || i === idx) continue;
+      if (!tm.wantsBall) continue;
+      const isWide = Math.abs(tm.home.y) > 15.0 || tm.role === "FWD";
+      if (!isWide) continue;
+      const dist = vdist(me.pos, tm.pos);
+      if (dist < 10.0 || dist > PExt.longPassMaxDist) continue;
+      const gp = (tm.pos.x - me.pos.x) * -me.team;
+      if (gp < 2.0) continue; // Must be ahead
+      const op = openness(st, tm);
+      if (op < 2.0) continue; // Must have some space
+      const score = gp * 1.5 + op * 2.0 + (tm.wantsBall ? 8.0 : 0);
+      if (score > bestWideScore) {
+        bestWideScore = score;
+        bestWideTarget = i;
+      }
+    }
+    if (bestWideTarget !== null && bestWideScore > 10.0 && Math.random() < 0.45) {
+      doLongPassTo(st, idx, bestWideTarget);
+      chosenAction = "longPass-wideRun";
+      return;
+    }
+  }
+  
   if (enemyBlockingForward && hasPass) {
     // Enemy blocking forward: ALWAYS pass if possible (no carry attempt)
     doPassTo(st, idx, tgt!);
@@ -2018,8 +2115,26 @@ export function decideNoBall(st: State, idx: number) {
       const isClosestCM = !isWide && !isSemiWide && nearestEx(st, carrier.pos, me.team, carrier.idx) === me.idx;
       
       if (isWide) {
-        // ★ v9.13.0: Wide MF (LM/RM/LW/RW) - SPACE-BASED movement
-        // No more home anchor! Scan forward space and move to best open position
+        // ★ v9.15.0: Wide MF (LM/RM/LW/RW) - SPACE-BASED movement with FORWARD RUNS
+        const attackDir = -me.team; // Direction of attack for this player
+        const pushW = st.possessionPush.team === me.team ? st.possessionPush.pushLevel : 0;
+        const possTime = st.possessionPush.team === me.team ? st.possessionPush.duration : 0;
+        
+        // ★ v9.15.0: Forward run trigger - when team has stable possession
+        const stablePossession = possTime > 1.5 && pushW > 0.15;
+        const myAx = me.pos.x * attackDir;
+        const carrierAx = carrier.pos.x * attackDir;
+        const iAmBehindCarrier = myAx < carrierAx - 3.0; // I'm behind the carrier
+        const hasSpaceOnMySide = spaceAhead(st, me) > 6.0;
+        
+        // Forward run conditions:
+        // 1. Team has stable possession (>1.5s, push>0.15)
+        // 2. I'm behind or level with carrier (room to run forward)
+        // 3. There's space ahead on my side
+        // 4. Not in own half under pressure
+        const shouldForwardRun = stablePossession && (iAmBehindCarrier || hasSpaceOnMySide) 
+          && !isOwnHalf && me.burstCD <= 0;
+        
         if (carrierPressedMid && isOwnHalf) {
           // Own half under pressure: drop back to offer passing outlet
           const dropX = carrier.pos.x + me.team * 1.0;
@@ -2028,10 +2143,19 @@ export function decideNoBall(st: State, idx: number) {
             me.home.y * 0.8
           );
           me.wantsBall = true;
+        } else if (shouldForwardRun) {
+          // ★ v9.15.0: FORWARD RUN - sprint into space ahead of carrier
+          baseTgt = findBestSpaceForWide(st, me, carrier, true);
+          me.wantsBall = true;
+          // Use burst for the forward run
+          if (me.burstT <= 0 && me.staminaShort > 0.3) {
+            me.burstT = 1.5; // Sprint burst
+            me.burstCD = 3.0; // Cooldown after sprint
+          }
         } else {
-          // ★ v9.13.0: Space-scan based movement - find the best open space on my side
-          baseTgt = findBestSpaceForWide(st, me, carrier);
-          me.wantsBall = true; // Always want ball when in space
+          // Normal space-scan based movement
+          baseTgt = findBestSpaceForWide(st, me, carrier, false);
+          me.wantsBall = true;
         }
       } else if (isSemiWide) {
         // Semi-wide MF (e.g., wide CM in 4-2-3-1)
@@ -2705,6 +2829,14 @@ export function update(st: State, dt: number) {
         if (b.spinY < -0.5) {
           b.vel = vscl(b.vel, 0.7); // Ball slows significantly with backspin
         }
+        
+        // ★ v9.15.0: Lofted ball bounce adds lateral deviation (unpredictable bounce)
+        if (b.lob > 0.2) {
+          const bounceDeviation = b.lob * 0.8; // More lob = more deviation
+          b.vel.x += rng(-bounceDeviation, bounceDeviation);
+          b.vel.y += rng(-bounceDeviation, bounceDeviation);
+        }
+        
         // Small bounces just stop
         if (Math.abs(b.vz) < 0.3) {
           b.vz = 0;
@@ -2791,7 +2923,83 @@ export function update(st: State, dt: number) {
           tackleFoot.animType = "tackle";
           tackleFoot.animOffset = vscl(lungeDir, PExt.footTackleLungeDist);
         }
-        give(b, closestIdx, st.pl, st);
+        
+        // ★ v9.15.0: Trap difficulty based on ball speed, lob, and receiving foot
+        const ballSpeed = vlen(b.vel);
+        const isLobbed = b.lob > 0.3 || b.z > 0.5;
+        const isIntercept = b.kickTeam !== 0 && interceptor.team !== b.kickTeam;
+        
+        // Determine which foot receives the ball
+        const dLF = interceptor.leftFoot ? vdist(interceptor.leftFoot.pos, b.pos) : 999;
+        const dRF = interceptor.rightFoot ? vdist(interceptor.rightFoot.pos, b.pos) : 999;
+        const receiveFoot: FootSide = dLF < dRF ? "L" : "R";
+        const isDominantFoot = receiveFoot === interceptor.footParams.dominantFoot;
+        
+        // Trap difficulty calculation:
+        // - Fast ball (>15 m/s): harder to control
+        // - Lofted ball: harder to trap (bouncing)
+        // - Weak foot: harder to trap
+        // - Intercept (opponent's pass): harder to control
+        let trapDifficulty = 0;
+        
+        // Speed factor: 0 at 5m/s, 0.3 at 15m/s, 0.6 at 25m/s
+        trapDifficulty += Math.max(0, (ballSpeed - 5.0) * 0.03);
+        
+        // Lob factor: floating balls are much harder to trap
+        if (isLobbed) trapDifficulty += 0.25;
+        
+        // Weak foot factor
+        if (!isDominantFoot) {
+          const weakAccuracy = interceptor.footParams.weakFootAccuracy / 10;
+          trapDifficulty += (1.0 - weakAccuracy) * 0.2;
+        }
+        
+        // Intercept factor: cutting opponent's pass is harder
+        if (isIntercept) trapDifficulty += 0.15;
+        
+        // Ball control stat reduces difficulty
+        const controlMod = (interceptor.footParams.ballControl || 5) / 10;
+        trapDifficulty *= (1.0 - controlMod * 0.5); // Good control halves difficulty
+        
+        // Clamp to [0, 0.8]
+        trapDifficulty = Math.min(0.8, Math.max(0, trapDifficulty));
+        
+        // Trap result: if random < trapDifficulty, bad trap (ball bounces away slightly)
+        if (Math.random() < trapDifficulty) {
+          // ★ v9.15.0: Bad trap - ball bounces away from player
+          // Ball escapes in a random direction, distance proportional to difficulty
+          const bounceDir = vnorm(v(rng(-1, 1), rng(-1, 1)));
+          const bounceDist = 0.5 + trapDifficulty * 2.0; // 0.5-2.1m bounce
+          const bounceSpeed = 2.0 + ballSpeed * 0.15; // Faster ball = faster bounce
+          
+          // Don't give the ball - let it bounce free
+          b.vel = vscl(bounceDir, bounceSpeed);
+          b.pos = vadd(interceptor.pos, vscl(bounceDir, 0.3));
+          b.z = isLobbed ? 0.2 : 0; // Small bounce if was lofted
+          b.vz = isLobbed ? 1.5 : 0;
+          b.cooldown = 0.1; // Brief cooldown so same player can recover
+          b.lastTouchTeam = interceptor.team;
+          b.free = true;
+          b.lob = 0;
+          
+          // Still settle kick tracking
+          if (b.kickActive) {
+            const team = b.kickTeam === -1 ? 'blue' : 'red';
+            const sameTeam = (interceptor.team === b.kickTeam);
+            if (b.kickKind === "PASS" && sameTeam) {
+              st.stats.passSuccess[team]++; // Pass reached teammate but trap failed
+            } else if (b.kickKind === "LONG" && sameTeam) {
+              st.stats.longPassSuccess[team]++;
+            }
+            b.kickActive = false;
+          }
+          
+          // ★ v9.15.0: Log trap failure
+          logTrapFail(st, interceptor, receiveFoot);
+        } else {
+          // Good trap - normal give
+          give(b, closestIdx, st.pl, st);
+        }
       }
     }
     
