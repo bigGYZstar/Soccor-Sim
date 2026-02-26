@@ -21,17 +21,17 @@ export const P = {
   // Adjusted speeds for soccer (larger pitch)
   moveSpeed: 7.5,  // v9.2.0: Slightly increased for larger pitch
   dribbleSpeed: 6.0,  // v9.2.0: Slightly increased
-  passSpeed: 18,
+  passSpeed: 20,  // v9.3.0: Increased from 18 for faster pass delivery
   shotSpeed: 25,
   longPassSpeed: 15,
-  passAccuracy: 0.92,  // v9.2.0: Increased from 0.88 for more realistic pass completion
+  passAccuracy: 0.94,  // v9.3.0: Increased from 0.92 for better pass completion
   shotAccuracy: 0.40,  // v9.2.0: Reduced from 0.60 for more realistic on-target rate
   longPassAccuracy: 0.70,  // v9.2.0: Slightly increased
   dribbleControl: 0.75,  // v9.2.0: Reduced from 0.90 to incentivize passing
   // Adjusted for soccer pitch
-  interceptRadius: 1.5,  // Larger interception radius for soccer
+  interceptRadius: 0.9,  // v9.3.0: Reduced from 1.5 to allow more passes through
   decisionInterval: 0.25,  // Slightly longer decision time
-  shotRange: 18.0,  // Increased shot range for soccer
+  shotRange: 22.0,  // v9.3.0: Increased from 18 to allow more shots from distance
   shotAngle: 45,  // Narrower angle for longer distances
 
   looseBallDrag: 3.5,
