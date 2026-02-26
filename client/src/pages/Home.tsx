@@ -505,30 +505,47 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
           ctx.fillRect(fp.x - footW/2 - 1, bootY - 1, footW + 2, footH + 2);
         }
         
-        // ★ v9.16.0: Trap animation - cyan pulse for good trap, red flash for bad trap
+        // ★ v9.17.0: Trap animation - much more visible with expanding ring and foot label
         if (trapping && foot.animTimer > 0) {
-          const trapAlpha = Math.min(1.0, foot.animTimer / 0.15); // Fade out
-          // Check if ball is free (bad trap) or owned by this player (good trap)
+          const trapAlpha = Math.min(1.0, foot.animTimer / 0.20); // Slower fade
           const isBadTrap = st.ball.free && st.ball.lastTouchTeam === p.team;
+          const expandT = 1.0 - foot.animTimer / 0.30; // 0→1 as animation progresses
+          const ringRadius = unit * (3.0 + expandT * 4.0); // Expanding ring
+          
           if (isBadTrap) {
-            // Bad trap: red-orange flash
-            ctx.fillStyle = `rgba(255,80,40,${trapAlpha * 0.6})`;
-            ctx.fillRect(fp.x - footW/2 - 2, bootY - 2, footW + 4, footH + 4);
-            // Spark particles effect
-            for (let sp = 0; sp < 3; sp++) {
-              const sparkX = fp.x + (Math.random() - 0.5) * footW * 2;
-              const sparkY = bootY + (Math.random() - 0.5) * footH * 2;
-              ctx.fillStyle = `rgba(255,200,50,${trapAlpha * 0.8})`;
-              ctx.fillRect(sparkX, sparkY, Math.max(1, unit * 0.4), Math.max(1, unit * 0.4));
-            }
+            // Bad trap: large red flash with expanding ring
+            ctx.fillStyle = `rgba(255,60,30,${trapAlpha * 0.5})`;
+            ctx.beginPath();
+            ctx.arc(fp.x, bootY + footH/2, ringRadius, 0, Math.PI * 2);
+            ctx.fill();
+            // Red expanding ring
+            ctx.strokeStyle = `rgba(255,80,40,${trapAlpha * 0.8})`;
+            ctx.lineWidth = Math.max(2, unit * 0.5);
+            ctx.beginPath();
+            ctx.arc(fp.x, bootY + footH/2, ringRadius * 1.3, 0, Math.PI * 2);
+            ctx.stroke();
+            // "MISS" text
+            ctx.fillStyle = `rgba(255,100,50,${trapAlpha})`;
+            ctx.font = `bold ${Math.max(6, unit * 2.5)}px monospace`;
+            ctx.textAlign = "center";
+            ctx.fillText("MISS", fp.x, bootY - unit * 2);
           } else {
-            // Good trap: cyan/green pulse
-            ctx.fillStyle = `rgba(0,220,180,${trapAlpha * 0.5})`;
-            ctx.fillRect(fp.x - footW/2 - 1, bootY - 1, footW + 2, footH + 2);
-            // Subtle ring effect
-            ctx.strokeStyle = `rgba(0,255,200,${trapAlpha * 0.4})`;
-            ctx.lineWidth = Math.max(1, unit * 0.3);
-            ctx.strokeRect(fp.x - footW/2 - 3, bootY - 3, footW + 6, footH + 6);
+            // Good trap: bright cyan circle with expanding ring
+            ctx.fillStyle = `rgba(0,220,255,${trapAlpha * 0.4})`;
+            ctx.beginPath();
+            ctx.arc(fp.x, bootY + footH/2, ringRadius, 0, Math.PI * 2);
+            ctx.fill();
+            // Cyan expanding ring
+            ctx.strokeStyle = `rgba(0,255,220,${trapAlpha * 0.7})`;
+            ctx.lineWidth = Math.max(2, unit * 0.5);
+            ctx.beginPath();
+            ctx.arc(fp.x, bootY + footH/2, ringRadius * 1.3, 0, Math.PI * 2);
+            ctx.stroke();
+            // Foot label (L or R)
+            ctx.fillStyle = `rgba(0,255,200,${trapAlpha})`;
+            ctx.font = `bold ${Math.max(6, unit * 2.5)}px monospace`;
+            ctx.textAlign = "center";
+            ctx.fillText(side, fp.x, bootY - unit * 2);
           }
         }
       });
