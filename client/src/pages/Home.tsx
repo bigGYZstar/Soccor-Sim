@@ -648,6 +648,79 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
   ctx.fillStyle = RETRO_GREEN;
   ctx.font = `${timerFontSize}px ${RETRO_FONT}`;
   ctx.fillText(`${min.toString().padStart(2,'0')}:${sec.toString().padStart(2,'0')}`, w/2, hy + hudH + tabH * 0.65);
+
+  // ★ v9.9.0: SFC-style Action Log overlay (bottom-left)
+  if (st.actionLog && st.actionLog.length > 0) {
+    ctx.save();
+    const logFontSize = Math.max(7, Math.min(11, w * 0.011));
+    const logLineH = logFontSize * 1.6;
+    const logPadX = 8;
+    const logPadY = 4;
+    const maxVisible = Math.min(6, st.actionLog.length);
+    const visibleLogs = st.actionLog.slice(-maxVisible);
+    
+    // Log panel position: bottom-left, above the control bar
+    const logPanelW = Math.min(w * 0.45, 380);
+    const logPanelH = maxVisible * logLineH + logPadY * 2;
+    const logX = 8;
+    const logY = h - logPanelH - 50; // Above control bar
+    
+    // Semi-transparent background with retro border
+    ctx.fillStyle = "rgba(10, 10, 20, 0.82)";
+    ctx.fillRect(logX, logY, logPanelW, logPanelH);
+    ctx.strokeStyle = "rgba(245, 197, 66, 0.4)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(logX, logY, logPanelW, logPanelH);
+    
+    // Scanline effect on log panel
+    for (let sy = logY; sy < logY + logPanelH; sy += 3) {
+      ctx.fillStyle = "rgba(0,0,0,0.08)";
+      ctx.fillRect(logX, sy, logPanelW, 1);
+    }
+    
+    ctx.font = `${logFontSize}px ${RETRO_FONT}`;
+    ctx.textAlign = "left";
+    
+    for (let i = 0; i < visibleLogs.length; i++) {
+      const entry = visibleLogs[i];
+      const fadeAlpha = Math.min(1.0, entry.ttl / 1.0); // Fade out in last 1s
+      const lineY = logY + logPadY + (i + 0.75) * logLineH;
+      
+      // Team color indicator bar
+      const teamColor = entry.team === -1 ? "rgba(59,130,246," : "rgba(239,68,68,";
+      ctx.fillStyle = teamColor + (fadeAlpha * 0.8) + ")";
+      ctx.fillRect(logX + 2, lineY - logFontSize * 0.6, 3, logFontSize * 0.8);
+      
+      // Excitement-based text color
+      let textColor: string;
+      if (entry.excitement >= 3) {
+        // Spectacular: gold with glow pulse
+        const pulse = 0.7 + 0.3 * Math.sin(st.time * 8);
+        textColor = `rgba(245,197,66,${fadeAlpha * pulse})`;
+      } else if (entry.excitement >= 2) {
+        // Exciting: bright accent
+        textColor = `rgba(233,69,96,${fadeAlpha})`;
+      } else if (entry.excitement >= 1) {
+        // Notable: green
+        textColor = `rgba(22,196,127,${fadeAlpha})`;
+      } else {
+        // Normal: white
+        textColor = `rgba(200,200,210,${fadeAlpha * 0.85})`;
+      }
+      
+      ctx.fillStyle = textColor;
+      
+      // Truncate text to fit panel
+      let text = entry.detail;
+      while (ctx.measureText(text).width > logPanelW - logPadX * 2 - 10 && text.length > 5) {
+        text = text.slice(0, -2);
+      }
+      
+      ctx.fillText(text, logX + logPadX + 6, lineY);
+    }
+    
+    ctx.restore();
+  }
 };
 
 // ============================================================

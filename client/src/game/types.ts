@@ -144,6 +144,10 @@ export interface Player {
   footParams: FootParams;
   // ★ v8.9.1: Dribble touch cycle
   dribbleTouchPhase: number;  // 0..2π oscillator for touch cycle
+  // ★ v9.9.0: Pass-and-move system
+  passAndMoveTimer: number;   // Time remaining for forward run after passing (0 = inactive)
+  passAndMoveTarget: V;       // Target position for the forward run
+  wantsBall: boolean;         // Player is in space and requesting a pass
 }
 
 export interface Ball {
@@ -187,6 +191,20 @@ export interface BallTrailDot {
   t: number;  // Remaining lifetime
 }
 
+// ★ v9.9.0: Action log entry for SFC-style real-time commentary
+export interface ActionLogEntry {
+  time: number;       // Match time in seconds
+  team: number;       // -1 = blue, 1 = red
+  playerNum: number;  // Jersey number
+  playerRole: string; // Role (GK/DEF/MID/FWD)
+  action: "pass" | "longPass" | "shot" | "dribble" | "tackle" | "intercept" | "goal" | "save" | "passReceive" | "dribbleSuccess" | "dribbleFail" | "turnover";
+  detail: string;     // Japanese commentary text
+  targetNum?: number; // Target player number (for passes)
+  success: boolean;   // Whether the action succeeded
+  excitement: number; // 0-3: 0=normal, 1=notable, 2=exciting, 3=spectacular
+  ttl: number;        // Time to live in seconds
+}
+
 export interface State {
   pl: Player[];
   ball: Ball;
@@ -216,4 +234,6 @@ export interface State {
   };
   // ★ v9.7.0: Ball trail dots for visualizing ball movement
   ballTrail: BallTrailDot[];
+  // ★ v9.9.0: Action log for SFC-style commentary
+  actionLog: ActionLogEntry[];
 }
