@@ -149,6 +149,9 @@ export interface Player {
   passAndMoveTimer: number;   // Time remaining for forward run after passing (0 = inactive)
   passAndMoveTarget: V;       // Target position for the forward run
   wantsBall: boolean;         // Player is in space and requesting a pass
+  // ★ v9.20.0: Committed run system - once a forward run is decided, lock the target
+  committedRunTarget: V | null; // Locked target position for committed run (null = no active run)
+  committedRunTimer: number;    // Time remaining for committed run (0 = expired)
 }
 
 export interface Ball {
