@@ -112,10 +112,19 @@ export const P = {
   footTackleLungeDuration: 0.25,
 
   // ★ v9.1.0: Defensive AI parameters
-  defInterceptLeadTime: 0.5,    // v9.2.0: Reduced from 0.6 for less aggressive prediction
-  defTackleApproachAngle: 0.6,  // v9.2.0: Reduced from 0.7 for less aggressive interception
-  defPassLaneCoverDist: 6.0,    // v9.2.0: Reduced from 8.0 for less aggressive lane coverage
-  defShotBlockDist: 10.0,       // v9.2.0: Reduced from 12.0
+  defInterceptLeadTime: 0.5,
+  defTackleApproachAngle: 0.6,
+  defPassLaneCoverDist: 6.0,
+  defShotBlockDist: 10.0,
+
+  // ★ v9.5.0: Pass decision AI parameters
+  receiverPassLaneBonus: 4.0,     // Bonus when receiver has open pass lanes to others
+  receiverSpaceBonus: 3.0,        // Bonus when receiver has space ahead
+  pressurePassThreshold: 4.0,     // Distance at which enemy is considered "pressing" (meters)
+  pressurePassPriority: 6.0,      // Extra score for passing when under pressure
+  backPassProgressiveBonus: 5.0,  // Bonus for back-pass when receiver has progressive pass option
+  lateralPassBonus: 2.0,          // Bonus for lateral passes to switch play
+  backPassMinScore: -2.0,         // Minimum score for back-pass (was -3.0 penalty)
 };
 
 // ★ Formation definitions (all coordinates are for the "left" team attacking right)

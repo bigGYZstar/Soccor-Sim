@@ -278,6 +278,15 @@ export function mkPlayers(blueFormation: FormationId = "4-4-2", redFormation: Fo
       dribbleTouchPhase: 0,
     });
   }
+  
+  // ★ v9.5.0: Configure #10 players as ambidextrous (both feet equally skilled)
+  for (const p of pl) {
+    if (p.num === 10) {
+      p.footParams.weakFootFreq = 8;      // 80% chance to use weak foot when it's closer
+      p.footParams.weakFootAccuracy = 8;  // 80% accuracy with weak foot
+    }
+  }
+  
   return pl;
 }
 
@@ -703,9 +712,66 @@ export function laneBlocked(st: State, from: V, to: V, team: number): boolean {
   return false;
 }
 
+/** ★ v9.5.0: Evaluate if a receiver has progressive pass options (can play forward after receiving) */
+function receiverHasProgressivePass(st: State, receiverIdx: number, passerIdx: number): boolean {
+  const receiver = st.pl[receiverIdx];
+  const gc = v(-receiver.team * PExt.pitchHalfW, 0);
+  let count = 0;
+  for (let i = 0; i < st.pl.length; i++) {
+    if (i === receiverIdx || i === passerIdx) continue;
+    const tm = st.pl[i];
+    if (tm.team !== receiver.team) continue;
+    const dist = vdist(receiver.pos, tm.pos);
+    if (dist < 3.0 || dist > 30.0) continue;
+    // Is this teammate ahead of the receiver?
+    const gp = (tm.pos.x - receiver.pos.x) * -receiver.team;
+    if (gp <= 1.0) continue; // Must be at least 1m forward
+    // Is the lane open?
+    if (!laneBlocked(st, receiver.pos, tm.pos, receiver.team)) {
+      count++;
+      if (count >= 1) return true; // At least 1 progressive option
+    }
+  }
+  return false;
+}
+
+/** ★ v9.5.0: Evaluate space ahead of a player (how far they can advance without opposition) */
+function spaceAhead(st: State, p: Player): number {
+  const fwdDir = v(-p.team, 0); // Forward direction
+  let minBlockDist = 15.0; // Max check distance
+  for (const opp of st.pl) {
+    if (opp.team === p.team) continue;
+    const toOpp = vsub(opp.pos, p.pos);
+    // Is opponent ahead?
+    const proj = vdot(toOpp, fwdDir);
+    if (proj < 0 || proj > minBlockDist) continue;
+    // Is opponent in the path (within 3m lateral)?
+    const lateral = Math.abs(toOpp.y * fwdDir.x - toOpp.x * fwdDir.y);
+    if (lateral < 3.0 && proj < minBlockDist) {
+      minBlockDist = proj;
+    }
+  }
+  return minBlockDist;
+}
+
 export function bestPass(st: State, idx: number, relaxed: boolean = false): number | null {
   const me = st.pl[idx];
   let bestIdx = -1, bestScore = -999;
+  
+  // ★ v9.5.0: Pre-compute passer's pressure level
+  let closestEnemyToPasser = Infinity;
+  let closestEnemyDir = v(0, 0);
+  for (const opp of st.pl) {
+    if (opp.team === me.team) continue;
+    const d = vdist(me.pos, opp.pos);
+    if (d < closestEnemyToPasser) {
+      closestEnemyToPasser = d;
+      closestEnemyDir = vnorm(vsub(opp.pos, me.pos));
+    }
+  }
+  const underPressure = closestEnemyToPasser < PExt.pressurePassThreshold;
+  // Is the enemy in front of the passer? (blocking forward progress)
+  const enemyInFront = underPressure && vdot(closestEnemyDir, v(-me.team, 0)) > 0.3;
   
   for (let i = 0; i < st.pl.length; i++) {
     if (st.pl[i].team !== me.team || i === idx) continue;
@@ -715,72 +781,92 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
     
     let score = 0;
     const gp = (tm.pos.x - me.pos.x) * -me.team;
+    const isForward = gp > 1.0;
+    const isBackward = gp < -1.0;
+    const isLateral = !isForward && !isBackward;
+    
+    // Base forward progress bonus
     score += gp * 2.0;
-    score += openness(st, tm) * 3.0;
+    
+    // Receiver openness (how free they are from markers)
+    const recvOpenness = openness(st, tm);
+    score += recvOpenness * 3.0;
+    
+    // ★ v9.5.0: Receiver space ahead evaluation
+    const recvSpace = spaceAhead(st, tm);
+    score += Math.min(recvSpace / 5.0, 1.0) * PExt.receiverSpaceBonus;
+    
+    // ★ v9.5.0: Receiver's progressive pass options (can they play forward?)
+    if (receiverHasProgressivePass(st, i, idx)) {
+      score += PExt.receiverPassLaneBonus;
+      // Extra bonus for back-pass to someone who can immediately play forward
+      if (isBackward) {
+        score += PExt.backPassProgressiveBonus;
+      }
+    }
     
     const isBlocked = laneBlocked(st, me.pos, tm.pos, me.team);
-    // v8.7.2: Phase-based blocking penalty (Phase A: -2.0, Phase B: -4.0)
     const ax = me.pos.x * (-me.team);
     const w = PExt.pitchHalfW;
-    const isPhaseA = ax < (2 * w / 3); // Phase A: ax < 6.66
-    // v8.7.4: Phase A completely ignores laneBlocked (0 penalty), Phase B uses -2.0
+    const isPhaseA = ax < (2 * w / 3);
     if (isBlocked && !isPhaseA) score -= 2.0;
     if (isOffside(st, tm, me.pos)) score -= 100;
     
-    // ★ v8.3: GK diagonal switch (side change) evaluation
+    // GK diagonal switch
     if (me.isGK && Math.abs(tm.pos.y) > 3.0) {
-      // Pass from GK to wide SB/WM is effective press evasion
       score += 6.0;
     }
     
-    // ★ v8.3: Attacking third penetration pass (line break) is top priority
+    // Attacking third penetration pass
     const isIntoAttackingThird = (tm.pos.x * -me.team) > (PExt.pitchHalfW / 3);
     const amINotInAttackingThird = (me.pos.x * -me.team) <= (PExt.pitchHalfW / 3);
     if (isIntoAttackingThird && amINotInAttackingThird && gp > 0) {
       if (!isBlocked) {
-        score += 15.0; // Unblocked pass into opponent deep territory is "must play"
-        if (Math.random() < 0.01) { // Log 1% of attempts
-          // Debug log removed
-        }
-      } else {
-        // v8.7.5: Track blocked passes in Phase B for safety valve
-        if (!isPhaseA) {
-          // This is Phase B and pass is blocked - will count if this pass is chosen
-          // (actual counting happens in decideHasBall when bestPass returns blocked target)
-        }
-        if (Math.random() < 0.01) {
-          // Debug log removed
-        }
+        score += 15.0;
       }
     }
     
-    // v7.0: Up-Back-Through bonuses
+    // Role-based bonuses
     if (me.role === "FWD" && tm.role === "MID") score += 8.0;
     if (me.role === "MID" && (tm.role === "MID" || tm.role === "FWD" || tm.slot === 3)) score += 5.0;
     
-    // v7.1: Press-escape logic
-    let closestEnemy = Infinity;
-    for (const opp of st.pl) {
-      if (opp.team === me.team) continue;
-      const d = vdist(me.pos, opp.pos);
-      if (d < closestEnemy) closestEnemy = d;
+    // ★ v9.5.0: Pressure-aware passing
+    if (underPressure) {
+      // Under pressure: strongly prefer any open pass over dribble
+      if (!isBlocked && recvOpenness > 0.2) {
+        score += PExt.pressurePassPriority;
+      }
+      // If enemy is in front, lateral/back passes become very attractive
+      if (enemyInFront && !isForward && !isBlocked) {
+        score += PExt.pressurePassPriority * 0.8;
+      }
     }
-    const underPress = closestEnemy < 2.5;
     
-    if (gp <= 0) {
-      if (underPress && openness(st, tm) > 0.3) {
-        // v9.2.0: Under pressure, back/lateral pass is a valid escape
-        score += openness(st, tm) * 3.0;
+    // ★ v9.5.0: Lateral pass bonus (switch of play)
+    if (isLateral && Math.abs(tm.pos.y - me.pos.y) > 8.0) {
+      // Wide lateral pass to switch play
+      if (!isBlocked) {
+        score += PExt.lateralPassBonus + recvSpace * 0.3;
+      }
+    }
+    
+    // ★ v9.5.0: Back-pass evaluation (replaces old simple penalty)
+    if (isBackward) {
+      if (underPressure && recvOpenness > 0.3) {
+        // Under pressure: back-pass to open teammate is a smart escape
+        score += recvOpenness * 3.0;
+      } else if (recvOpenness > 0.5) {
+        // Not under pressure but receiver is very open: mild penalty
+        score += PExt.backPassMinScore;
       } else {
-        // v9.2.0: Relaxed back-pass penalty (was -10.0)
-        score -= 3.0;
+        // Not under pressure and receiver is marked: discourage
+        score -= 4.0;
       }
     }
     
     if (score > bestScore) { bestScore = score; bestIdx = i; }
   }
   
-  // v9.2.0: Relaxed pass rejection threshold (was -5.0)
   if (bestScore < -8.0) return null;
   
   return bestIdx === -1 ? null : bestIdx;
@@ -954,22 +1040,44 @@ export function decideHasBall(st: State, idx: number) {
   //   }
   // }
   
-  // ★ v9.2.0: Carry state lock - relaxed threshold so pass decisions happen more often
+  // ★ v9.5.0: Carry state lock - when enemy approaches, look for pass first
   if (me.act === "carry") {
     let closestEnemy = Infinity;
+    let closestEnemyPos = v(0, 0);
     for (const p of st.pl) {
       if (p.team === me.team) continue;
       const d = vdist(me.pos, p.pos);
-      if (d < closestEnemy) closestEnemy = d;
+      if (d < closestEnemy) { closestEnemy = d; closestEnemyPos = p.pos; }
     }
     
-    // v9.2.0: Continue carry if enemy is far enough (>2m)
+    if (closestEnemy > 3.0) {
+      // Safe to continue carry
+      const toGoalDir = vnorm(vsub(gc, me.pos));
+      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 10.0)));
+      return;
+    }
+    
+    // ★ v9.5.0: Enemy approaching (< 3m) - check if enemy is in front
+    const toEnemyDir = vnorm(vsub(closestEnemyPos, me.pos));
+    const fwdDir = v(-me.team, 0);
+    const enemyInFrontOfCarrier = vdot(toEnemyDir, fwdDir) > 0.2;
+    
+    if (enemyInFrontOfCarrier && closestEnemy < 3.0) {
+      // Enemy blocking forward path - MUST look for pass first
+      const escapeTgt = bestPass(st, idx);
+      if (escapeTgt !== null) {
+        doPassTo(st, idx, escapeTgt);
+        return;
+      }
+    }
+    
+    // Enemy close but not blocking, or no pass available - continue carry if > 2m
     if (closestEnemy > 2.0) {
       const toGoalDir = vnorm(vsub(gc, me.pos));
       me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 10.0)));
       return;
     }
-    // Enemy very close - try to pass or dribble past them
+    // Very close enemy and no pass - fall through to normal decision
   }
   
   // ★ v8.7.3: CB baiting COMPLETELY DISABLED for testing
@@ -1082,8 +1190,26 @@ export function decideHasBall(st: State, idx: number) {
     }
   }
   
-  // ★ v9.2.0: BALANCED PASS/CARRY ARCHITECTURE
-  // Evaluate both pass and carry, then decide based on context
+  // ★ v9.5.0: PRESSURE-AWARE PASS/CARRY ARCHITECTURE
+  // When enemy is in front, prioritize passing to teammates
+  
+  // Pre-compute closest enemy info
+  let closestEnemyDist = Infinity;
+  let closestEnemyToMePos = v(0, 0);
+  for (const p of st.pl) {
+    if (p.team === me.team) continue;
+    const d = vdist(me.pos, p.pos);
+    if (d < closestEnemyDist) { closestEnemyDist = d; closestEnemyToMePos = p.pos; }
+  }
+  
+  // Check if enemy is blocking forward path
+  const fwdDirMe = v(-me.team, 0);
+  const toNearestEnemy = closestEnemyDist < 20 ? vnorm(vsub(closestEnemyToMePos, me.pos)) : v(0, 0);
+  const enemyBlockingForward = closestEnemyDist < PExt.pressurePassThreshold && vdot(toNearestEnemy, fwdDirMe) > 0.2;
+  
+  // Check pass viability
+  const tgt = bestPass(st, idx);
+  const hasPass = tgt !== null;
   
   // Check carry viability
   let canCarry = false;
@@ -1109,26 +1235,21 @@ export function decideHasBall(st: State, idx: number) {
     canCarry = closestInCone >= minConeDist;
   }
   
-  // Check pass viability
-  const tgt = bestPass(st, idx);
-  const hasPass = tgt !== null;
-  
-  // Decision: pass vs carry based on role and pressure
-  let closestEnemyDist = Infinity;
-  for (const p of st.pl) {
-    if (p.team === me.team) continue;
-    const d = vdist(me.pos, p.pos);
-    if (d < closestEnemyDist) closestEnemyDist = d;
+  // ★ v9.5.0: DECISION FLOW - enemy in front → pass first; open space → carry first
+  if (enemyBlockingForward && hasPass) {
+    // Enemy blocking forward: ALWAYS pass if possible (no carry attempt)
+    doPassTo(st, idx, tgt!);
+    chosenAction = "pass-pressure";
+    return;
   }
   
   // Role-based carry preference: FWD/MID carry more, DEF pass more
-  const carryPref = me.role === "FWD" ? 0.55 : me.role === "MID" ? 0.40 : 0.20;
+  const carryPref = me.role === "FWD" ? 0.50 : me.role === "MID" ? 0.35 : 0.15;
   // Under pressure (enemy < 4m), prefer pass; open space, prefer carry
-  const pressureMod = closestEnemyDist < 4.0 ? -0.3 : closestEnemyDist > 8.0 ? 0.2 : 0;
-  const carryChance = Math.max(0.1, Math.min(0.7, carryPref + pressureMod));
+  const pressureMod = closestEnemyDist < 4.0 ? -0.25 : closestEnemyDist > 8.0 ? 0.2 : 0;
+  const carryChance = Math.max(0.1, Math.min(0.65, carryPref + pressureMod));
   
   if (canCarry && hasPass) {
-    // Both options available - probabilistic choice
     if (Math.random() < carryChance) {
       me.act = "carry";
       me.tgt = pitchClamp(vadd(me.pos, vscl(carryDir, 12.0)));
@@ -1137,7 +1258,6 @@ export function decideHasBall(st: State, idx: number) {
       return;
     }
   } else if (canCarry && !hasPass) {
-    // Only carry available
     me.act = "carry";
     me.tgt = pitchClamp(vadd(me.pos, vscl(carryDir, 12.0)));
     me.face = carryDir;

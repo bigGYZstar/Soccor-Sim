@@ -417,25 +417,52 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
     ctx.ellipse(pos.x, pos.y + unit*3.5, unit*2.5, unit*1.0, 0, 0, Math.PI*2);
     ctx.fill();
     
-    // === FEET (drawn first, behind body) ===
+    // === FEET (drawn first, behind body) - SFC-style spikes ===
     if (p.leftFoot && p.rightFoot) {
       const leftFootPos = w2s(p.leftFoot.pos);
       const rightFootPos = w2s(p.rightFoot.pos);
-      const footW = Math.max(2, unit * 1.8);
-      const footH = Math.max(2, unit * 1.2);
-      
-      // Left boot
-      drawPixelRect(leftFootPos.x - footW/2, leftFootPos.y - footH/2 + unit*1.5, footW, footH, bootColor);
-      drawPixelRect(leftFootPos.x - footW/2, leftFootPos.y - footH/2 + unit*1.5, footW * 0.4, footH * 0.6, bootHighlight);
-      
-      // Right boot
-      drawPixelRect(rightFootPos.x - footW/2, rightFootPos.y - footH/2 + unit*1.5, footW, footH, bootColor);
-      drawPixelRect(rightFootPos.x - footW/2, rightFootPos.y - footH/2 + unit*1.5, footW * 0.4, footH * 0.6, bootHighlight);
-      
-      // Socks (small rectangles above boots)
+      const footW = Math.max(3, unit * 2.2);
+      const footH = Math.max(2, unit * 1.4);
+      const studH = Math.max(1, unit * 0.5);
       const sockColor = isBlue ? "#f0f0f0" : "#d02020";
-      drawPixelRect(leftFootPos.x - unit*0.6, leftFootPos.y - footH/2 + unit*0.3, unit*1.2, unit*1.2, sockColor);
-      drawPixelRect(rightFootPos.x - unit*0.6, rightFootPos.y - footH/2 + unit*0.3, unit*1.2, unit*1.2, sockColor);
+      const soleColor = "#303030";
+      const studColor = "#808080";
+      const laceColor = isBlue ? "#e0e0e0" : "#404040";
+      
+      // Check which foot is kicking (animating)
+      const leftKicking = p.leftFoot.animTimer > 0 && p.leftFoot.animType === "kick";
+      const rightKicking = p.rightFoot.animTimer > 0 && p.rightFoot.animType === "kick";
+      
+      // Draw each boot with spike detail
+      [{ fp: leftFootPos, kicking: leftKicking, side: "L" }, { fp: rightFootPos, kicking: rightKicking, side: "R" }].forEach(({ fp, kicking, side }) => {
+        const bootY = fp.y - footH/2 + unit*1.5;
+        const kickGlow = kicking ? 0.5 : 0;
+        
+        // Socks (shin guard area above boot)
+        drawPixelRect(fp.x - unit*0.8, bootY - unit*1.4, unit*1.6, unit*1.4, sockColor);
+        
+        // Boot upper (main body)
+        drawPixelRect(fp.x - footW/2, bootY, footW, footH, bootColor);
+        // Boot highlight stripe (top edge)
+        drawPixelRect(fp.x - footW/2, bootY, footW, Math.max(1, unit*0.3), bootHighlight);
+        // Lace detail (center dots)
+        drawPixelRect(fp.x - unit*0.3, bootY + unit*0.1, unit*0.6, unit*0.4, laceColor);
+        
+        // Sole plate (dark bottom)
+        drawPixelRect(fp.x - footW/2, bootY + footH, footW, Math.max(1, unit*0.4), soleColor);
+        
+        // Studs (3 small rectangles under sole)
+        for (let s = 0; s < 3; s++) {
+          const sx = fp.x - footW/2 + (footW * (s + 0.5) / 3) - unit*0.2;
+          drawPixelRect(sx, bootY + footH + unit*0.4, Math.max(1, unit*0.4), studH, studColor);
+        }
+        
+        // Kick glow effect - highlight the kicking foot
+        if (kicking) {
+          ctx.fillStyle = `rgba(255,255,100,${kickGlow})`;
+          ctx.fillRect(fp.x - footW/2 - 1, bootY - 1, footW + 2, footH + 2);
+        }
+      });
     }
     
     // === BODY (torso - shirt) ===
