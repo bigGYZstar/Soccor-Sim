@@ -37,7 +37,7 @@ export const P = {
   looseBallDrag: 3.5,
   deadBallTime: 0.7,
 
-  trailDuration: 0.35,
+  trailDuration: 1.0,  // v9.7.0: Increased from 0.35 for better pass visibility
   playerRadius: 0.30,
   ballRadius: 0.13,
 

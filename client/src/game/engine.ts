@@ -337,7 +337,9 @@ export function mkState(blueFormation: FormationId = "4-4-2", redFormation: Form
       lastBallPos: v(0, 0),
       stableTime: 0,
       isStacked: false
-    }
+    },
+    // ★ v9.7.0: Ball trail dots
+    ballTrail: []
   };
 }
 
@@ -1040,7 +1042,7 @@ export function decideHasBall(st: State, idx: number) {
   //   }
   // }
   
-  // ★ v9.5.0: Carry state lock - when enemy approaches, look for pass first
+  // ★ v9.7.0: Carry state lock - aggressive pass-first with short carry windows
   if (me.act === "carry") {
     let closestEnemy = Infinity;
     let closestEnemyPos = v(0, 0);
@@ -1050,20 +1052,44 @@ export function decideHasBall(st: State, idx: number) {
       if (d < closestEnemy) { closestEnemy = d; closestEnemyPos = p.pos; }
     }
     
-    if (closestEnemy > 3.0) {
-      // Safe to continue carry
-      const toGoalDir = vnorm(vsub(gc, me.pos));
-      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 10.0)));
+    // ★ v9.7.0: Very short carry windows - pass is always the default
+    const carryTime = st.ball.holdT;
+    const maxCarryTime = me.role === "FWD" ? 0.8 : me.role === "MID" ? 0.5 : 0.3;
+    
+    // ★ v9.7.0: HARD LIMIT - force pass or dribble when carry time exceeds 1.2s
+    if (carryTime > 1.2) {
+      const passTgt = bestPass(st, idx);
+      if (passTgt !== null) {
+        doPassTo(st, idx, passTgt);
+        return;
+      }
+      // No pass available: forced dribble to break out
+      doDribble(st, idx);
       return;
     }
     
-    // ★ v9.5.0: Enemy approaching (< 3m) - check if enemy is in front
-    const toEnemyDir = vnorm(vsub(closestEnemyPos, me.pos));
-    const fwdDir = v(-me.team, 0);
-    const enemyInFrontOfCarrier = vdot(toEnemyDir, fwdDir) > 0.2;
+    // ★ v9.7.0: Always check for pass after initial touch (0.15s grace)
+    if (carryTime > 0.15) {
+      const passTgt = bestPass(st, idx);
+      if (passTgt !== null) {
+        // Pass probability increases rapidly with carry time
+        const timeRatio = Math.min(1.0, carryTime / maxCarryTime);
+        const passProb = 0.60 + timeRatio * 0.35; // 60% → 95% as carry time increases
+        // Under pressure: always pass
+        const pressureBoost = closestEnemy < 5.0 ? 0.30 : 0;
+        if (Math.random() < Math.min(0.98, passProb + pressureBoost)) {
+          doPassTo(st, idx, passTgt);
+          return;
+        }
+      }
+    }
     
-    if (enemyInFrontOfCarrier && closestEnemy < 3.0) {
-      // Enemy blocking forward path - MUST look for pass first
+    // Enemy in front and close - must pass
+    const toEnemyDir = closestEnemy < 20 ? vnorm(vsub(closestEnemyPos, me.pos)) : v(0, 0);
+    const fwdDir = v(-me.team, 0);
+    const enemyInFrontOfCarrier = closestEnemy < 5.0 && vdot(toEnemyDir, fwdDir) > 0.2;
+    
+    if (enemyInFrontOfCarrier) {
       const escapeTgt = bestPass(st, idx);
       if (escapeTgt !== null) {
         doPassTo(st, idx, escapeTgt);
@@ -1071,13 +1097,14 @@ export function decideHasBall(st: State, idx: number) {
       }
     }
     
-    // Enemy close but not blocking, or no pass available - continue carry if > 2m
-    if (closestEnemy > 2.0) {
+    // ★ v9.7.0: Continue carry only for very short time in very open space
+    if (closestEnemy > 8.0 && carryTime < maxCarryTime) {
       const toGoalDir = vnorm(vsub(gc, me.pos));
       me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 10.0)));
       return;
     }
-    // Very close enemy and no pass - fall through to normal decision
+    
+    // Carry time exceeded or enemy close - fall through to normal decision
   }
   
   // ★ v8.7.3: CB baiting COMPLETELY DISABLED for testing
@@ -1243,11 +1270,11 @@ export function decideHasBall(st: State, idx: number) {
     return;
   }
   
-  // Role-based carry preference: FWD/MID carry more, DEF pass more
-  const carryPref = me.role === "FWD" ? 0.50 : me.role === "MID" ? 0.35 : 0.15;
-  // Under pressure (enemy < 4m), prefer pass; open space, prefer carry
-  const pressureMod = closestEnemyDist < 4.0 ? -0.25 : closestEnemyDist > 8.0 ? 0.2 : 0;
-  const carryChance = Math.max(0.1, Math.min(0.65, carryPref + pressureMod));
+  // ★ v9.7.0: Strongly pass-first - carry only when extremely open and no pass available
+  const carryPref = me.role === "FWD" ? 0.15 : me.role === "MID" ? 0.08 : 0.03;
+  // Under pressure: never carry; very open: slight carry chance
+  const pressureMod = closestEnemyDist < 6.0 ? -0.10 : closestEnemyDist > 12.0 ? 0.05 : 0;
+  const carryChance = Math.max(0.02, Math.min(0.20, carryPref + pressureMod));
   
   if (canCarry && hasPass) {
     if (Math.random() < carryChance) {
@@ -1797,6 +1824,18 @@ export function update(st: State, dt: number) {
   if (st.trail) {
     st.trail.t -= dt;
     if (st.trail.t <= 0) st.trail = null;
+  }
+  
+  // ★ v9.7.0: Ball trail dots - emit when ball is in flight
+  if (st.ball.free && vlen(st.ball.vel) > 2.0) {
+    st.ballTrail.push({ pos: { ...st.ball.pos }, t: 0.6 });
+    // Limit trail length
+    if (st.ballTrail.length > 30) st.ballTrail.shift();
+  }
+  // Decay trail dots
+  for (let i = st.ballTrail.length - 1; i >= 0; i--) {
+    st.ballTrail[i].t -= dt;
+    if (st.ballTrail[i].t <= 0) st.ballTrail.splice(i, 1);
   }
   
   // ★ v8.7.4: Counter-press timer decrement

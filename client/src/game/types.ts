@@ -181,6 +181,12 @@ export interface Ball {
   kickStyle: "inside" | "outside" | "instep" | "toe" | null;  // Kick technique
 }
 
+// ★ v9.7.0: Ball trail dot for visualizing ball movement path
+export interface BallTrailDot {
+  pos: V;
+  t: number;  // Remaining lifetime
+}
+
 export interface State {
   pl: Player[];
   ball: Ball;
@@ -208,4 +214,6 @@ export interface State {
     stableTime: number;  // Time ball has been in roughly same position
     isStacked: boolean;  // Whether stack is currently detected
   };
+  // ★ v9.7.0: Ball trail dots for visualizing ball movement
+  ballTrail: BallTrailDot[];
 }

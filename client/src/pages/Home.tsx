@@ -359,18 +359,57 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
   };
   drawGoal(1); drawGoal(-1);
 
-  // 5. 軌跡
+  // 5. ★ v9.7.0: Enhanced trail rendering with ball trail dots
+  // Ball trail dots (fading dots showing ball path)
+  if (st.ballTrail && st.ballTrail.length > 0) {
+    for (const dot of st.ballTrail) {
+      const dp = w2s(dot.pos);
+      const alpha = Math.min(0.7, dot.t * 1.2);
+      const r = Math.max(1.5, sval(0.12) * (0.5 + dot.t * 0.8));
+      ctx.beginPath();
+      ctx.arc(dp.x, dp.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255,255,200,${alpha})`;
+      ctx.fill();
+    }
+  }
+  
+  // Kick trail line (pass/shot/long pass)
   if (st.trail) {
     const s = w2s(st.trail.start); const e = w2s(st.trail.end);
+    const alpha = Math.min(0.9, st.trail.t * 1.2);
     ctx.beginPath();
     ctx.moveTo(s.x, s.y); ctx.lineTo(e.x, e.y);
     if (st.trail.shot) {
-      ctx.strokeStyle = "rgba(255,100,100,0.8)"; ctx.lineWidth = 4; ctx.setLineDash([]);
+      // Shot: bright red, thick, solid
+      ctx.strokeStyle = `rgba(255,80,80,${alpha})`; ctx.lineWidth = Math.max(3, sval(0.15)); ctx.setLineDash([]);
+    } else if (st.trail.longPass) {
+      // Long pass: cyan, medium, long dash
+      ctx.strokeStyle = `rgba(100,220,255,${alpha})`; ctx.lineWidth = Math.max(2, sval(0.10)); ctx.setLineDash([8, 6]);
     } else {
-      ctx.strokeStyle = "rgba(255,255,255,0.6)"; ctx.lineWidth = 2; ctx.setLineDash([5, 5]);
+      // Short pass: white, medium, short dash
+      ctx.strokeStyle = `rgba(255,255,255,${alpha})`; ctx.lineWidth = Math.max(2, sval(0.10)); ctx.setLineDash([4, 4]);
     }
     ctx.stroke();
     ctx.setLineDash([]);
+    
+    // Arrow head at end point for pass direction
+    if (!st.trail.shot) {
+      const dx = e.x - s.x;
+      const dy = e.y - s.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len > 10) {
+        const nx = dx / len;
+        const ny = dy / len;
+        const arrowSize = Math.max(4, sval(0.25));
+        ctx.beginPath();
+        ctx.moveTo(e.x, e.y);
+        ctx.lineTo(e.x - nx * arrowSize + ny * arrowSize * 0.5, e.y - ny * arrowSize - nx * arrowSize * 0.5);
+        ctx.lineTo(e.x - nx * arrowSize - ny * arrowSize * 0.5, e.y - ny * arrowSize + nx * arrowSize * 0.5);
+        ctx.closePath();
+        ctx.fillStyle = st.trail.longPass ? `rgba(100,220,255,${alpha})` : `rgba(255,255,255,${alpha})`;
+        ctx.fill();
+      }
+    }
   }
 
   // 6. 選手 (SFC-style pixel art with separated body and feet)
