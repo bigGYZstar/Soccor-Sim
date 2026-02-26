@@ -9,8 +9,9 @@ import { mkState, doKickOff, update } from '../game/engine';
 // --- 描画レイヤー (UI依存) ---
 // ※計算ロジック(update)には一切関与せず、渡されたStateを画面に描くだけの純粋な関数
 const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State) => {
-  const w = cvs.width;
-  const h = cvs.height;
+  // Use CSS pixel dimensions for layout calculations
+  const w = cvs.clientWidth;
+  const h = cvs.clientHeight;
   
   // 描画スケールの計算
   const padW = 2.5; const padH = 3.5;
@@ -236,15 +237,24 @@ export default function Home() {
     doKickOff(stRef.current);
 
     const onResize = () => {
-      // Use viewport dimensions directly
+      // Use viewport dimensions with device pixel ratio for sharp rendering
       const vw = window.innerWidth;
       const vh = window.innerHeight;
+      const dpr = window.devicePixelRatio || 1;
       
-      // Set canvas to viewport size (CSS pixels)
-      canvas.width = vw;
-      canvas.height = vh;
+      // Set canvas internal resolution (physical pixels)
+      canvas.width = vw * dpr;
+      canvas.height = vh * dpr;
+      
+      // Set canvas display size (CSS pixels)
       canvas.style.width = vw + "px";
       canvas.style.height = vh + "px";
+      
+      // Scale context to match device pixel ratio
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.scale(dpr, dpr);
+      }
     };
     window.addEventListener('resize', onResize);
     onResize();
