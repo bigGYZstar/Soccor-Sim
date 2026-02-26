@@ -791,9 +791,10 @@ function findBestSpaceForWide(st: State, me: Player, carrier: Player, forwardRun
     ? oppDefLineX - attackDir * 5.0  // Scan up to opponent DEF line
     : startX - attackDir * scanAhead;
   
-  // Y range: stay on my side, but allow some central drift
-  const yCenter = me.home.y * 0.7;
-  const yRange = forwardRunMode ? 10.0 : 12.0; // Tighter lateral range during forward run
+  // ★ v9.18.0: Y range - ENFORCE side discipline, use full width
+  // Wide players MUST stay on their side to provide width
+  const yCenter = me.home.y * 0.9; // Was 0.7 - stay much closer to home side
+  const yRange = forwardRunMode ? 8.0 : 10.0; // Tighter range to prevent central drift
   
   // Generate 8x5 grid of candidate positions (more resolution)
   const xSteps = forwardRunMode ? 8 : 6;
@@ -845,9 +846,14 @@ function findBestSpaceForWide(st: State, me: Player, carrier: Player, forwardRun
         score -= forwardRunMode ? 2.0 : 4.0; // Less penalty in forward run (long pass can lob over)
       }
       
-      // 4. Stay on my side (soft constraint)
+      // 4. ★ v9.18.0: Stay on my side (HARD constraint for width)
       const sideMatch = (pos.y * mySide > 0) ? 1.0 : 0.0;
-      score += sideMatch * 3.0;
+      score += sideMatch * 8.0; // Was 3.0 - much stronger side discipline
+      // Bonus for being near the touchline (using width)
+      const touchlineDist = Math.abs(pos.y);
+      if (touchlineDist > 20.0) score += 3.0; // Reward hugging the sideline
+      // Penalty for drifting to wrong side
+      if (pos.y * mySide < 0) score -= 6.0;
       
       // 5. Not too far from carrier (realistic pass distance)
       const distToCarrier = vdist(pos, carrier.pos);
@@ -2100,24 +2106,26 @@ export function decideNoBall(st: State, idx: number) {
         // Find the other FWD on my team (for combination play)
         const otherFwd = st.pl.find(p => p.team === me.team && p.role === "FWD" && p.idx !== me.idx && !p.isGK);
         
-        // Determine lateral position: split between FWDs
+        // ★ v9.18.0: Determine lateral position - enforce channel discipline
         let lateralY: number;
         if (otherFwd) {
-          // Two strikers: one goes left channel, one goes right channel
-          // Use home.y to determine which side
+          // Two strikers: MUST stay in their assigned channel
           const myChannel = me.home.y < 0 ? -1 : 1; // -1 = left, +1 = right
-          lateralY = myChannel * (8.0 + rng(0, 4.0)); // Spread 8-12m from center
+          // ★ v9.18.0: Wider spread to use pitch width
+          lateralY = myChannel * (10.0 + rng(0, 5.0)); // Spread 10-15m from center (was 8-12)
           
-          // If marked, drift away from marker to find space
+          // If marked, drift away from marker but STAY on assigned side
           if (iAmMarked) {
             const markerY = st.pl.reduce((closest, p) => {
               if (p.team === me.team) return closest;
               const d = vdist(me.pos, p.pos);
               return d < closest.d ? { d, y: p.pos.y } : closest;
             }, { d: Infinity, y: 0 }).y;
-            // Move away from marker laterally
-            lateralY = me.pos.y + (me.pos.y - markerY) * 0.5;
-            lateralY = clamp(lateralY, -PExt.pitchHalfH + 5, PExt.pitchHalfH - 5);
+            // Move away from marker but stay on correct side
+            lateralY = me.pos.y + (me.pos.y - markerY) * 0.4;
+            // Clamp to stay on assigned side
+            if (myChannel > 0) lateralY = clamp(lateralY, 2.0, PExt.pitchHalfH - 5);
+            else lateralY = clamp(lateralY, -PExt.pitchHalfH + 5, -2.0);
           }
         } else {
           // Solo striker: stay central but drift toward ball side
@@ -2248,17 +2256,16 @@ export function decideNoBall(st: State, idx: number) {
           baseTgt = v(clamp(cmX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5), me.home.y * 0.8);
           me.wantsBall = true;
         } else {
-          // ★ v9.17.0: CM pushes forward aggressively - target opponent MID line area
+          // ★ v9.18.0: CM pushes forward but maintains lateral discipline
           const oppMids = st.pl.filter(p => p.team !== me.team && p.role === "MID");
           let oppMidLineX = carrier.pos.x - me.team * 25.0;
           if (oppMids.length > 0) oppMidLineX = oppMids.reduce((s, p) => s + p.pos.x, 0) / oppMids.length;
-          const pushExtra = push * 10.0; // Was 8.0
-          const cmX = carrier.pos.x - me.team * (15.0 + pushExtra); // Was 12.0
-          // CM can go up to opponent MID line
-          const rawTgt = v(clamp(cmX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5), me.home.y * 0.7);
-          // ★ v9.17.0: Much weaker home anchor for CM
-          baseTgt = vlerp(me.home, rawTgt, 0.85 + push * 0.12); // Was 0.80
-          me.wantsBall = true; // CM always wants ball during attack
+          const pushExtra = push * 10.0;
+          const cmX = carrier.pos.x - me.team * (15.0 + pushExtra);
+          // ★ v9.18.0: CM MUST stay on assigned side (home.y) to maintain team shape
+          const rawTgt = v(clamp(cmX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5), me.home.y); // Was 0.7 - now full home.y
+          baseTgt = vlerp(me.home, rawTgt, 0.85 + push * 0.12);
+          me.wantsBall = true;
         }
       }
     }
@@ -2372,9 +2379,12 @@ export function decideNoBall(st: State, idx: number) {
         if (forwardSpaceOpen && !wouldBeOffside && !blocked && iAmAhead) {
           // Forward run: move deeper into attacking territory
           const runDist = me.role === "FWD" ? 8.0 : 5.0;
+          // ★ v9.18.0: Maintain lateral discipline during forward runs
+          // Stay on assigned side, only slight variation
+          const runY = me.home.y * 0.8 + rng(-2.0, 2.0); // Stay near home Y
           const runTarget = pitchClamp(v(
             me.pos.x - attackDir * runDist,
-            me.pos.y + rng(-4.0, 4.0) // Slight lateral variation
+            runY
           ));
           // Verify run target is also in open space
           let runTargetOpen = true;
@@ -2415,10 +2425,11 @@ export function decideNoBall(st: State, idx: number) {
             me.burstCD = 0.4;
           }
         } else if (!iAmAhead && dToCarrier >= 5.0 && me.role === "FWD") {
-          // ★ v9.12.0: FWD behind carrier should run forward to get ahead
+          // ★ v9.18.0: FWD behind carrier should run forward to get ahead
+          // Maintain side discipline
           const runAheadTarget = pitchClamp(v(
             carrier.pos.x - attackDir * (8.0 + rng(0, 4.0)),
-            me.home.y + rng(-5.0, 5.0)
+            me.home.y + rng(-2.0, 2.0) // Was -5.0 to 5.0 - much tighter
           ));
           let runAheadOpen = true;
           for (const opp of st.pl) {
@@ -2435,16 +2446,35 @@ export function decideNoBall(st: State, idx: number) {
     }
     // --- end Phase 5.5 ---
 
-    // ★ v9.3.0: Anti-clustering - push away from nearby teammates
+    // ★ v9.18.0: Anti-clustering - stronger spacing enforcement with lateral spread
     if (!me.isGK) {
-      const minTeammateDist = 4.0; // Minimum 4m between teammates
+      const minTeammateDist = 5.0; // Balanced: not too close, not too far
+      const minLateralDist = 3.5; // Minimum lateral (Y) separation
       for (const p of st.pl) {
         if (p.idx === me.idx || p.team !== me.team || p.isGK) continue;
         const d = vdist(baseTgt, p.pos);
         if (d < minTeammateDist && d > 0.1) {
           const away = vnorm(vsub(baseTgt, p.pos));
-          const pushDist = (minTeammateDist - d) * 0.5;
+          const pushDist = (minTeammateDist - d) * 0.7; // Was 0.5 - stronger push
           baseTgt = vadd(baseTgt, vscl(away, pushDist));
+        }
+        // ★ v9.18.0: Extra lateral separation enforcement
+        const lateralDist = Math.abs(baseTgt.y - p.pos.y);
+        const longitudinalDist = Math.abs(baseTgt.x - p.pos.x);
+        if (lateralDist < minLateralDist && longitudinalDist < 8.0 && d > 0.1) {
+          // Push apart laterally (toward assigned home.y)
+          const pushY = (me.home.y - baseTgt.y) * 0.15;
+          baseTgt = v(baseTgt.x, baseTgt.y + pushY);
+        }
+      }
+      
+      // ★ v9.18.0: Width enforcement - if too far from home.y, pull back toward it
+      // This prevents all players from drifting to the ball side
+      if (me.role !== "FWD" || Math.abs(me.home.y) > 10.0) {
+        const yDrift = Math.abs(baseTgt.y - me.home.y);
+        if (yDrift > 12.0) { // Was 15.0 - tighter enforcement
+          // Pull back toward home.y when drifted too far
+          baseTgt = v(baseTgt.x, baseTgt.y + (me.home.y - baseTgt.y) * 0.2); // Was 0.3 - softer
         }
       }
     }
@@ -2474,12 +2504,14 @@ export function decideNoBall(st: State, idx: number) {
           return;
         }
       }
-      // ★ v9.17.0: FWD and MID maintain forward position during free ball
-      // Don't retreat to home - stay high to receive the ball when teammate wins it
+      // ★ v9.18.0: FWD and MID maintain position during free ball
+      // Keep forward X position but MAINTAIN lateral (Y) discipline
       if (me.role === "FWD" || me.role === "MID") {
-        // Stay roughly where we are, slight drift toward ball
         me.act = "move";
-        me.tgt = vlerp(me.pos, ballPos, 0.08); // Very slight drift, mostly hold position
+        // Keep current X (forward position), but drift Y back toward home.y (side discipline)
+        const holdX = me.pos.x + (ballPos.x - me.pos.x) * 0.03; // Very slight X drift toward ball
+        const holdY = me.pos.y + (me.home.y - me.pos.y) * 0.05; // Drift Y back toward assigned side
+        me.tgt = pitchClamp(v(holdX, holdY));
         return;
       }
       // Others: Shift home position slightly toward ball
