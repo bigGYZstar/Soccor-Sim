@@ -448,7 +448,7 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   // v8.9.0: Error range is scaled by foot accuracy (worse foot = more error)
   let finalTarget = { ...tgt };
   let baseErrRange = customErr !== undefined ? customErr : 
-                 (shot ? (1 - PExt.shotAccuracy) * 3.0 : 
+                 (shot ? (1 - PExt.shotAccuracy) * 8.0 :  // v9.2.0: Increased from 3.0 for realistic on-target rate
                   isLong ? (1 - PExt.longPassAccuracy) * 1.5 : 
                   (1 - PExt.passAccuracy) * 1.5);
   // Apply foot accuracy: footMod=1.0 means no extra error, footMod=0.5 means 2x error
@@ -513,8 +513,11 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   b.kickSeq++;
   b.kickKind = shot ? "SHOT" : isLong ? "LONG" : "PASS";
   b.kickTeam = kicker.team;
-  // v8.8.5: Use finalTarget for intended receiver (not kicker position)
-  b.intendedReceiverIdx = tgt ? nearest(st, finalTarget, kicker.team) : null;
+  // v9.2.0: intendedReceiverIdx is set by doPassTo/doLongPassTo BEFORE kick()
+  // If not pre-set, fall back to nearest teammate to finalTarget
+  if (b.intendedReceiverIdx === null || b.intendedReceiverIdx === undefined) {
+    b.intendedReceiverIdx = tgt ? nearest(st, finalTarget, kicker.team) : null;
+  }
   b.kickActive = true;
   b.lastKickTime = st.time;
   b.lastKickerIdx = kickerIdx;
@@ -522,6 +525,8 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   b.owner = null; b.free = true; b.shot = shot;
   b.vel = vscl(dir, spd); b.dead = 0;
   b.lob = isLong ? 1.0 : 0;
+  // v9.2.0: Add cooldown after kick to prevent kicker from immediately re-intercepting
+  b.cooldown = 0.15;  // 150ms cooldown before anyone can pick up the ball
   
   // v8.8.2: Track shot statistics
   if (shot) {
@@ -657,7 +662,7 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
     if (st.pl[i].team !== me.team || i === idx) continue;
     const tm = st.pl[i];
     const dist = vdist(me.pos, tm.pos);
-    if (dist < 2.0 || dist > 20.0) continue;
+    if (dist < 2.0 || dist > 35.0) continue;
     
     let score = 0;
     const gp = (tm.pos.x - me.pos.x) * -me.team;
@@ -714,18 +719,20 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
     const underPress = closestEnemy < 2.5;
     
     if (gp <= 0) {
-      if (underPress && openness(st, tm) > 0.5) {
-        score += openness(st, tm) * 2.5;
+      if (underPress && openness(st, tm) > 0.3) {
+        // v9.2.0: Under pressure, back/lateral pass is a valid escape
+        score += openness(st, tm) * 3.0;
       } else {
-        score -= 10.0;
+        // v9.2.0: Relaxed back-pass penalty (was -10.0)
+        score -= 3.0;
       }
     }
     
     if (score > bestScore) { bestScore = score; bestIdx = i; }
   }
   
-  // v7.1: Pass rejection if only bad back-passes available
-  if (bestScore < -5.0) return null;
+  // v9.2.0: Relaxed pass rejection threshold (was -5.0)
+  if (bestScore < -8.0) return null;
   
   return bestIdx === -1 ? null : bestIdx;
 }
@@ -764,6 +771,9 @@ export function doPassTo(st: State, idx: number, targetIdx: number) {
   const inOwnHalf = me.team * me.pos.x > 0;
   if (inOwnHalf) baseErr *= 0.6;
   
+  // v9.2.0: Set intendedReceiverIdx BEFORE kick() so it's not overwritten
+  st.ball.intendedReceiverIdx = targetIdx;
+  
   // v7.2: Remove pre-kick error - let kick() handle all error calculation
   kick(st, idx, PExt.passSpeed, false, tp, false, baseErr);
   
@@ -782,6 +792,9 @@ export function doLongPassTo(st: State, idx: number, targetIdx: number) {
     const pd = vdist(me.pos, tm.pos);
     tp = vadd(tp, vscl(lead, Math.min(pd * 0.15, 2.0)));
   }
+  
+  // v9.2.0: Set intendedReceiverIdx BEFORE kick() so it's not overwritten
+  st.ball.intendedReceiverIdx = targetIdx;
   
   const err = (1 - PExt.longPassAccuracy) * 2.0;
   kick(st, idx, PExt.longPassSpeed, false, tp, true, err);
@@ -872,7 +885,7 @@ export function decideHasBall(st: State, idx: number) {
   //   }
   // }
   
-  // ★ v6.1: Carry state lock - continue forward movement if no enemy nearby
+  // ★ v9.2.0: Carry state lock - relaxed threshold so pass decisions happen more often
   if (me.act === "carry") {
     let closestEnemy = Infinity;
     for (const p of st.pl) {
@@ -881,12 +894,13 @@ export function decideHasBall(st: State, idx: number) {
       if (d < closestEnemy) closestEnemy = d;
     }
     
-    if (closestEnemy > 1.5) {
-      // Continue carrying forward - update target continuously
+    // v9.2.0: Continue carry if enemy is far enough (>2m)
+    if (closestEnemy > 2.0) {
       const toGoalDir = vnorm(vsub(gc, me.pos));
-      me.tgt = vadd(me.pos, vscl(toGoalDir, 8.0));
-      return; // Skip 0.2s decision - keep carrying
+      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 10.0)));
+      return;
     }
+    // Enemy very close - try to pass or dribble past them
   }
   
   // ★ v8.7.3: CB baiting COMPLETELY DISABLED for testing
@@ -906,18 +920,111 @@ export function decideHasBall(st: State, idx: number) {
   //   }
   // }
   
-  // ★ v8.7.1: Redesigned Progressive carry with minConeDist
+  // ★ v9.2.0: Compute common variables first
   const distToGoal = vdist(me.pos, gc);
+  const ax = me.pos.x * (-me.team);
+  const w = PExt.pitchHalfW;
+  const isPhaseA = ax < (2 * w / 3);
+  const isPhaseB = ax >= (2 * w / 3);
+  
+  // ★ Stack resolution: Force long kick when stack detected (HIGHEST PRIORITY)
+  if (st.stackDetection.isStacked) {
+    const forwardDir = v(-me.team + rng(-0.3, 0.3), rng(-0.5, 0.5));
+    const kickTarget = vadd(me.pos, vscl(vnorm(forwardDir), 8.0));
+    kick(st, idx, PExt.longPassSpeed, false, pitchClamp(kickTarget), true);
+    st.stackDetection.isStacked = false;
+    st.stackDetection.stableTime = 0;
+    return;
+  }
+  
+  // Check if stuck: holdT >= 0.5s AND no progress
+  const axAdvance = ax - st.ball.holdAX0;
+  const isStuck = st.ball.holdT >= 0.5 && axAdvance < 0.25;
+  
+  if (isStuck) {
+    // Stuck - force pass first, then carry
+    const stuckTgt = bestPass(st, idx, true);
+    if (stuckTgt !== null) {
+      doPassTo(st, idx, stuckTgt);
+      chosenAction = "pass-forced";
+      return;
+    }
+    // No pass available - try forced carry
+    const toGoalDir = vnorm(vsub(gc, me.pos));
+    const relaxedMinConeDist = 2.0;
+    let closestInCone = Infinity;
+    for (const p of st.pl) {
+      if (p.team === me.team) continue;
+      const toOpp = vsub(p.pos, me.pos);
+      const dist = vlen(toOpp);
+      if (dist > 10.0) continue;
+      const angle = vang(toGoalDir, toOpp);
+      if (angle < 60) {
+        if (dist < closestInCone) closestInCone = dist;
+      }
+    }
+    if (closestInCone >= relaxedMinConeDist) {
+      me.act = "carry";
+      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 18.0)));
+      me.face = toGoalDir;
+      chosenAction = "carry-forced";
+      return;
+    }
+  }
+  
+  // ★ v8.7: Phase B (finish): Shot-first evaluation
+  if (isPhaseB) {
+    if (st.ball.phaseBBlockedPassStreak >= 3 && distToGoal < 8.2) {
+      const toGoal = vsub(gc, me.pos);
+      const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
+      if (angle < 60) {
+        const err = (1 - PExt.shotAccuracy) * 2.5;
+        const t = v(gc.x, gc.y + rng(-err, err));
+        kick(st, idx, PExt.shotSpeed, true, t);
+        if (me.team === -1) st.stats.forcedShotsFromBlocked.blue++;
+        else st.stats.forcedShotsFromBlocked.red++;
+        st.ball.phaseBBlockedPassStreak = 0;
+        chosenAction = "shot-forced";
+        return;
+      }
+    }
+    
+    // v9.2.0: Extended shot range to match PExt.shotRange (18m)
+    const shouldPrioritizeShot = distToGoal < PExt.shotRange;
+    if (shouldPrioritizeShot) {
+      const toGoal = vsub(gc, me.pos);
+      const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
+      let allowedAngle = 30;
+      if (distToGoal <= 5.0) allowedAngle = 80;
+      else if (distToGoal <= 8.0) allowedAngle = 60;
+      else if (distToGoal <= 12.0) allowedAngle = 45;
+      else allowedAngle = 30;
+      
+      if (angle < allowedAngle) {
+        const err = (1 - PExt.shotAccuracy) * 2.5;
+        const t = v(gc.x, gc.y + rng(-err, err));
+        kick(st, idx, PExt.shotSpeed, true, t);
+        st.ball.phaseBBlockedPassStreak = 0;
+        if (me.team === -1) st.stats.phaseBShots.blue++;
+        else st.stats.phaseBShots.red++;
+        chosenAction = "shot";
+        return;
+      }
+    }
+  }
+  
+  // ★ v9.2.0: BALANCED PASS/CARRY ARCHITECTURE
+  // Evaluate both pass and carry, then decide based on context
+  
+  // Check carry viability
+  let canCarry = false;
+  let carryDir = v(0, 0);
   if (distToGoal > 3.0 && !me.isGK) {
     const toGoalDir = vnorm(vsub(gc, me.pos));
-    const ax = me.pos.x * (-me.team);
-    const w = PExt.pitchHalfW;
-    const isPhaseA = ax < (2 * w / 3);
-    
-    // v8.7.4: Further relaxed carry success rate
-    const coneAngle = isPhaseA ? 150 : 160; // Phase A: 150°, Phase B: 160°
-    const searchDist = 25.0; // Adjusted for soccer pitch
-    const minConeDist = isPhaseA ? 3.5 : 2.5; // Adjusted for soccer: Phase A: 3.5m, Phase B: 2.5m
+    carryDir = toGoalDir;
+    const coneAngle = isPhaseA ? 120 : 90;
+    const searchDist = 15.0;
+    const minConeDist = isPhaseA ? 4.0 : 3.0;
     
     let closestInCone = Infinity;
     for (const p of st.pl) {
@@ -930,199 +1037,84 @@ export function decideHasBall(st: State, idx: number) {
         if (dist < closestInCone) closestInCone = dist;
       }
     }
-    
-    const pathClear = closestInCone >= minConeDist;
-    
-    if (pathClear) {
+    canCarry = closestInCone >= minConeDist;
+  }
+  
+  // Check pass viability
+  const tgt = bestPass(st, idx);
+  const hasPass = tgt !== null;
+  
+  // Decision: pass vs carry based on role and pressure
+  let closestEnemyDist = Infinity;
+  for (const p of st.pl) {
+    if (p.team === me.team) continue;
+    const d = vdist(me.pos, p.pos);
+    if (d < closestEnemyDist) closestEnemyDist = d;
+  }
+  
+  // Role-based carry preference: FWD/MID carry more, DEF pass more
+  const carryPref = me.role === "FWD" ? 0.55 : me.role === "MID" ? 0.40 : 0.20;
+  // Under pressure (enemy < 4m), prefer pass; open space, prefer carry
+  const pressureMod = closestEnemyDist < 4.0 ? -0.3 : closestEnemyDist > 8.0 ? 0.2 : 0;
+  const carryChance = Math.max(0.1, Math.min(0.7, carryPref + pressureMod));
+  
+  if (canCarry && hasPass) {
+    // Both options available - probabilistic choice
+    if (Math.random() < carryChance) {
       me.act = "carry";
-      // Adjusted for soccer: Normal carry distance scaled to 15m
-      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 15.0)));
-      me.face = toGoalDir;
+      me.tgt = pitchClamp(vadd(me.pos, vscl(carryDir, 12.0)));
+      me.face = carryDir;
       chosenAction = "carry";
       return;
     }
-  }
-  
-  // ★ v8.7.4: Forward progress guarantee - strengthened (0.5s threshold + progress check)
-  const ax = me.pos.x * (-me.team); // Attack direction normalized (0 → pitchHalfW)
-  const w = PExt.pitchHalfW; // 10.0
-  const isPhaseA = ax < (2 * w / 3); // Phase A: advance (ax < 6.66)
-  const isPhaseB = ax >= (2 * w / 3); // Phase B: finish (ax >= 6.66)
-  
-  // ★ Stack resolution: Force long kick when stack detected (HIGHEST PRIORITY)
-  if (st.stackDetection.isStacked) {
-    const forwardDir = v(-me.team + rng(-0.3, 0.3), rng(-0.5, 0.5));
-    const kickTarget = vadd(me.pos, vscl(vnorm(forwardDir), 8.0));
-    kick(st, idx, PExt.longPassSpeed, false, pitchClamp(kickTarget), true);
-    st.stackDetection.isStacked = false;  // Reset stack after resolution
-    st.stackDetection.stableTime = 0;
-    if (Math.random() < 0.05) {
-      // Debug log removed
-    }
+  } else if (canCarry && !hasPass) {
+    // Only carry available
+    me.act = "carry";
+    me.tgt = pitchClamp(vadd(me.pos, vscl(carryDir, 12.0)));
+    me.face = carryDir;
+    chosenAction = "carry";
     return;
   }
   
-  // Check if stuck: holdT >= 0.5s AND no progress (ax advance < 0.25)
-  const axAdvance = ax - st.ball.holdAX0;
-  const isStuck = st.ball.holdT >= 0.5 && axAdvance < 0.25;
-  
-  if (isStuck) {
-    // Stuck for 0.5s with no progress - force forward movement
-    const toGoalDir = vnorm(vsub(gc, me.pos));
-    
-    // Try forced carry with very relaxed minConeDist (adjusted for soccer)
-    const relaxedMinConeDist = 2.0;
-    let closestInCone = Infinity;
-    for (const p of st.pl) {
-      if (p.team === me.team) continue;
-      const toOpp = vsub(p.pos, me.pos);
-      const dist = vlen(toOpp);
-      if (dist > 10.0) continue;
-      const angle = vang(toGoalDir, toOpp);
-      if (angle < 60) { // 120° cone
-        if (dist < closestInCone) closestInCone = dist;
-      }
-    }
-    
-    if (closestInCone >= relaxedMinConeDist) {
-      // Forced carry with extended distance
-      me.act = "carry";
-      // Adjusted for soccer: Stuck carry distance scaled to 18m
-      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, 18.0)));
-      me.face = toGoalDir;
-      chosenAction = "carry-forced";
-      return;
-    } else {
-      // Forced forward pass (even if blocked)
-      const tgt = bestPass(st, idx);
-      if (tgt !== null) {
-        doPassTo(st, idx, tgt);
-        chosenAction = "pass-forced";
-        return;
-      }
-    }
-  }
-  
-  // ★ v8.7: Phase separation - divide decision-making into Phase A (advance) and Phase B (finish)
-  
-  // Phase B (finish): Shot-first evaluation
-  if (isPhaseB) {
-    // ★ v8.7.5: Safety valve - force shot when blocked pass streak >= 3
-    if (st.ball.phaseBBlockedPassStreak >= 3 && distToGoal < 8.2) {
-      const toGoal = vsub(gc, me.pos);
-      const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
-      
-      if (angle < 60) {  // Relaxed angle for safety valve
-        const err = (1 - PExt.shotAccuracy) * 2.5;
-        const t = v(gc.x, gc.y + rng(-err, err));
-        kick(st, idx, PExt.shotSpeed, true, t);
-        
-        // Track forced shot and reset streak
-        if (me.team === -1) {
-          st.stats.forcedShotsFromBlocked.blue++;
-        } else {
-          st.stats.forcedShotsFromBlocked.red++;
-        }
-        st.ball.phaseBBlockedPassStreak = 0;
-        
-        if (Math.random() < 0.01) {
-          // Debug log removed
-        }
-        chosenAction = "shot-forced";
-        return;
-      }
-    }
-    
-    // v8.7.5: Reverted from 7.0 to 7.5 to fix shot deficiency
-    const shouldPrioritizeShot = distToGoal < 7.5;
-    
-    if (shouldPrioritizeShot) {
-      // D-2: Graduated shot conditions based on distance
-      const toGoal = vsub(gc, me.pos);
-      const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
-      
-      let allowedAngle = 45; // default
-      if (distToGoal <= 5.0) {
-        allowedAngle = 80; // Very close: wide angle
-      } else if (distToGoal <= 7.0) {
-        allowedAngle = 60; // Close: medium angle
-      } else if (distToGoal <= 7.5) {
-        allowedAngle = 45; // Medium: narrow angle
-      }
-      
-      if (angle < allowedAngle) {
-        const err = (1 - PExt.shotAccuracy) * 2.5;
-        const t = v(gc.x, gc.y + rng(-err, err));
-        kick(st, idx, PExt.shotSpeed, true, t);
-        // v8.7.5: Reset blocked pass streak and track Phase B shot
-        st.ball.phaseBBlockedPassStreak = 0;
-        if (me.team === -1) {
-          st.stats.phaseBShots.blue++;
-        } else {
-          st.stats.phaseBShots.red++;
-        }
-        chosenAction = "shot";
-        return;
-      }
-    }
-  }
-  
-  // Phase A (advance): Shot-first is DISABLED - prioritize pass and carry
-  
-  // Try pass
-  const tgt = bestPass(st, idx);
-  if (tgt !== null) {
-    // v8.7.5: Track blocked passes in Phase B
+  // Execute pass if available
+  if (hasPass && tgt !== null) {
     if (isPhaseB) {
       const tm = st.pl[tgt];
       const isBlocked = laneBlocked(st, me.pos, tm.pos, me.team);
       if (isBlocked) {
         st.ball.phaseBBlockedPassStreak++;
-        if (me.team === -1) {
-          st.stats.phaseBBlockedPassCount.blue++;
-        } else {
-          st.stats.phaseBBlockedPassCount.red++;
-        }
+        if (me.team === -1) st.stats.phaseBBlockedPassCount.blue++;
+        else st.stats.phaseBBlockedPassCount.red++;
       } else {
-        // Successful unblocked pass - reset streak
         st.ball.phaseBBlockedPassStreak = 0;
       }
     } else {
-      // Phase A - reset streak
       st.ball.phaseBBlockedPassStreak = 0;
     }
-    
     doPassTo(st, idx, tgt);
+    chosenAction = "pass";
     return;
   }
   
   // Try long pass
   const ltgt = bestLongPass(st, idx);
   if (ltgt !== null) {
-    // v8.7.5: Reset blocked pass streak on long pass
     st.ball.phaseBBlockedPassStreak = 0;
     doLongPassTo(st, idx, ltgt);
+    chosenAction = "longPass";
     return;
   }
   
-  // Fallback shot: only in Phase A with extreme conditions (accidental breakaway)
-  if (isPhaseA && distToGoal < 5.0) {
+  // v9.2.0: Phase A shot - allow shots when close enough
+  if (distToGoal < PExt.shotRange) {
     const toGoal = vsub(gc, me.pos);
     const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
-    if (angle < 80) {
+    let allowedAngle = distToGoal <= 8.0 ? 60 : 35;
+    if (angle < allowedAngle) {
       const err = (1 - PExt.shotAccuracy) * 2.5;
       const t = v(gc.x, gc.y + rng(-err, err));
       kick(st, idx, PExt.shotSpeed, true, t);
-      // v8.7.5: Reset blocked pass streak on shot
       st.ball.phaseBBlockedPassStreak = 0;
-      // Track Phase B shot
-      if (isPhaseB) {
-        if (me.team === -1) {
-          st.stats.phaseBShots.blue++;
-        } else {
-          st.stats.phaseBShots.red++;
-        }
-      }
       return;
     }
   }
@@ -1203,8 +1195,9 @@ export function decideNoBall(st: State, idx: number) {
     // ② FWD role division (pin and drop)
     else if (me.role === "FWD") {
       if (me.idx % 2 === 0) {
-        // Dropping FW (False 9): Pull ball between opponent lines
-        baseTgt = vlerp(me.pos, carrier.pos, 0.45);
+        // v9.2.0: Dropping FW - position ahead of carrier as link-up option
+        const dropX = carrier.pos.x - me.team * 8.0; // 8m ahead of carrier
+        baseTgt = v(clamp(dropX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5), me.home.y * 0.6);
       } else {
         // Pinning FW: Pin opponent CBs, always target depth (behind)
         baseTgt = v(targetGoalX * 0.85, me.home.y * 0.5);
@@ -1218,22 +1211,25 @@ export function decideNoBall(st: State, idx: number) {
         // During own-half buildup, CM closest to ball drops to CB line to form "3-1" pivot
         baseTgt = v(carrier.pos.x + me.team * 2.0, carrier.pos.y > 0 ? 2.0 : -2.0);
       } else {
-        // Other CM takes high position as link man (vertical pass outlet)
-        baseTgt = v(carrier.pos.x - me.team * 5.0, me.home.y);
+        // v9.2.0: CM pushes further ahead as link man (10m ahead of carrier)
+        const cmX = carrier.pos.x - me.team * 10.0;
+        baseTgt = v(clamp(cmX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5), me.home.y);
       }
     }
     // ④ Wide MF (WM) half-space invasion
     else if (me.role === "MID" && Math.abs(me.home.y) > 3.0) {
-      // Always tuck inside, occupy opponent's half-space
-      baseTgt = v(carrier.pos.x - me.team * 3.0, Math.sign(me.home.y) * 2.5);
+      // v9.2.0: Wide MF pushes further ahead, tucking inside
+      const wmX = carrier.pos.x - me.team * 7.0;
+      baseTgt = v(clamp(wmX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5), Math.sign(me.home.y) * 2.5);
     }
     // ⑤ SB and CB's Rest Defence (2-3/3-2 remaining defense)
     else if (me.role === "DEF") {
       if (Math.abs(me.home.y) > 3.0) {
         const isBallSide = (carrier.pos.y * me.home.y) > 0;
         if (isBallSide) {
-          // Ball-side SB provides width, outlet for progression
-          baseTgt = v(carrier.pos.x - me.team * 3.0, Math.sign(me.home.y) * 5.5);
+          // v9.2.0: Ball-side SB provides width, pushes further up
+          const sbX = carrier.pos.x - me.team * 5.0;
+          baseTgt = v(clamp(sbX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5), Math.sign(me.home.y) * 5.5);
         } else {
           // ★ Far-side SB doesn't push up, tucks inside to form "3-back" against counters (Rest Defence)
           baseTgt = v(carrier.pos.x + me.team * 4.0, Math.sign(me.home.y) * 2.0);
@@ -1389,7 +1385,7 @@ export function decideNoBall(st: State, idx: number) {
         }
         
         // Close range: Position to block carrier's path toward goal
-        if (distToBall < 10.0) {
+        if (distToBall < 8.0) {
           // Get between carrier and goal - position on the line from carrier to goal
           const carrierToGoal = vnorm(vsub(myGoal, carrier.pos));
           const blockDist = Math.max(2.0, distToBall * 0.4); // Stay 40% of distance ahead
@@ -1445,7 +1441,7 @@ export function decideNoBall(st: State, idx: number) {
         }
         
         // Close range: Intercept by getting ahead of carrier
-        if (distToBall < 8.0) {
+        if (distToBall < 6.0) {
           // Position to cut off the carrier's forward progress
           // Aim for a point AHEAD of the carrier, between them and our goal
           const aheadPoint = vadd(carrier.pos, vscl(carrierDir, Math.min(carrierSpeed * 0.8, 4.0)));
@@ -1489,26 +1485,34 @@ export function decideNoBall(st: State, idx: number) {
         return;
       }
       
-      // ★ FWD role: Press to restrict passing options, don't chase deep
+      // ★ FWD role: Press high, don't drop deep
       if (me.role === "FWD") {
         if (distToBall < 6.0) {
-          // Close: Press the carrier but aim to cut off their preferred pass
-          // Position slightly toward our goal to block forward passes
+          // Close: Press the carrier
           const pressPoint = vlerp(carrier.pos, myGoal, 0.08);
-          // Shift laterally to cover the nearest passing option
           me.act = "move";
           me.tgt = pitchClamp(pressPoint);
           me.face = vnorm(vsub(carrier.pos, me.pos));
           return;
         }
         
-        // Medium/Far: Stay in a pressing shape, don't drop too deep
-        // FWDs should maintain a high line to restrict opponent's buildup
-        const pressLineX = carrier.pos.x + me.team * 5.0; // Stay ~5m ahead of carrier
+        // v9.2.0: FWDs stay high - only press, never drop behind halfway
+        // This ensures FWDs are in position for counter-attacks
+        const myHalfX = me.team * PExt.pitchHalfW * 0.3; // Stay in opponent's half
+        const pressLineX = Math.min(
+          carrier.pos.x + me.team * 5.0,
+          myHalfX  // Don't drop past 30% of pitch
+        ) * (me.team === -1 ? 1 : 1);
+        // For blue (team=-1): pressLineX should be positive (opponent half)
+        // For red (team=1): pressLineX should be negative (opponent half)
+        const minFwdX = -me.team * PExt.pitchHalfW * 0.15; // At least 15% into opponent half
+        const fwdX = me.team === -1 
+          ? Math.max(pressLineX, minFwdX) 
+          : Math.min(pressLineX, minFwdX);
         const shiftY = clamp((ballPos.y - me.home.y) * 0.3, -4.0, 4.0);
         me.act = "move";
         me.tgt = pitchClamp(v(
-          clamp(pressLineX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5),
+          clamp(fwdX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5),
           me.home.y + shiftY
         ));
         return;

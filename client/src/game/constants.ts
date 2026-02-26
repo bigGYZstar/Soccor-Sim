@@ -19,15 +19,15 @@ export const P = {
   cornerArcR: 1.0,
 
   // Adjusted speeds for soccer (larger pitch)
-  moveSpeed: 7.0,
-  dribbleSpeed: 5.5,
+  moveSpeed: 7.5,  // v9.2.0: Slightly increased for larger pitch
+  dribbleSpeed: 6.0,  // v9.2.0: Slightly increased
   passSpeed: 18,
   shotSpeed: 25,
   longPassSpeed: 15,
-  passAccuracy: 0.88,
-  shotAccuracy: 0.60,
-  longPassAccuracy: 0.65,
-  dribbleControl: 0.90,
+  passAccuracy: 0.92,  // v9.2.0: Increased from 0.88 for more realistic pass completion
+  shotAccuracy: 0.40,  // v9.2.0: Reduced from 0.60 for more realistic on-target rate
+  longPassAccuracy: 0.70,  // v9.2.0: Slightly increased
+  dribbleControl: 0.75,  // v9.2.0: Reduced from 0.90 to incentivize passing
   // Adjusted for soccer pitch
   interceptRadius: 1.5,  // Larger interception radius for soccer
   decisionInterval: 0.25,  // Slightly longer decision time
@@ -112,10 +112,10 @@ export const P = {
   footTackleLungeDuration: 0.25,
 
   // ★ v9.1.0: Defensive AI parameters
-  defInterceptLeadTime: 0.6,    // How far ahead (seconds) to predict ball carrier position
-  defTackleApproachAngle: 0.7,  // 0=direct chase, 1=full interception angle
-  defPassLaneCoverDist: 8.0,    // Max distance to cover a pass lane
-  defShotBlockDist: 12.0,       // Max distance to attempt shot block positioning
+  defInterceptLeadTime: 0.5,    // v9.2.0: Reduced from 0.6 for less aggressive prediction
+  defTackleApproachAngle: 0.6,  // v9.2.0: Reduced from 0.7 for less aggressive interception
+  defPassLaneCoverDist: 6.0,    // v9.2.0: Reduced from 8.0 for less aggressive lane coverage
+  defShotBlockDist: 10.0,       // v9.2.0: Reduced from 12.0
 };
 
 // ★ Formation definitions (all coordinates are for the "left" team attacking right)
