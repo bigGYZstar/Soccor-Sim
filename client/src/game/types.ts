@@ -176,6 +176,7 @@ export interface Ball {
   prevPos: V;  // Previous frame position for line-segment collision
   lastKickTime: number;  // Time when last kick occurred
   lastKickerIdx: number;  // Player index who kicked
+  lastPasserIdx: number;  // ★ v9.13.0: Previous passer for anti-pingpong
   // ★ v9.4.0: Z-axis and spin physics
   z: number;         // Ball height above ground (meters)
   vz: number;        // Vertical velocity (m/s)
