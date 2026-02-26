@@ -29,7 +29,7 @@ export interface Foot {
   // ★ v8.9.1: Foot animation state
   animOffset: V;            // Additional animation offset (kick swing, tackle lunge)
   animTimer: number;        // Remaining animation time (0 = no animation)
-  animType: "none" | "kick" | "dribbleTouch" | "tackle"; // Current animation
+  animType: "none" | "kick" | "dribbleTouch" | "tackle" | "trap"; // Current animation
 }
 
 /**

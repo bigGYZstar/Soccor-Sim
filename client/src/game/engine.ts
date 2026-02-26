@@ -2041,6 +2041,26 @@ export function decideNoBall(st: State, idx: number) {
     }
     // ② FWD role division (pin and drop) - ★ v9.10.0: Progressive line push
     else if (me.role === "FWD") {
+      // ★ v9.16.0: Wide FWD (LW/RW in 3-4-3) uses space-based movement like wide MF
+      const isWideFwd = (me.posLabel === "LW" || me.posLabel === "RW") && Math.abs(me.home.y) > 10.0;
+      
+      if (isWideFwd) {
+        // Use the same space-based movement as wide MF
+        const attackDirWF = -me.team;
+        const pushWF = st.possessionPush.team === me.team ? st.possessionPush.pushLevel : 0;
+        const possessionDuration = st.possessionPush.team === me.team ? st.possessionPush.duration : 0;
+        const stablePossession = possessionDuration > 1.5 && pushWF > 0.15;
+        
+        // Forward run: when team has stable possession, push forward aggressively
+        if (stablePossession && !isOwnHalf) {
+          baseTgt = findBestSpaceForWide(st, me, carrier, true);
+          me.wantsBall = true;
+        } else {
+          baseTgt = findBestSpaceForWide(st, me, carrier, false);
+          me.wantsBall = true;
+        }
+      } else {
+      // Central FWD (ST, LST, RST) - original logic
       let carrierPressure = Infinity;
       for (const opp of st.pl) {
         if (opp.team === me.team) continue;
@@ -2096,6 +2116,7 @@ export function decideNoBall(st: State, idx: number) {
           me.wantsBall = true;
         }
       }
+      } // end isWideFwd else (central FWD)
     }
     // ③ MID positioning: CM stagger + Wide MF overlap - ★ v9.12.0: All MIDs handled here
     else if (me.role === "MID") {
@@ -2967,6 +2988,14 @@ export function update(st: State, dt: number) {
         // Trap result: if random < trapDifficulty, bad trap (ball bounces away slightly)
         if (Math.random() < trapDifficulty) {
           // ★ v9.15.0: Bad trap - ball bounces away from player
+          // Trigger trap animation on the receiving foot
+          const trapFoot = receiveFoot === "L" ? interceptor.leftFoot : interceptor.rightFoot;
+          if (trapFoot) {
+            trapFoot.animTimer = 0.30;
+            trapFoot.animType = "trap";
+            const toBall = vnorm(vsub(b.pos, interceptor.pos));
+            trapFoot.animOffset = vscl(toBall, 0.20);
+          }
           // Ball escapes in a random direction, distance proportional to difficulty
           const bounceDir = vnorm(v(rng(-1, 1), rng(-1, 1)));
           const bounceDist = 0.5 + trapDifficulty * 2.0; // 0.5-2.1m bounce
@@ -2998,6 +3027,14 @@ export function update(st: State, dt: number) {
           logTrapFail(st, interceptor, receiveFoot);
         } else {
           // Good trap - normal give
+          // ★ v9.15.0: Trigger trap animation on the receiving foot
+          const trapFootGood = receiveFoot === "L" ? interceptor.leftFoot : interceptor.rightFoot;
+          if (trapFootGood) {
+            trapFootGood.animTimer = 0.25;
+            trapFootGood.animType = "trap";
+            const toBallDir = vnorm(vsub(b.pos, interceptor.pos));
+            trapFootGood.animOffset = vscl(toBallDir, 0.15);
+          }
           give(b, closestIdx, st.pl, st);
         }
       }

@@ -468,12 +468,15 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
       const studColor = "#808080";
       const laceColor = isBlue ? "#e0e0e0" : "#404040";
       
-      // Check which foot is kicking (animating)
+      // Check which foot is kicking or trapping (animating)
       const leftKicking = p.leftFoot.animTimer > 0 && p.leftFoot.animType === "kick";
       const rightKicking = p.rightFoot.animTimer > 0 && p.rightFoot.animType === "kick";
+      const leftTrapping = p.leftFoot.animTimer > 0 && p.leftFoot.animType === "trap";
+      const rightTrapping = p.rightFoot.animTimer > 0 && p.rightFoot.animType === "trap";
       
       // Draw each boot with spike detail
-      [{ fp: leftFootPos, kicking: leftKicking, side: "L" }, { fp: rightFootPos, kicking: rightKicking, side: "R" }].forEach(({ fp, kicking, side }) => {
+      [{ fp: leftFootPos, kicking: leftKicking, trapping: leftTrapping, foot: p.leftFoot, side: "L" },
+       { fp: rightFootPos, kicking: rightKicking, trapping: rightTrapping, foot: p.rightFoot, side: "R" }].forEach(({ fp, kicking, trapping, foot, side }) => {
         const bootY = fp.y - footH/2 + unit*1.5;
         const kickGlow = kicking ? 0.5 : 0;
         
@@ -500,6 +503,33 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
         if (kicking) {
           ctx.fillStyle = `rgba(255,255,100,${kickGlow})`;
           ctx.fillRect(fp.x - footW/2 - 1, bootY - 1, footW + 2, footH + 2);
+        }
+        
+        // ★ v9.16.0: Trap animation - cyan pulse for good trap, red flash for bad trap
+        if (trapping && foot.animTimer > 0) {
+          const trapAlpha = Math.min(1.0, foot.animTimer / 0.15); // Fade out
+          // Check if ball is free (bad trap) or owned by this player (good trap)
+          const isBadTrap = st.ball.free && st.ball.lastTouchTeam === p.team;
+          if (isBadTrap) {
+            // Bad trap: red-orange flash
+            ctx.fillStyle = `rgba(255,80,40,${trapAlpha * 0.6})`;
+            ctx.fillRect(fp.x - footW/2 - 2, bootY - 2, footW + 4, footH + 4);
+            // Spark particles effect
+            for (let sp = 0; sp < 3; sp++) {
+              const sparkX = fp.x + (Math.random() - 0.5) * footW * 2;
+              const sparkY = bootY + (Math.random() - 0.5) * footH * 2;
+              ctx.fillStyle = `rgba(255,200,50,${trapAlpha * 0.8})`;
+              ctx.fillRect(sparkX, sparkY, Math.max(1, unit * 0.4), Math.max(1, unit * 0.4));
+            }
+          } else {
+            // Good trap: cyan/green pulse
+            ctx.fillStyle = `rgba(0,220,180,${trapAlpha * 0.5})`;
+            ctx.fillRect(fp.x - footW/2 - 1, bootY - 1, footW + 2, footH + 2);
+            // Subtle ring effect
+            ctx.strokeStyle = `rgba(0,255,200,${trapAlpha * 0.4})`;
+            ctx.lineWidth = Math.max(1, unit * 0.3);
+            ctx.strokeRect(fp.x - footW/2 - 3, bootY - 3, footW + 6, footH + 6);
+          }
         }
       });
     }
