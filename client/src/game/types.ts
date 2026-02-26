@@ -215,11 +215,20 @@ export interface State {
   ball: Ball;
   sL: number;
   sR: number;
-  time: number;
+  scoreBlue: number;         // ★ v9.22.0: Blue team total goals (persists across halves)
+  scoreRed: number;          // ★ v9.22.0: Red team total goals (persists across halves)
+  time: number;           // Simulation elapsed time (seconds)
+  matchClock: number;      // Match clock in "minutes" (0-90)
+  half: 1 | 2;             // Current half (1 = first, 2 = second)
+  halftimeShow: boolean;   // Whether halftime screen is showing
+  halftimeDone: boolean;   // Whether halftime has been processed
+  matchPhase: "kickoff" | "play" | "halftime" | "fulltime";  // Current match phase
   over: boolean;
   paused: boolean;
   pauseT: number;
   koSide: number;
+  kickoffReady: boolean;   // Whether kickoff is waiting to be taken
+  kickoffCountdown: number; // Countdown before kickoff is taken
   trail: Trail | null;
   flash: number;
   flashTxt: string;

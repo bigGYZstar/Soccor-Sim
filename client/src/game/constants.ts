@@ -2,8 +2,13 @@
 // Extracted from Home.tsx for centralized configuration
 
 export const P = {
-  matchDuration: 120,
+  matchDuration: 240,         // Total simulation seconds for full 90-min match (120s per half)
+  halfDuration: 120,           // Simulation seconds per half
+  matchMinutesPerHalf: 45,     // Match minutes per half (for display)
   goalResetDelay: 2.0,
+  halftimePauseDuration: 3.0,  // Seconds to show halftime screen
+  kickoffCountdown: 1.5,       // Seconds before kickoff is taken
+  centerCircleR: 9.15,         // Center circle radius in meters
 
   // Soccer pitch dimensions (105m x 68m)
   pitchHalfW: 52.5,  // Half of 105m

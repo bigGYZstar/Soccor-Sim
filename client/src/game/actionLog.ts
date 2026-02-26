@@ -30,6 +30,7 @@ function playerLabel(p: Player): string {
 export function emitLog(st: State, entry: Omit<ActionLogEntry, "ttl">) {
   const logEntry: ActionLogEntry = {
     ...entry,
+    time: st.matchClock || entry.time,  // ★ v9.22.0: Use match clock for display
     ttl: entry.excitement >= 2 ? 6.0 : entry.excitement >= 1 ? 5.0 : DEFAULT_TTL,
   };
   st.actionLog.push(logEntry);

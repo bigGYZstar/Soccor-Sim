@@ -312,7 +312,11 @@ export function mkState(blueFormation: FormationId = "4-4-2", redFormation: Form
   return {
     pl: mkPlayers(blueFormation, redFormation),
     ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0, holdT: 0, holdAX0: 0, holdT0: 0, phaseBBlockedPassStreak: 0, kickSeq: 0, kickKind: null, kickTeam: 0, intendedReceiverIdx: null, kickActive: false, prevPos: v(0, 0), lastKickTime: 0, lastKickerIdx: -1, lastPasserIdx: -1, z: 0, vz: 0, spinX: 0, spinY: 0, spinDecay: 3.0, kickFoot: null, kickStyle: null },
-    sL: 0, sR: 0, time: 0, over: false, paused: false, pauseT: 0, koSide: Math.random() < 0.5 ? -1 : 1,  // Randomize initial kickoff
+    sL: 0, sR: 0, scoreBlue: 0, scoreRed: 0,
+    time: 0, matchClock: 0, half: 1, halftimeShow: false, halftimeDone: false,
+    matchPhase: "kickoff" as const,
+    over: false, paused: false, pauseT: 0, koSide: Math.random() < 0.5 ? -1 : 1,  // Randomize initial kickoff
+    kickoffReady: true, kickoffCountdown: 1.5,  // 1.5s countdown before kickoff is taken
     trail: null, flash: 0, flashTxt: "", restartT: 0,
     speed: "MID",
     setPiece: null,
@@ -2835,17 +2839,52 @@ export function triggerFoul(st: State, fouledIdx: number, foulerIdx: number) {
 
 export function doKickOff(st: State, side?: number) {
   if (side !== undefined) st.koSide = side;
+  
+  const ccR = P.centerCircleR;  // Center circle radius (9.15m)
+  
+  // ★ v9.22.0: Realistic kickoff positioning
   for (let i = 0; i < st.pl.length; i++) {
-    st.pl[i].pos = { ...st.pl[i].home };
-    st.pl[i].vel = v(0, 0);  // Phase 5: Reset velocity
-    st.pl[i].act = "idle";
-    st.pl[i].tgt = { ...st.pl[i].home };
-    st.pl[i].face = v(-st.pl[i].team, 0);
-    // ★ Fix: Randomize decision timers to prevent simultaneous AI decisions
-    st.pl[i].dt = Math.random() * PExt.decisionInterval;
-    st.pl[i].turnDebt = 0;  // Phase 5: Reset turn debt
-    st.pl[i].staminaShort = 1;  // Phase 5: Reset stamina
+    const p = st.pl[i];
+    const isKickoffTeam = p.team === st.koSide;
+    
+    // Start from home position
+    let posX = p.home.x;
+    let posY = p.home.y;
+    
+    // Rule 1: All players must be in their own half (except kickoff taker)
+    // koSide team attacks toward -koSide direction, so their half is koSide * positive X
+    if (!p.isGK) {
+      // Ensure player is on their own side of the halfway line
+      if (p.team * posX < 0) {
+        // Player is on opponent's half - pull back to own half
+        posX = p.team * 2.0;  // Just inside own half
+      }
+    }
+    
+    // Rule 2: Opponent players must be outside center circle
+    if (!isKickoffTeam) {
+      const distToCenter = Math.sqrt(posX * posX + posY * posY);
+      if (distToCenter < ccR + 1.0) {
+        // Push player outside center circle, toward their own half
+        const angle = Math.atan2(posY, posX * p.team);
+        posX = p.team * (ccR + 1.5) * Math.cos(angle);
+        posY = (ccR + 1.5) * Math.sin(angle);
+        // Ensure still on own half
+        if (p.team * posX < 0) posX = p.team * (ccR + 1.5);
+      }
+    }
+    
+    p.pos = pitchClamp(v(posX, posY));
+    p.vel = v(0, 0);
+    p.act = "idle";
+    p.tgt = { ...p.pos };
+    p.face = v(-p.team, 0);
+    p.dt = Math.random() * PExt.decisionInterval;
+    p.turnDebt = 0;
+    p.staminaShort = 1;
   }
+  
+  // Place ball at center spot
   st.ball.pos = v(0, 0);
   st.ball.vel = v(0, 0);
   st.ball.free = true;
@@ -2854,13 +2893,43 @@ export function doKickOff(st: State, side?: number) {
   st.ball.dead = 0;
   st.trail = null;
   
-  // Give ball to nearest player on kickoff side
-  const takerIdx = nearest(st, v(0, 0), st.koSide);
-  if (takerIdx !== -1) {
-    st.ball.owner = takerIdx;
-    st.ball.free = false;
-    st.pl[takerIdx].pos = v(-st.koSide * 0.2, 0);
+  // ★ v9.22.0: Kickoff taker and partner positioned at center
+  // Find two closest outfield players from kickoff team
+  let taker1Idx = -1, taker2Idx = -1;
+  let taker1Dist = Infinity, taker2Dist = Infinity;
+  for (let i = 0; i < st.pl.length; i++) {
+    const p = st.pl[i];
+    if (p.team !== st.koSide || p.isGK) continue;
+    const d = vdist(p.home, v(0, 0));
+    if (d < taker1Dist) {
+      taker2Idx = taker1Idx;
+      taker2Dist = taker1Dist;
+      taker1Idx = i;
+      taker1Dist = d;
+    } else if (d < taker2Dist) {
+      taker2Idx = i;
+      taker2Dist = d;
+    }
   }
+  
+  // Taker 1: on the ball at center spot (slightly on own side)
+  if (taker1Idx !== -1) {
+    st.ball.owner = taker1Idx;
+    st.ball.free = false;
+    st.pl[taker1Idx].pos = v(-st.koSide * 0.3, 0);
+    st.pl[taker1Idx].face = v(-st.koSide, 0);
+  }
+  
+  // Taker 2: partner standing nearby (on own side of center)
+  if (taker2Idx !== -1) {
+    st.pl[taker2Idx].pos = v(-st.koSide * 2.0, st.pl[taker2Idx].home.y > 0 ? 2.0 : -2.0);
+    st.pl[taker2Idx].face = v(-st.koSide, 0);
+  }
+  
+  // Set kickoff state
+  st.kickoffReady = true;
+  st.kickoffCountdown = P.kickoffCountdown;
+  st.matchPhase = "kickoff";
 }
 
 function stopForSetPiece(st: State, kind: "THROWIN" | "CORNER" | "GOALKICK", team: number, pos: V) {
@@ -2908,16 +2977,105 @@ export function startThrowIn(st: State, throwerIdx: number, targetPos: V) {
 export function update(st: State, dt: number) {
   if (st.over) return;
   
+  // Speed multiplier (applied to dt for all game logic)
+  const speedMul = st.speed === "LOW" ? 0.5 : st.speed === "FAST" ? 2.0 : 1.0;
+  dt *= speedMul;
+  
+  // ★ v9.22.0: HALFTIME SCREEN - pause game during halftime show
+  if (st.halftimeShow) {
+    st.kickoffCountdown -= dt;
+    if (st.kickoffCountdown <= 0) {
+      st.halftimeShow = false;
+      // ★ v9.22.0: Swap sides for second half
+      // Flip all home positions (mirror X and Y) and swap team assignments
+      for (const p of st.pl) {
+        p.home = v(-p.home.x, -p.home.y);
+        p.team = (p.team === -1 ? 1 : -1) as (-1 | 1);
+        p.pos = { ...p.home };
+        p.vel = v(0, 0);
+        p.tgt = { ...p.home };
+        p.face = v(-p.team, 0);
+        p.dt = Math.random() * PExt.decisionInterval;
+        p.turnDebt = 0;
+        p.staminaShort = 1;
+        // Reset committed runs
+        p.committedRunTarget = null;
+        p.committedRunTimer = 0;
+      }
+      // Note: sL/sR are position-based (left/right goal), not team-based
+      // We use scoreBlue/scoreRed for display, so no need to swap sL/sR
+      // Reset sL/sR for second half tracking
+      st.sL = 0;
+      st.sR = 0;
+      // Reset ball to center
+      st.ball.pos = v(0, 0);
+      st.ball.vel = v(0, 0);
+      st.ball.free = true;
+      st.ball.owner = null;
+      st.ball.cooldown = PExt.restartNoIntercept;
+      // Second half kickoff: the OTHER team kicks off (but teams are now swapped)
+      st.koSide = -st.koSide;
+      st.half = 2;
+      st.matchPhase = "kickoff";
+      // Reset possession push
+      st.possessionPush = { team: 0, duration: 0, pushLevel: 0 };
+      doKickOff(st);
+    }
+    return;  // Don't update anything during halftime
+  }
+  
+  // ★ v9.22.0: KICKOFF COUNTDOWN - brief pause before kickoff is taken
+  if (st.kickoffReady) {
+    st.kickoffCountdown -= dt;
+    if (st.kickoffCountdown <= 0) {
+      st.kickoffReady = false;
+      st.matchPhase = "play";
+    }
+    return;  // Don't update during kickoff countdown
+  }
+  
   // Time
   st.time += dt;
-  if (st.time >= P.matchDuration) {
-    st.over = true;
+  
+  // ★ v9.22.0: Match clock calculation (simulation time → match minutes)
+  // Each half is P.halfDuration simulation seconds = 45 match minutes
+  const simTimeInHalf = st.half === 1 ? st.time : st.time - P.halfDuration;
+  const matchMinInHalf = (simTimeInHalf / P.halfDuration) * P.matchMinutesPerHalf;
+  st.matchClock = (st.half === 1 ? 0 : 45) + Math.min(matchMinInHalf, P.matchMinutesPerHalf);
+  
+  // ★ v9.22.0: HALFTIME CHECK
+  if (st.half === 1 && st.time >= P.halfDuration && !st.halftimeDone) {
+    st.halftimeDone = true;
+    st.halftimeShow = true;
+    st.matchPhase = "halftime";
+    st.kickoffCountdown = P.halftimePauseDuration;  // Reuse countdown for halftime duration
+    st.flash = 1.0;
+    st.flashTxt = "HALF TIME";
+    st.screenEffect = {
+      type: "none",
+      timer: P.halftimePauseDuration,
+      text: "HALF TIME",
+      playerNum: 0,
+      team: 0,
+    };
     return;
   }
   
-  // Speed multiplier
-  const speedMul = st.speed === "LOW" ? 0.5 : st.speed === "FAST" ? 2.0 : 1.0;
-  dt *= speedMul;
+  // ★ v9.22.0: FULLTIME CHECK
+  if (st.time >= P.matchDuration) {
+    st.over = true;
+    st.matchPhase = "fulltime";
+    st.flash = 1.0;
+    st.flashTxt = "FULL TIME";
+    st.screenEffect = {
+      type: "none",
+      timer: 3.0,
+      text: "FULL TIME",
+      playerNum: 0,
+      team: 0,
+    };
+    return;
+  }
   
   // Flash
   if (st.flash > 0) st.flash = Math.max(0, st.flash - dt * 2);
@@ -3406,6 +3564,16 @@ export function update(st: State, dt: number) {
       
       if (g === -1) st.sR++;
       else st.sL++;
+      // ★ v9.22.0: Track team-based scores (persist across halves)
+      // g === -1 means ball entered left goal; the SCORING team attacked left
+      // In 1st half: team=-1 (Blue) attacks right, team=1 (Red) attacks left
+      // In 2nd half: teams are swapped
+      // The scoring team is the one whose lastKicker scored
+      if (b.lastKickerIdx >= 0 && b.lastKickerIdx < st.pl.length) {
+        const scorerTeam = st.pl[b.lastKickerIdx].team;
+        if (scorerTeam === -1) st.scoreBlue++;
+        else st.scoreRed++;
+      }
       st.flash = 1.0;
       st.flashTxt = "GOAL!";
       // ★ v9.9.0: Log goal
@@ -3498,6 +3666,12 @@ export function update(st: State, dt: number) {
         
         if (g === -1) st.sR++;
         else st.sL++;
+        // ★ v9.22.0: Track team-based scores for dribble goals
+        if (b.owner !== null) {
+          const scorerTeam = st.pl[b.owner].team;
+          if (scorerTeam === -1) st.scoreBlue++;
+          else st.scoreRed++;
+        }
         st.flash = 1.0;
         st.flashTxt = "GOAL!";
         // ★ v9.9.0: Log goal (dribble goal)

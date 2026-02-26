@@ -678,23 +678,31 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
   ctx.fillStyle = RETRO_WHITE;
   ctx.font = `${scoreFontSize}px ${RETRO_FONT}`;
   ctx.textAlign = "center";
-  ctx.fillText(`${st.sL} - ${st.sR}`, w/2, hy + hudH * 0.6);
+  ctx.fillText(`${st.scoreBlue} - ${st.scoreRed}`, w/2, hy + hudH * 0.6);
 
-  // Timer tab
-  const tabW = Math.max(60, hudW * 0.22);
-  const tabH = Math.max(18, hudH * 0.5);
+  // Timer tab with half indicator
+  const tabW = Math.max(80, hudW * 0.28);
+  const tabH = Math.max(22, hudH * 0.55);
   ctx.fillStyle = RETRO_DARK;
   ctx.fillRect(w/2 - tabW/2, hy + hudH, tabW, tabH);
   ctx.strokeStyle = RETRO_GOLD;
   ctx.lineWidth = 2;
   ctx.strokeRect(w/2 - tabW/2, hy + hudH, tabW, tabH);
   
-  const min = Math.floor(st.time / 60);
-  const sec = Math.floor(st.time % 60);
-  const timerFontSize = Math.max(6, tabH * 0.45);
+  // ★ v9.22.0: Display match clock (0-90 minutes) instead of simulation time
+  const matchMin = Math.floor(st.matchClock || 0);
+  const matchSec = Math.floor(((st.matchClock || 0) % 1) * 60);
+  const timerFontSize = Math.max(6, tabH * 0.40);
   ctx.fillStyle = RETRO_GREEN;
   ctx.font = `${timerFontSize}px ${RETRO_FONT}`;
-  ctx.fillText(`${min.toString().padStart(2,'0')}:${sec.toString().padStart(2,'0')}`, w/2, hy + hudH + tabH * 0.65);
+  ctx.fillText(`${matchMin.toString().padStart(2,'0')}:${matchSec.toString().padStart(2,'0')}`, w/2, hy + hudH + tabH * 0.55);
+  
+  // Half indicator
+  const halfFontSize = Math.max(5, tabH * 0.28);
+  ctx.fillStyle = RETRO_GOLD;
+  ctx.font = `${halfFontSize}px ${RETRO_FONT}`;
+  const halfText = st.matchPhase === "halftime" ? "HT" : st.matchPhase === "fulltime" ? "FT" : st.half === 1 ? "1ST" : "2ND";
+  ctx.fillText(halfText, w/2, hy + hudH + tabH * 0.88);
 
   // ★ v9.9.0: SFC-style Action Log overlay (bottom-left)
   if (st.actionLog && st.actionLog.length > 0) {
@@ -849,6 +857,59 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
       // Main text gold
       ctx.fillStyle = `rgba(245, 197, 66, ${goalAlpha})`;
       ctx.fillText(eff.text, w/2 + goalShakeX, h * 0.4 + goalShakeY);
+    } else if (eff.type === "none" && (eff.text === "HALF TIME" || eff.text === "FULL TIME")) {
+      // ★ v9.22.0: Halftime / Fulltime overlay
+      // Dark overlay
+      ctx.fillStyle = `rgba(0, 0, 0, 0.7)`;
+      ctx.fillRect(0, 0, w, h);
+      
+      // Main text
+      const htSize = Math.max(20, Math.min(48, w * 0.05));
+      ctx.font = `bold ${htSize}px ${RETRO_FONT}`;
+      ctx.textAlign = "center";
+      // Shadow
+      ctx.fillStyle = `rgba(0, 0, 0, 0.9)`;
+      ctx.fillText(eff.text, w/2 + 3, h * 0.38 + 3);
+      // Main text - white
+      ctx.fillStyle = RETRO_WHITE;
+      ctx.fillText(eff.text, w/2, h * 0.38);
+      // Gold underline
+      ctx.strokeStyle = RETRO_GOLD;
+      ctx.lineWidth = 3;
+      const textW = ctx.measureText(eff.text).width;
+      ctx.beginPath();
+      ctx.moveTo(w/2 - textW/2, h * 0.38 + 8);
+      ctx.lineTo(w/2 + textW/2, h * 0.38 + 8);
+      ctx.stroke();
+      
+      // Score display below
+      const scoreSize = Math.max(16, Math.min(36, w * 0.04));
+      ctx.font = `bold ${scoreSize}px ${RETRO_FONT}`;
+      ctx.fillStyle = "#60a5fa";
+      ctx.textAlign = "right";
+      ctx.fillText(`BLU`, w/2 - scoreSize * 1.5, h * 0.50);
+      ctx.fillStyle = RETRO_WHITE;
+      ctx.textAlign = "center";
+      ctx.fillText(`${st.scoreBlue} - ${st.scoreRed}`, w/2, h * 0.50);
+      ctx.fillStyle = "#f87171";
+      ctx.textAlign = "left";
+      ctx.fillText(`RED`, w/2 + scoreSize * 1.5, h * 0.50);
+      
+      // Subtitle
+      if (eff.text === "HALF TIME") {
+        const subSize = Math.max(8, Math.min(16, w * 0.016));
+        ctx.font = `${subSize}px ${RETRO_FONT}`;
+        ctx.fillStyle = RETRO_GOLD;
+        ctx.textAlign = "center";
+        ctx.fillText("SIDES CHANGING...", w/2, h * 0.58);
+      } else {
+        const subSize = Math.max(8, Math.min(16, w * 0.016));
+        ctx.font = `${subSize}px ${RETRO_FONT}`;
+        ctx.fillStyle = RETRO_GOLD;
+        ctx.textAlign = "center";
+        const winner = st.scoreBlue > st.scoreRed ? "BLU WINS!" : st.scoreRed > st.scoreBlue ? "RED WINS!" : "DRAW";
+        ctx.fillText(winner, w/2, h * 0.58);
+      }
     }
     
     ctx.restore();
