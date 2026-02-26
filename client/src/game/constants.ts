@@ -88,58 +88,34 @@ export const P = {
   directFKShotChance: 0.65,
 
   // ★ v8.9.0: Foot system parameters
-  /**
-   * KEY INVARIANT: Feet must stay close to body center.
-   * footOffsetForward: how far forward the foot sits from body center (meters)
-   * footOffsetLateral: how far left/right the foot sits from body center (meters)
-   * footMaxReach: maximum distance a foot can extend from body (meters)
-   * footSize: visual radius of foot for rendering (meters)
-   * footAccuracyDecay: accuracy multiplier per meter of foot extension beyond rest position
-   *   e.g., 0.15 means 15% accuracy loss per extra meter of reach
-   */
-  footOffsetForward: 0.20,   // Foot sits 0.20m ahead of body center
-  footOffsetLateral: 0.15,   // Foot sits 0.15m to the side of body center
-  footMaxReach: 0.40,        // Maximum 0.40m from body center
-  footSize: 0.15,            // Visual radius 0.15m (smaller than player 0.30m)
-  footAccuracyDecay: 0.15,   // 15% accuracy loss per meter of extra reach
+  footOffsetForward: 0.20,
+  footOffsetLateral: 0.15,
+  footMaxReach: 0.40,
+  footSize: 0.15,
+  footAccuracyDecay: 0.15,
   
-  // Default foot parameters for all players (can be overridden per player)
-  defaultDominantFoot: "R" as const,  // All players start right-footed
-  defaultWeakFootFreq: 0,             // 0/10: never use weak foot initially
-  defaultWeakFootAccuracy: 5,         // 5/10: average weak foot accuracy
+  defaultDominantFoot: "R" as const,
+  defaultWeakFootFreq: 0,
+  defaultWeakFootAccuracy: 5,
   
   // ★ v8.9.1: Dribble ball separation physics
-  /**
-   * During dribble, the ball cycles between "touch" (foot contact) and "push" (ball ahead of foot).
-   * ballControl (0-10) determines how far the ball separates during push phase.
-   *   10 = ball barely leaves foot (Messi-like close control)
-   *    0 = ball pushed far ahead (poor control, vulnerable to tackle)
-   *    5 = average control (default)
-   *
-   * Touch cycle:
-   *   touchPhase: 0..1 oscillates via sin(). 0 = ball at foot, 1 = ball at max push distance
-   *   pushDistMin: minimum push distance (high control) in meters
-   *   pushDistMax: maximum push distance (low control) in meters
-   *   touchCycleSpeed: how fast the touch cycle oscillates (radians/sec)
-   */
-  defaultBallControl: 5,       // 5/10: average ball control for all players
-  dribblePushDistMin: 0.15,    // High control: ball stays 0.15m from foot
-  dribblePushDistMax: 2.5,     // Low control: ball pushed up to 2.5m ahead
-  dribbleTouchCycleSpeed: 5.0, // Oscillation speed (rad/s) - ~0.6s per touch cycle
-  dribbleTouchFootSwing: 0.12, // How far foot swings forward during touch (meters)
+  defaultBallControl: 5,
+  dribblePushDistMin: 0.15,
+  dribblePushDistMax: 2.5,
+  dribbleTouchCycleSpeed: 5.0,
+  dribbleTouchFootSwing: 0.12,
   
   // ★ v8.9.1: Foot animation parameters
-  /**
-   * Feet animate during actions: kick swing, dribble touch, tackle lunge.
-   * footKickSwingDist: how far foot swings forward during kick (meters)
-   * footKickSwingDuration: duration of kick swing animation (seconds)
-   * footTackleLungeDist: how far foot extends during tackle (meters)
-   * footTackleLungeDuration: duration of tackle lunge animation (seconds)
-   */
-  footKickSwingDist: 0.30,      // Foot swings 0.30m forward during kick
-  footKickSwingDuration: 0.20,  // Kick animation lasts 0.20s
-  footTackleLungeDist: 0.35,    // Foot extends 0.35m during tackle
-  footTackleLungeDuration: 0.25, // Tackle animation lasts 0.25s
+  footKickSwingDist: 0.30,
+  footKickSwingDuration: 0.20,
+  footTackleLungeDist: 0.35,
+  footTackleLungeDuration: 0.25,
+
+  // ★ v9.1.0: Defensive AI parameters
+  defInterceptLeadTime: 0.6,    // How far ahead (seconds) to predict ball carrier position
+  defTackleApproachAngle: 0.7,  // 0=direct chase, 1=full interception angle
+  defPassLaneCoverDist: 8.0,    // Max distance to cover a pass lane
+  defShotBlockDist: 12.0,       // Max distance to attempt shot block positioning
 };
 
 // ★ Formation definitions (all coordinates are for the "left" team attacking right)
@@ -151,53 +127,58 @@ export interface FormationDef {
   id: FormationId;
   label: string;
   positions: { x: number; y: number }[];
-  // Role mapping: slot index -> role
   roles: ("GK" | "DEF" | "MID" | "FWD")[];
+  // ★ v9.1.0: Realistic jersey numbers per formation
+  // Index 0 = slot 0 (GK), index 1 = slot 1, etc.
+  jerseyNumbers: number[];
 }
 
 // 4-4-2 Formation (scaled for 105m x 68m soccer pitch)
+// Standard numbering: GK=1, RB=2, CB=4,5, LB=3, RM=7, CM=6,8, LM=11, ST=9,10
 const FORM_442_POS = [
-  { x: -48.0, y: 0 },       // 0  GK
-  { x: -36.0, y: -24.0 },   // 1  LB
-  { x: -36.0, y: -8.0 },    // 2  CB
-  { x: -36.0, y: 8.0 },     // 3  CB
-  { x: -36.0, y: 24.0 },    // 4  RB
-  { x: -20.0, y: -28.0 },   // 5  LM
-  { x: -20.0, y: -9.0 },    // 6  CM
-  { x: -20.0, y: 9.0 },     // 7  CM
-  { x: -20.0, y: 28.0 },    // 8  RM
-  { x: -8.0, y: -10.0 },    // 9  ST
-  { x: -8.0, y: 10.0 },     // 10 ST
+  { x: -48.0, y: 0 },       // 0  GK     → #1
+  { x: -36.0, y: -24.0 },   // 1  LB     → #3
+  { x: -36.0, y: -8.0 },    // 2  CB     → #4
+  { x: -36.0, y: 8.0 },     // 3  CB     → #5
+  { x: -36.0, y: 24.0 },    // 4  RB     → #2
+  { x: -20.0, y: -28.0 },   // 5  LM     → #11
+  { x: -20.0, y: -9.0 },    // 6  CM     → #6
+  { x: -20.0, y: 9.0 },     // 7  CM     → #8
+  { x: -20.0, y: 28.0 },    // 8  RM     → #7
+  { x: -8.0, y: -10.0 },    // 9  ST     → #9
+  { x: -8.0, y: 10.0 },     // 10 ST     → #10
 ];
 
 // 4-2-3-1 Formation
+// Standard numbering: GK=1, RB=2, CB=4,5, LB=3, CDM=6,8, LAM=11, CAM=10, RAM=7, ST=9
 const FORM_4231_POS = [
-  { x: -48.0, y: 0 },       // 0  GK
-  { x: -36.0, y: -24.0 },   // 1  LB
-  { x: -36.0, y: -8.0 },    // 2  CB
-  { x: -36.0, y: 8.0 },     // 3  CB
-  { x: -36.0, y: 24.0 },    // 4  RB
-  { x: -24.0, y: -7.0 },    // 5  CDM
-  { x: -24.0, y: 7.0 },     // 6  CDM
-  { x: -12.0, y: -22.0 },   // 7  LAM
-  { x: -12.0, y: 0 },       // 8  CAM
-  { x: -12.0, y: 22.0 },    // 9  RAM
-  { x: -5.0, y: 0 },        // 10 ST
+  { x: -48.0, y: 0 },       // 0  GK     → #1
+  { x: -36.0, y: -24.0 },   // 1  LB     → #3
+  { x: -36.0, y: -8.0 },    // 2  CB     → #4
+  { x: -36.0, y: 8.0 },     // 3  CB     → #5
+  { x: -36.0, y: 24.0 },    // 4  RB     → #2
+  { x: -24.0, y: -7.0 },    // 5  CDM    → #6
+  { x: -24.0, y: 7.0 },     // 6  CDM    → #8
+  { x: -12.0, y: -22.0 },   // 7  LAM    → #11
+  { x: -12.0, y: 0 },       // 8  CAM    → #10
+  { x: -12.0, y: 22.0 },    // 9  RAM    → #7
+  { x: -5.0, y: 0 },        // 10 ST     → #9
 ];
 
 // 3-4-3 Formation
+// Standard numbering: GK=1, CB=4,5,3, LWB=6, CM=8,10, RWB=2, LW=11, ST=9, RW=7
 const FORM_343_POS = [
-  { x: -48.0, y: 0 },       // 0  GK
-  { x: -36.0, y: -18.0 },   // 1  CB
-  { x: -36.0, y: 0 },       // 2  CB
-  { x: -36.0, y: 18.0 },    // 3  CB
-  { x: -22.0, y: -26.0 },   // 4  LWB
-  { x: -22.0, y: -8.0 },    // 5  CM
-  { x: -22.0, y: 8.0 },     // 6  CM
-  { x: -22.0, y: 26.0 },    // 7  RWB
-  { x: -8.0, y: -18.0 },    // 8  LW
-  { x: -5.0, y: 0 },        // 9  ST
-  { x: -8.0, y: 18.0 },     // 10 RW
+  { x: -48.0, y: 0 },       // 0  GK     → #1
+  { x: -36.0, y: -18.0 },   // 1  CB     → #3
+  { x: -36.0, y: 0 },       // 2  CB     → #4
+  { x: -36.0, y: 18.0 },    // 3  CB     → #5
+  { x: -22.0, y: -26.0 },   // 4  LWB    → #6
+  { x: -22.0, y: -8.0 },    // 5  CM     → #8
+  { x: -22.0, y: 8.0 },     // 6  CM     → #10
+  { x: -22.0, y: 26.0 },    // 7  RWB    → #2
+  { x: -8.0, y: -18.0 },    // 8  LW     → #11
+  { x: -5.0, y: 0 },        // 9  ST     → #9
+  { x: -8.0, y: 18.0 },     // 10 RW     → #7
 ];
 
 export const FORMATIONS: Record<FormationId, FormationDef> = {
@@ -206,18 +187,21 @@ export const FORMATIONS: Record<FormationId, FormationDef> = {
     label: "4-4-2",
     positions: FORM_442_POS,
     roles: ["GK", "DEF", "DEF", "DEF", "DEF", "MID", "MID", "MID", "MID", "FWD", "FWD"],
+    jerseyNumbers: [1, 3, 4, 5, 2, 11, 6, 8, 7, 9, 10],
   },
   "4-2-3-1": {
     id: "4-2-3-1",
     label: "4-2-3-1",
     positions: FORM_4231_POS,
     roles: ["GK", "DEF", "DEF", "DEF", "DEF", "MID", "MID", "MID", "MID", "MID", "FWD"],
+    jerseyNumbers: [1, 3, 4, 5, 2, 6, 8, 11, 10, 7, 9],
   },
   "3-4-3": {
     id: "3-4-3",
     label: "3-4-3",
     positions: FORM_343_POS,
     roles: ["GK", "DEF", "DEF", "DEF", "MID", "MID", "MID", "MID", "FWD", "FWD", "FWD"],
+    jerseyNumbers: [1, 3, 4, 5, 6, 8, 10, 2, 11, 9, 7],
   },
 };
 

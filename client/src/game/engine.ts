@@ -247,7 +247,7 @@ export function mkPlayers(blueFormation: FormationId = "4-4-2", redFormation: Fo
       idx: pl.length,
       pos: { ...home },
       vel: v(0, 0),
-      team: -1, num: i + 1, home, face,
+      team: -1, num: FORMATIONS[blueFormation].jerseyNumbers[i], home, face,
       act: "idle", tgt: { ...home }, dt: Math.random() * PExt.decisionInterval, isGK: i === 0, slot: i, role: roleForSlot(blueFormation, i), jumpY: 0,
       turnDebt: 0,
       staminaShort: 1,
@@ -266,7 +266,7 @@ export function mkPlayers(blueFormation: FormationId = "4-4-2", redFormation: Fo
       idx: pl.length,
       pos: { ...home },
       vel: v(0, 0),
-      team: 1, num: i + 1, home, face,
+      team: 1, num: FORMATIONS[redFormation].jerseyNumbers[i], home, face,
       act: "idle", tgt: { ...home }, dt: Math.random() * PExt.decisionInterval, isGK: i === 0, slot: i, role: roleForSlot(redFormation, i), jumpY: 0,
       turnDebt: 0,
       staminaShort: 1,
@@ -1351,43 +1351,174 @@ export function decideNoBall(st: State, idx: number) {
       return;
     }
     
-    // Enemy has ball: Press or block
-    // ★ v8.9.1: Target the BALL position, not the player.
-    // When ball is separated from dribbler (touch cycle push phase),
-    // defenders should target the ball to attempt a tackle.
+    // ★ v9.1.0: Completely rewritten defensive AI with predictive interception
+    // Key principles:
+    //   1. DEF/MID: Position to cut off dribble path (get AHEAD of carrier)
+    //   2. DEF/MID: Cover pass lanes between carrier and teammates
+    //   3. FWD/Wide: Press to restrict passing options
+    //   4. Never chase from behind - always aim to get in front
+    //   5. Shot blocking positioning when near goal
     if (ballOwner && ballOwner.team !== me.team) {
-      // Calculate ball separation from dribbler
-      const ballSep = vdist(b.pos, ballOwner.pos);
-      const isDribblerPushed = ballSep > 0.5; // Ball is meaningfully separated
+      const carrier = ballOwner;
+      const carrierVel = carrier.vel;
+      const carrierSpeed = vlen(carrierVel);
+      const carrierDir = carrierSpeed > 0.1 ? vnorm(carrierVel) : vnorm(vsub(v(-carrier.team * PExt.pitchHalfW, 0), carrier.pos));
+      const myGoal = v(me.team * PExt.pitchHalfW, 0);
+      const distCarrierToGoal = vdist(carrier.pos, myGoal);
       
-      // When ball is separated, nearby defenders rush to the ball (tackle opportunity)
-      if (isDribblerPushed && distToBall < 4.0) {
-        // ★ v8.9.1: Tackle targeting - aim for the ball, not the player
+      // Calculate ball separation from dribbler
+      const ballSep = vdist(b.pos, carrier.pos);
+      const isDribblerPushed = ballSep > 0.5;
+      
+      // ★ Predict where the carrier will be in ~0.6s
+      const leadTime = PExt.defInterceptLeadTime;
+      const predictedPos = pitchClamp(vadd(carrier.pos, vscl(carrierDir, carrierSpeed * leadTime)));
+      
+      // ★ Intercept point: position between carrier's predicted pos and our goal
+      const interceptBlend = PExt.defTackleApproachAngle; // 0.7 = mostly interception
+      const interceptPoint = vlerp(predictedPos, myGoal, interceptBlend * 0.15);
+      
+      // ★ DEF role: Primary defensive positioning
+      if (me.role === "DEF") {
+        // When ball is separated and close, go for the ball directly
+        if (isDribblerPushed && distToBall < 3.5) {
+          me.act = "move";
+          me.tgt = { ...b.pos };
+          me.face = vnorm(vsub(b.pos, me.pos));
+          return;
+        }
+        
+        // Close range: Position to block carrier's path toward goal
+        if (distToBall < 10.0) {
+          // Get between carrier and goal - position on the line from carrier to goal
+          const carrierToGoal = vnorm(vsub(myGoal, carrier.pos));
+          const blockDist = Math.max(2.0, distToBall * 0.4); // Stay 40% of distance ahead
+          const blockPoint = vadd(carrier.pos, vscl(carrierToGoal, blockDist));
+          
+          // Adjust laterally to cut off the predicted dribble direction
+          const lateralShift = vscl(vperp(carrierToGoal), carrierDir.y * 1.5);
+          me.act = "move";
+          me.tgt = pitchClamp(vadd(blockPoint, lateralShift));
+          me.face = vnorm(vsub(carrier.pos, me.pos));
+          return;
+        }
+        
+        // Medium range: Cover pass lanes and maintain defensive shape
+        // Find nearest enemy attacker to cover
+        let nearestAttacker: Player | null = null;
+        let nearestAttDist = Infinity;
+        for (const p of st.pl) {
+          if (p.team === me.team || p.idx === carrier.idx || p.isGK) continue;
+          const d = vdist(me.home, p.pos);
+          if (d < nearestAttDist && d < PExt.defPassLaneCoverDist) {
+            nearestAttDist = d;
+            nearestAttacker = p;
+          }
+        }
+        
+        if (nearestAttacker) {
+          // Position between carrier and this attacker (pass lane cut)
+          const coverPoint = vlerp(carrier.pos, nearestAttacker.pos, 0.4);
+          // But don't stray too far from home position
+          const safePoint = vlerp(me.home, coverPoint, 0.5);
+          me.act = "move";
+          me.tgt = pitchClamp(safePoint);
+          return;
+        }
+        
+        // Far: Shift formation toward ball side
+        const shiftX = clamp((ballPos.x - me.home.x) * 0.4, -4.0, 4.0);
+        const shiftY = clamp((ballPos.y - me.home.y) * 0.45, -5.0, 5.0);
         me.act = "move";
-        me.tgt = { ...b.pos }; // Target the actual ball position
-        me.face = vnorm(vsub(b.pos, me.pos));
+        me.tgt = pitchClamp(v(me.home.x + shiftX, me.home.y + shiftY));
         return;
       }
       
-      if (me.role === "FWD" && distToBall < 5.0) {
-        // FWD: Press aggressively
+      // ★ MID role: Aggressive interception and pass lane coverage
+      if (me.role === "MID") {
+        // When ball is separated and close, go for the ball
+        if (isDribblerPushed && distToBall < 3.5) {
+          me.act = "move";
+          me.tgt = { ...b.pos };
+          me.face = vnorm(vsub(b.pos, me.pos));
+          return;
+        }
+        
+        // Close range: Intercept by getting ahead of carrier
+        if (distToBall < 8.0) {
+          // Position to cut off the carrier's forward progress
+          // Aim for a point AHEAD of the carrier, between them and our goal
+          const aheadPoint = vadd(carrier.pos, vscl(carrierDir, Math.min(carrierSpeed * 0.8, 4.0)));
+          const cutoffPoint = vlerp(aheadPoint, myGoal, 0.1);
+          me.act = "move";
+          me.tgt = pitchClamp(cutoffPoint);
+          me.face = vnorm(vsub(carrier.pos, me.pos));
+          return;
+        }
+        
+        // Medium range: Cover passing lanes
+        // Find the most dangerous pass option near this midfielder's zone
+        let bestPassTarget: Player | null = null;
+        let bestThreat = -Infinity;
+        for (const p of st.pl) {
+          if (p.team === me.team || p.idx === carrier.idx || p.isGK) continue;
+          const dToMe = vdist(me.pos, p.pos);
+          if (dToMe > 12.0) continue;
+          // Threat = how far forward they are + how open they are
+          const forwardness = (p.pos.x * -me.team) / PExt.pitchHalfW;
+          const threat = forwardness * 3.0 - dToMe * 0.2;
+          if (threat > bestThreat) {
+            bestThreat = threat;
+            bestPassTarget = p;
+          }
+        }
+        
+        if (bestPassTarget) {
+          // Position on the passing lane between carrier and this target
+          const lanePoint = vlerp(carrier.pos, bestPassTarget.pos, 0.45);
+          me.act = "move";
+          me.tgt = pitchClamp(lanePoint);
+          return;
+        }
+        
+        // Compact toward ball
+        const shiftX = clamp((ballPos.x - me.home.x) * 0.5, -3.5, 3.5);
+        const shiftY = clamp((ballPos.y - me.home.y) * 0.5, -4.0, 4.0);
         me.act = "move";
-        me.tgt = vlerp(ballPos, v(me.team * PExt.pitchHalfW, 0), 0.1);
-      } else if (me.role === "MID" && distToBall < 4.5) {
-        // MID: Press moderately
-        me.act = "move";
-        me.tgt = vlerp(ballPos, v(me.team * PExt.pitchHalfW, 0), 0.15);
-      } else if (me.role === "DEF" && distToBall < 3.5) {
-        // ★ v8.9.1: DEF also presses when close enough
-        me.act = "move";
-        me.tgt = vlerp(ballPos, v(me.team * PExt.pitchHalfW, 0), 0.2);
-      } else {
-        // Others: Maintain formation with slight shift
-        const shiftX = clamp((ballPos.x - me.home.x) * 0.5, -2.5, 2.5);
-        const shiftY = clamp((ballPos.y - me.home.y) * 0.5, -3.0, 3.0);
-        me.act = "move";
-        me.tgt = v(me.home.x + shiftX, me.home.y + shiftY);
+        me.tgt = pitchClamp(v(me.home.x + shiftX, me.home.y + shiftY));
+        return;
       }
+      
+      // ★ FWD role: Press to restrict passing options, don't chase deep
+      if (me.role === "FWD") {
+        if (distToBall < 6.0) {
+          // Close: Press the carrier but aim to cut off their preferred pass
+          // Position slightly toward our goal to block forward passes
+          const pressPoint = vlerp(carrier.pos, myGoal, 0.08);
+          // Shift laterally to cover the nearest passing option
+          me.act = "move";
+          me.tgt = pitchClamp(pressPoint);
+          me.face = vnorm(vsub(carrier.pos, me.pos));
+          return;
+        }
+        
+        // Medium/Far: Stay in a pressing shape, don't drop too deep
+        // FWDs should maintain a high line to restrict opponent's buildup
+        const pressLineX = carrier.pos.x + me.team * 5.0; // Stay ~5m ahead of carrier
+        const shiftY = clamp((ballPos.y - me.home.y) * 0.3, -4.0, 4.0);
+        me.act = "move";
+        me.tgt = pitchClamp(v(
+          clamp(pressLineX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5),
+          me.home.y + shiftY
+        ));
+        return;
+      }
+      
+      // Fallback: shift toward ball
+      const shiftX = clamp((ballPos.x - me.home.x) * 0.4, -3.0, 3.0);
+      const shiftY = clamp((ballPos.y - me.home.y) * 0.4, -3.0, 3.0);
+      me.act = "move";
+      me.tgt = v(me.home.x + shiftX, me.home.y + shiftY);
       return;
     }
     

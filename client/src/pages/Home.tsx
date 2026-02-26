@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
 // --- game/ モジュールから必要なものをすべてインポート ---
-import { State, V } from '../game/types';
+import { State, V, SpeedMode } from '../game/types';
 import { P, FormationId, FORMATION_IDS, FORMATIONS } from '../game/constants';
 import { v, vadd, vscl } from '../game/math';
 import { mkState, doKickOff, update } from '../game/engine';
@@ -19,7 +19,7 @@ const RETRO_WHITE = "#eaeaea";
 const RETRO_DARK = "#0f0f23";
 
 // ============================================================
-// Formation Preview (mini pitch with dots)
+// Formation Preview (mini pitch with dots) - responsive
 // ============================================================
 function FormationPreview({ formationId, teamColor, mirror }: { formationId: FormationId; teamColor: string; mirror: boolean }) {
   const def = FORMATIONS[formationId];
@@ -29,7 +29,11 @@ function FormationPreview({ formationId, teamColor, mirror }: { formationId: For
   const my = 10;
 
   return (
-    <svg width={pw + mx * 2} height={ph + my * 2} style={{ display: "block", margin: "0 auto" }}>
+    <svg
+      viewBox={`0 0 ${pw + mx * 2} ${ph + my * 2}`}
+      style={{ display: "block", margin: "0 auto", width: "100%", maxWidth: "160px", height: "auto" }}
+      preserveAspectRatio="xMidYMid meet"
+    >
       {/* Mini pitch */}
       <rect x={mx} y={my} width={pw} height={ph} fill="#145e30" stroke="#2a8c4a" strokeWidth={1.5} rx={3} />
       {/* Center line */}
@@ -39,16 +43,16 @@ function FormationPreview({ formationId, teamColor, mirror }: { formationId: For
       {/* Players */}
       {def.positions.map((pos, i) => {
         // Normalize positions to fit mini pitch
-        // Original coords: x in [-48, -5], y in [-28, 28]
         const nx = (pos.x + 52.5) / 105; // 0..1
         const ny = (pos.y + 34) / 68;    // 0..1
         const px = mirror ? mx + pw - nx * pw : mx + nx * pw;
         const py = my + ny * ph;
+        const jerseyNum = def.jerseyNumbers[i];
         return (
           <g key={i}>
             <circle cx={px} cy={py} r={i === 0 ? 5 : 4} fill={teamColor} stroke="white" strokeWidth={1} />
             <text x={px} y={py + 1} textAnchor="middle" dominantBaseline="middle"
-              fill="white" fontSize="5" fontFamily={RETRO_FONT}>{i + 1}</text>
+              fill="white" fontSize="5" fontFamily={RETRO_FONT}>{jerseyNum}</text>
           </g>
         );
       })}
@@ -57,17 +61,16 @@ function FormationPreview({ formationId, teamColor, mirror }: { formationId: For
 }
 
 // ============================================================
-// SFC-Style Start Screen
+// SFC-Style Start Screen (fully responsive)
 // ============================================================
 function StartScreen({ onStart }: { onStart: (blueForm: FormationId, redForm: FormationId) => void }) {
   const [blueFormation, setBlueFormation] = useState<FormationId>("4-4-2");
   const [redFormation, setRedFormation] = useState<FormationId>("4-4-2");
   const [blinkVisible, setBlinkVisible] = useState(true);
-  const [selectedSide, setSelectedSide] = useState<"blue" | "red" | null>(null);
 
   // SFC-style blinking text
   useEffect(() => {
-    const interval = setInterval(() => setBlinkVisible(v => !v), 500);
+    const interval = setInterval(() => setBlinkVisible(prev => !prev), 500);
     return () => clearInterval(interval);
   }, []);
 
@@ -86,12 +89,84 @@ function StartScreen({ onStart }: { onStart: (blueForm: FormationId, redForm: Fo
     zIndex: 10,
   };
 
-  // Pixel border helper
   const pixelBorder = (color: string) => `3px solid ${color}`;
+
+  // Team card component (reusable for both teams)
+  const TeamCard = ({ team, formation, setFormation, color, borderColor, label }: {
+    team: "blue" | "red";
+    formation: FormationId;
+    setFormation: (fn: (f: FormationId) => FormationId) => void;
+    color: string;
+    borderColor: string;
+    label: string;
+  }) => (
+    <div style={{
+      background: team === "blue" ? "rgba(15,52,96,0.6)" : "rgba(96,15,15,0.6)",
+      border: pixelBorder(borderColor),
+      padding: "clamp(6px, 2vw, 16px)",
+      width: "100%",
+      maxWidth: "340px",
+      minWidth: 0,
+      boxSizing: "border-box",
+    }}>
+      <div style={{
+        textAlign: "center",
+        fontSize: "clamp(7px, 1.6vw, 12px)",
+        color,
+        marginBottom: "clamp(4px, 1vw, 10px)",
+        textShadow: "1px 1px 0px #000",
+        whiteSpace: "nowrap",
+      }}>
+        {label}
+      </div>
+
+      {/* Formation selector */}
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "center",
+        gap: "clamp(2px, 1vw, 8px)", marginBottom: "clamp(4px, 1vw, 10px)",
+      }}>
+        <button
+          onClick={() => setFormation(f => cycleFormation(f, -1))}
+          style={{
+            background: "transparent", border: "none", color: RETRO_GOLD,
+            fontSize: "clamp(12px, 2.2vw, 22px)", cursor: "pointer",
+            fontFamily: RETRO_FONT,
+            padding: "4px",
+            lineHeight: 1,
+          }}
+        >◀</button>
+        <div style={{
+          fontSize: "clamp(9px, 1.8vw, 14px)",
+          color: RETRO_WHITE,
+          minWidth: "clamp(60px, 12vw, 100px)",
+          textAlign: "center",
+          textShadow: "1px 1px 0px #000",
+        }}>
+          {formation}
+        </div>
+        <button
+          onClick={() => setFormation(f => cycleFormation(f, 1))}
+          style={{
+            background: "transparent", border: "none", color: RETRO_GOLD,
+            fontSize: "clamp(12px, 2.2vw, 22px)", cursor: "pointer",
+            fontFamily: RETRO_FONT,
+            padding: "4px",
+            lineHeight: 1,
+          }}
+        >▶</button>
+      </div>
+
+      <FormationPreview
+        formationId={formation}
+        teamColor={team === "blue" ? "#2563eb" : "#dc2626"}
+        mirror={team === "red"}
+      />
+    </div>
+  );
 
   return (
     <div style={{
-      width: "100vw", height: "100vh",
+      width: "100vw", height: "100dvh",
       background: RETRO_BG,
       display: "flex", flexDirection: "column",
       alignItems: "center", justifyContent: "center",
@@ -100,6 +175,8 @@ function StartScreen({ onStart }: { onStart: (blueForm: FormationId, redForm: Fo
       position: "relative",
       overflow: "hidden",
       imageRendering: "pixelated" as any,
+      padding: "clamp(8px, 2vh, 24px) clamp(8px, 3vw, 24px)",
+      boxSizing: "border-box",
     }}>
       {/* Scanline overlay */}
       <div style={scanlineStyle} />
@@ -113,20 +190,20 @@ function StartScreen({ onStart }: { onStart: (blueForm: FormationId, redForm: Fo
       }} />
 
       {/* Title */}
-      <div style={{ position: "relative", zIndex: 5, textAlign: "center", marginBottom: "2rem" }}>
+      <div style={{ position: "relative", zIndex: 5, textAlign: "center", marginBottom: "clamp(8px, 2vh, 24px)", flexShrink: 0 }}>
         <div style={{
-          fontSize: "clamp(16px, 4vw, 36px)",
+          fontSize: "clamp(14px, 4vw, 36px)",
           color: RETRO_GOLD,
           textShadow: `3px 3px 0px ${RETRO_ACCENT}, -1px -1px 0px #000`,
-          letterSpacing: "4px",
-          marginBottom: "0.5rem",
+          letterSpacing: "clamp(1px, 0.5vw, 4px)",
+          marginBottom: "clamp(2px, 0.5vh, 8px)",
         }}>
           SOCCER SIM
         </div>
         <div style={{
-          fontSize: "clamp(6px, 1.5vw, 10px)",
+          fontSize: "clamp(5px, 1.2vw, 10px)",
           color: RETRO_GREEN,
-          letterSpacing: "2px",
+          letterSpacing: "clamp(0px, 0.3vw, 2px)",
         }}>
           ⚽ 11 vs 11 SIMULATION ENGINE ⚽
         </div>
@@ -136,150 +213,52 @@ function StartScreen({ onStart }: { onStart: (blueForm: FormationId, redForm: Fo
       <div style={{
         position: "relative", zIndex: 5,
         display: "flex",
-        gap: "clamp(8px, 3vw, 40px)",
-        flexWrap: "wrap",
+        gap: "clamp(6px, 2vw, 32px)",
         justifyContent: "center",
-        alignItems: "flex-start",
-        padding: "0 1rem",
-        maxWidth: "900px",
+        alignItems: "center",
         width: "100%",
+        maxWidth: "800px",
+        flexShrink: 1,
+        minHeight: 0,
       }}>
         {/* Blue Team */}
-        <div style={{
-          background: "rgba(15,52,96,0.6)",
-          border: pixelBorder(selectedSide === "blue" ? RETRO_GOLD : "#2563eb"),
-          padding: "clamp(8px, 2vw, 20px)",
-          minWidth: "180px",
-          flex: "1 1 200px",
-          maxWidth: "380px",
-          cursor: "pointer",
-          transition: "border-color 0.2s",
-        }}
-          onClick={() => setSelectedSide("blue")}
-        >
-          <div style={{
-            textAlign: "center",
-            fontSize: "clamp(8px, 1.8vw, 14px)",
-            color: "#60a5fa",
-            marginBottom: "0.8rem",
-            textShadow: "1px 1px 0px #000",
-          }}>
-            ▶ BLUE TEAM
-          </div>
-
-          {/* Formation selector */}
-          <div style={{
-            display: "flex", alignItems: "center", justifyContent: "center",
-            gap: "8px", marginBottom: "0.8rem",
-          }}>
-            <button
-              onClick={(e) => { e.stopPropagation(); setBlueFormation(f => cycleFormation(f, -1)); }}
-              style={{
-                background: "transparent", border: "none", color: RETRO_GOLD,
-                fontSize: "clamp(14px, 2.5vw, 24px)", cursor: "pointer",
-                fontFamily: RETRO_FONT,
-                padding: "4px 8px",
-              }}
-            >◀</button>
-            <div style={{
-              fontSize: "clamp(10px, 2vw, 16px)",
-              color: RETRO_WHITE,
-              minWidth: "100px",
-              textAlign: "center",
-              textShadow: "1px 1px 0px #000",
-            }}>
-              {blueFormation}
-            </div>
-            <button
-              onClick={(e) => { e.stopPropagation(); setBlueFormation(f => cycleFormation(f, 1)); }}
-              style={{
-                background: "transparent", border: "none", color: RETRO_GOLD,
-                fontSize: "clamp(14px, 2.5vw, 24px)", cursor: "pointer",
-                fontFamily: RETRO_FONT,
-                padding: "4px 8px",
-              }}
-            >▶</button>
-          </div>
-
-          <FormationPreview formationId={blueFormation} teamColor="#2563eb" mirror={false} />
+        <div style={{ flex: "1 1 0", minWidth: 0, display: "flex", justifyContent: "center" }}>
+          <TeamCard
+            team="blue"
+            formation={blueFormation}
+            setFormation={setBlueFormation}
+            color="#60a5fa"
+            borderColor="#2563eb"
+            label="▶ BLUE TEAM"
+          />
         </div>
 
         {/* VS */}
         <div style={{
-          display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: "clamp(12px, 3vw, 28px)",
+          fontSize: "clamp(10px, 2.5vw, 24px)",
           color: RETRO_ACCENT,
           textShadow: "2px 2px 0px #000",
           fontFamily: RETRO_FONT,
-          alignSelf: "center",
-          padding: "0 4px",
+          flexShrink: 0,
         }}>
           VS
         </div>
 
         {/* Red Team */}
-        <div style={{
-          background: "rgba(96,15,15,0.6)",
-          border: pixelBorder(selectedSide === "red" ? RETRO_GOLD : "#dc2626"),
-          padding: "clamp(8px, 2vw, 20px)",
-          minWidth: "180px",
-          flex: "1 1 200px",
-          maxWidth: "380px",
-          cursor: "pointer",
-          transition: "border-color 0.2s",
-        }}
-          onClick={() => setSelectedSide("red")}
-        >
-          <div style={{
-            textAlign: "center",
-            fontSize: "clamp(8px, 1.8vw, 14px)",
-            color: "#f87171",
-            marginBottom: "0.8rem",
-            textShadow: "1px 1px 0px #000",
-          }}>
-            RED TEAM ◀
-          </div>
-
-          {/* Formation selector */}
-          <div style={{
-            display: "flex", alignItems: "center", justifyContent: "center",
-            gap: "8px", marginBottom: "0.8rem",
-          }}>
-            <button
-              onClick={(e) => { e.stopPropagation(); setRedFormation(f => cycleFormation(f, -1)); }}
-              style={{
-                background: "transparent", border: "none", color: RETRO_GOLD,
-                fontSize: "clamp(14px, 2.5vw, 24px)", cursor: "pointer",
-                fontFamily: RETRO_FONT,
-                padding: "4px 8px",
-              }}
-            >◀</button>
-            <div style={{
-              fontSize: "clamp(10px, 2vw, 16px)",
-              color: RETRO_WHITE,
-              minWidth: "100px",
-              textAlign: "center",
-              textShadow: "1px 1px 0px #000",
-            }}>
-              {redFormation}
-            </div>
-            <button
-              onClick={(e) => { e.stopPropagation(); setRedFormation(f => cycleFormation(f, 1)); }}
-              style={{
-                background: "transparent", border: "none", color: RETRO_GOLD,
-                fontSize: "clamp(14px, 2.5vw, 24px)", cursor: "pointer",
-                fontFamily: RETRO_FONT,
-                padding: "4px 8px",
-              }}
-            >▶</button>
-          </div>
-
-          <FormationPreview formationId={redFormation} teamColor="#dc2626" mirror={true} />
+        <div style={{ flex: "1 1 0", minWidth: 0, display: "flex", justifyContent: "center" }}>
+          <TeamCard
+            team="red"
+            formation={redFormation}
+            setFormation={setRedFormation}
+            color="#f87171"
+            borderColor="#dc2626"
+            label="RED TEAM ◀"
+          />
         </div>
       </div>
 
       {/* Kick Off Button */}
-      <div style={{ position: "relative", zIndex: 5, marginTop: "2rem", textAlign: "center" }}>
+      <div style={{ position: "relative", zIndex: 5, marginTop: "clamp(8px, 2vh, 24px)", textAlign: "center", flexShrink: 0 }}>
         <button
           onClick={() => onStart(blueFormation, redFormation)}
           style={{
@@ -287,10 +266,10 @@ function StartScreen({ onStart }: { onStart: (blueForm: FormationId, redForm: Fo
             border: pixelBorder(RETRO_GOLD),
             color: RETRO_WHITE,
             fontFamily: RETRO_FONT,
-            fontSize: "clamp(10px, 2.2vw, 18px)",
-            padding: "clamp(8px, 1.5vw, 16px) clamp(20px, 4vw, 48px)",
+            fontSize: "clamp(8px, 2vw, 16px)",
+            padding: "clamp(6px, 1.2vh, 14px) clamp(16px, 4vw, 44px)",
             cursor: "pointer",
-            letterSpacing: "3px",
+            letterSpacing: "clamp(1px, 0.3vw, 3px)",
             textShadow: "2px 2px 0px #000",
             boxShadow: `0 4px 0px ${RETRO_DARK}, 0 6px 12px rgba(0,0,0,0.5)`,
             transition: "transform 0.1s",
@@ -305,12 +284,13 @@ function StartScreen({ onStart }: { onStart: (blueForm: FormationId, redForm: Fo
       {/* Footer credits */}
       <div style={{
         position: "relative", zIndex: 5,
-        marginTop: "1.5rem",
-        fontSize: "clamp(5px, 1vw, 8px)",
+        marginTop: "clamp(4px, 1vh, 12px)",
+        fontSize: "clamp(4px, 0.8vw, 7px)",
         color: "rgba(234,234,234,0.4)",
         letterSpacing: "1px",
+        flexShrink: 0,
       }}>
-        © 2026 SOCCER SIM ENGINE v8.9.2
+        © 2026 SOCCER SIM ENGINE v9.1.0
       </div>
     </div>
   );
@@ -482,13 +462,13 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
     ctx.fillText(st.flashTxt, ox, oy);
   }
 
-  // 9. SFC-style HUD
-  const hudW = Math.min(w * 0.65, sval(22));
-  const hudH = Math.max(40, h * 0.06);
+  // 9. SFC-style HUD (responsive)
+  const hudW = Math.min(w * 0.7, sval(22));
+  const hudH = Math.max(32, h * 0.055);
   const hx = (w - hudW)/2;
-  const hy = 12;
+  const hy = 8;
 
-  // HUD background with pixel border feel
+  // HUD background
   ctx.fillStyle = RETRO_DARK;
   ctx.fillRect(hx, hy, hudW, hudH);
   ctx.strokeStyle = RETRO_GOLD;
@@ -496,27 +476,27 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
   ctx.strokeRect(hx, hy, hudW, hudH);
   
   // Team color bars
-  ctx.fillStyle = "#2563eb"; ctx.fillRect(hx, hy, 5, hudH);
-  ctx.fillStyle = "#dc2626"; ctx.fillRect(hx + hudW - 5, hy, 5, hudH);
+  ctx.fillStyle = "#2563eb"; ctx.fillRect(hx, hy, 4, hudH);
+  ctx.fillStyle = "#dc2626"; ctx.fillRect(hx + hudW - 4, hy, 4, hudH);
 
-  // Team names (retro font)
-  const hudFontSize = Math.max(7, hudH * 0.28);
+  // Team names
+  const hudFontSize = Math.max(6, hudH * 0.26);
   ctx.fillStyle = "#60a5fa";
   ctx.font = `${hudFontSize}px ${RETRO_FONT}`;
-  ctx.textAlign = "left"; ctx.fillText("BLUE", hx + 12, hy + hudH * 0.55);
+  ctx.textAlign = "left"; ctx.fillText("BLU", hx + 10, hy + hudH * 0.55);
   ctx.fillStyle = "#f87171";
-  ctx.textAlign = "right"; ctx.fillText("RED", hx + hudW - 12, hy + hudH * 0.55);
+  ctx.textAlign = "right"; ctx.fillText("RED", hx + hudW - 10, hy + hudH * 0.55);
   
   // Score
-  const scoreFontSize = Math.max(10, hudH * 0.45);
+  const scoreFontSize = Math.max(8, hudH * 0.4);
   ctx.fillStyle = RETRO_WHITE;
   ctx.font = `${scoreFontSize}px ${RETRO_FONT}`;
   ctx.textAlign = "center";
   ctx.fillText(`${st.sL} - ${st.sR}`, w/2, hy + hudH * 0.6);
 
   // Timer tab
-  const tabW = Math.max(80, hudW * 0.25);
-  const tabH = Math.max(22, hudH * 0.55);
+  const tabW = Math.max(60, hudW * 0.22);
+  const tabH = Math.max(18, hudH * 0.5);
   ctx.fillStyle = RETRO_DARK;
   ctx.fillRect(w/2 - tabW/2, hy + hudH, tabW, tabH);
   ctx.strokeStyle = RETRO_GOLD;
@@ -525,20 +505,66 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
   
   const min = Math.floor(st.time / 60);
   const sec = Math.floor(st.time % 60);
-  const timerFontSize = Math.max(7, tabH * 0.5);
+  const timerFontSize = Math.max(6, tabH * 0.45);
   ctx.fillStyle = RETRO_GREEN;
   ctx.font = `${timerFontSize}px ${RETRO_FONT}`;
   ctx.fillText(`${min.toString().padStart(2,'0')}:${sec.toString().padStart(2,'0')}`, w/2, hy + hudH + tabH * 0.65);
 };
 
 // ============================================================
-// Game Screen (canvas-based simulation)
+// Speed Toggle Button (SFC retro style)
+// ============================================================
+const SPEED_MODES: SpeedMode[] = ["LOW", "MID", "FAST"];
+const SPEED_COLORS: Record<SpeedMode, string> = {
+  LOW: "#60a5fa",
+  MID: RETRO_GREEN,
+  FAST: RETRO_ACCENT,
+};
+
+function SpeedToggle({ speed, onToggle }: { speed: SpeedMode; onToggle: () => void }) {
+  return (
+    <button
+      onClick={onToggle}
+      style={{
+        background: RETRO_DARK,
+        border: `2px solid ${SPEED_COLORS[speed]}`,
+        color: SPEED_COLORS[speed],
+        fontFamily: RETRO_FONT,
+        fontSize: "clamp(5px, 1vw, 9px)",
+        padding: "clamp(3px, 0.6vh, 6px) clamp(6px, 1.5vw, 12px)",
+        cursor: "pointer",
+        letterSpacing: "1px",
+        transition: "border-color 0.2s, color 0.2s",
+        whiteSpace: "nowrap",
+        lineHeight: 1.2,
+      }}
+    >
+      SPD:{speed}
+    </button>
+  );
+}
+
+// ============================================================
+// Game Screen (canvas-based simulation) - fully responsive
 // ============================================================
 function GameScreen({ blueFormation, redFormation, onBack }: { blueFormation: FormationId; redFormation: FormationId; onBack: () => void }) {
   const cvsRef = useRef<HTMLCanvasElement>(null);
   const stRef = useRef<State>(mkState(blueFormation, redFormation));
   const reqRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
+  const [speed, setSpeed] = useState<SpeedMode>("MID");
+
+  // Sync speed to state ref
+  useEffect(() => {
+    stRef.current.speed = speed;
+  }, [speed]);
+
+  const toggleSpeed = useCallback(() => {
+    setSpeed(prev => {
+      const idx = SPEED_MODES.indexOf(prev);
+      return SPEED_MODES[(idx + 1) % SPEED_MODES.length];
+    });
+  }, []);
 
   useEffect(() => {
     const canvas = cvsRef.current;
@@ -558,9 +584,9 @@ function GameScreen({ blueFormation, redFormation, onBack }: { blueFormation: Fo
       canvas.style.width = vw + "px";
       canvas.style.height = vh + "px";
       
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.scale(dpr, dpr);
+      const ctx2 = canvas.getContext('2d');
+      if (ctx2) {
+        ctx2.scale(dpr, dpr);
       }
     };
     window.addEventListener('resize', onResize);
@@ -594,7 +620,7 @@ function GameScreen({ blueFormation, redFormation, onBack }: { blueFormation: Fo
       alignItems: "center", 
       justifyContent: "center", 
       width: "100vw", 
-      height: "100vh", 
+      height: "100dvh", 
       background: "#0a0a10",
       overflow: "hidden",
       position: "relative",
@@ -607,26 +633,42 @@ function GameScreen({ blueFormation, redFormation, onBack }: { blueFormation: Fo
           touchAction: "none" 
         }}
       />
-      {/* Back button (retro style) */}
-      <button
-        onClick={onBack}
-        style={{
-          position: "absolute",
-          bottom: "16px",
-          left: "16px",
-          background: RETRO_DARK,
-          border: `2px solid ${RETRO_GOLD}`,
-          color: RETRO_GOLD,
-          fontFamily: RETRO_FONT,
-          fontSize: "clamp(6px, 1.2vw, 10px)",
-          padding: "6px 14px",
-          cursor: "pointer",
-          zIndex: 20,
-          letterSpacing: "1px",
-        }}
-      >
-        ◀ MENU
-      </button>
+      {/* Bottom control bar */}
+      <div style={{
+        position: "absolute",
+        bottom: "clamp(8px, 2vh, 16px)",
+        left: "clamp(8px, 2vw, 16px)",
+        right: "clamp(8px, 2vw, 16px)",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        zIndex: 20,
+        pointerEvents: "none",
+      }}>
+        {/* Menu button */}
+        <button
+          onClick={onBack}
+          style={{
+            background: RETRO_DARK,
+            border: `2px solid ${RETRO_GOLD}`,
+            color: RETRO_GOLD,
+            fontFamily: RETRO_FONT,
+            fontSize: "clamp(5px, 1vw, 9px)",
+            padding: "clamp(3px, 0.6vh, 6px) clamp(6px, 1.5vw, 12px)",
+            cursor: "pointer",
+            letterSpacing: "1px",
+            pointerEvents: "auto",
+            lineHeight: 1.2,
+          }}
+        >
+          ◀ MENU
+        </button>
+
+        {/* Speed toggle */}
+        <div style={{ pointerEvents: "auto" }}>
+          <SpeedToggle speed={speed} onToggle={toggleSpeed} />
+        </div>
+      </div>
     </div>
   );
 }
