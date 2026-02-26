@@ -1072,15 +1072,20 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
     if (tm.passAndMoveTimer > 0) {
       score += 10.0; // Very strong bonus for pass-and-move target
     }
-    // ★ v9.13.0: WantsBall bonus - player actively requesting the ball in open space
+    // ★ v9.19.0: WantsBall bonus - player actively requesting the ball (making a run)
     if (tm.wantsBall && !isBlocked) {
-      score += 12.0; // Very strong bonus for players showing for the ball
-      // Extra bonus if the wanting player is ahead of the passer (forward run)
+      score += 14.0; // Was 12.0 - strong bonus for players showing for the ball
+      // ★ v9.19.0: Extra bonus for OVERTAKING runs (player ahead of carrier making a run)
       const wantGp = (tm.pos.x - me.pos.x) * -me.team;
-      if (wantGp > 2.0) score += 5.0; // Forward-running player gets extra attraction
-      // ★ v9.13.0: Compound bonus — player in forward space + wants ball + open lane = ideal target
+      if (wantGp > 2.0) score += 8.0; // Was 5.0 - forward-running player gets strong attraction
+      if (wantGp > 5.0) score += 6.0; // Deep forward run = even more attractive
+      // ★ v9.19.0: Compound bonus — player in forward space + wants ball + open lane = ideal target
       if (wantGp > 5.0 && recvSpace > 5.0) {
-        score += 8.0; // Very strong compound bonus for player deep in space
+        score += 10.0; // Was 8.0 - very strong compound bonus for player deep in space
+      }
+      // ★ v9.19.0: FWD/wide MID making overtaking run = highest priority pass target
+      if (wantGp > 3.0 && (tm.role === "FWD" || Math.abs(tm.home.y) > 15.0)) {
+        score += 8.0; // Extra bonus for FWD/wide players making forward runs
       }
     }
     
@@ -2344,102 +2349,137 @@ export function decideNoBall(st: State, idx: number) {
       }
     }
 
-    // --- Phase 5.5: Off-the-Ball Movement (★ v9.12.0: Forward runs + lateral shifts) ---
+    // --- Phase 5.5: Off-the-Ball Movement (★ v9.19.0: Aggressive overtaking runs) ---
+    // Key principle: FWD and wide MID should ALWAYS try to get ahead of the ball
+    // and run into space beyond the carrier, creating passing options
     if (!me.isGK && (me.role === "MID" || me.role === "FWD")) {
       me.burstCD = Math.max(0, (me.burstCD ?? 0) - P.decisionInterval);
 
       const carrier = ballOwner!;
       const attackDir = -me.team;
-
-      const iAmAhead = (me.pos.x - carrier.pos.x) * attackDir > 0.6;
       const dToCarrier = vdist(me.pos, carrier.pos);
-      const inRange = dToCarrier >= 3.0 && dToCarrier <= 18.0; // Extended from 14.0
-
-      if (inRange && me.burstCD <= 0) {
-        const blocked = laneBlocked(st, carrier.pos, me.pos, me.team);
+      const iAmAhead = (me.pos.x - carrier.pos.x) * attackDir > 1.0;
+      const iAmBehind = !iAmAhead;
+      const isWidePlayer = Math.abs(me.home.y) > 15.0; // LM/RM/LW/RW
+      const isFwd = me.role === "FWD";
+      
+      // ★ v9.19.0: Helper - find best forward run target
+      const findForwardRunTarget = (runDist: number, lateralRange: number): V | null => {
+        // Try multiple candidate positions to find the best open space ahead
+        let bestTarget: V | null = null;
+        let bestScore = -Infinity;
         
-        // ★ v9.12.0: FORWARD RUN into space (new behavior)
-        // When carrier has ball and I'm in range, check if there's space ahead to run into
-        const myForwardX = me.pos.x - attackDir * 6.0; // 6m ahead of current position
-        const forwardPoint = pitchClamp(v(myForwardX, me.pos.y + rng(-3.0, 3.0)));
-        
-        // Check if forward space is open (no opponents within 4m)
-        let forwardSpaceOpen = true;
-        let minOppDistForward = Infinity;
-        for (const opp of st.pl) {
-          if (opp.team === me.team) continue;
-          const d = vdist(forwardPoint, opp.pos);
-          if (d < minOppDistForward) minOppDistForward = d;
-          if (d < 3.5) { forwardSpaceOpen = false; break; }
+        for (let attempt = 0; attempt < 5; attempt++) {
+          // Run target: ahead of carrier, maintaining side discipline
+          const runX = carrier.pos.x - attackDir * (runDist + rng(0, 4.0));
+          const runY = me.home.y * 0.85 + rng(-lateralRange, lateralRange);
+          const candidate = pitchClamp(v(runX, runY));
+          
+          // Check offside
+          if (isOffside(st, { ...me, pos: candidate } as Player, carrier.pos)) continue;
+          
+          // Check space (no opponents within 3m)
+          let minOppDist = Infinity;
+          for (const opp of st.pl) {
+            if (opp.team === me.team) continue;
+            const d = vdist(candidate, opp.pos);
+            if (d < minOppDist) minOppDist = d;
+          }
+          if (minOppDist < 2.5) continue;
+          
+          // Check pass lane isn't blocked
+          const blocked = laneBlocked(st, carrier.pos, candidate, me.team);
+          
+          // Score this candidate
+          let score = 0;
+          score += minOppDist * 2.0; // More open space = better
+          score += ((candidate.x - carrier.pos.x) * attackDir) * 1.5; // Further ahead = better
+          if (!blocked) score += 5.0; // Unblocked pass lane = much better
+          // Stay on correct side
+          if (candidate.y * me.home.y > 0) score += 3.0;
+          
+          if (score > bestScore) {
+            bestScore = score;
+            bestTarget = candidate;
+          }
         }
-        
-        // Check if running forward wouldn't be offside
-        const wouldBeOffside = isOffside(st, { ...me, pos: forwardPoint } as Player, carrier.pos);
-        
-        if (forwardSpaceOpen && !wouldBeOffside && !blocked && iAmAhead) {
-          // Forward run: move deeper into attacking territory
-          const runDist = me.role === "FWD" ? 8.0 : 5.0;
-          // ★ v9.18.0: Maintain lateral discipline during forward runs
-          // Stay on assigned side, only slight variation
-          const runY = me.home.y * 0.8 + rng(-2.0, 2.0); // Stay near home Y
-          const runTarget = pitchClamp(v(
-            me.pos.x - attackDir * runDist,
-            runY
-          ));
-          // Verify run target is also in open space
-          let runTargetOpen = true;
-          for (const opp of st.pl) {
-            if (opp.team === me.team) continue;
-            if (vdist(runTarget, opp.pos) < 3.0) { runTargetOpen = false; break; }
-          }
-          if (runTargetOpen && !isOffside(st, { ...me, pos: runTarget } as Player, carrier.pos)) {
-            baseTgt = runTarget;
+        return bestTarget;
+      };
+      
+      // ★ v9.19.0: Determine run behavior based on role and position
+      const shouldRun = me.burstCD <= 0 && dToCarrier >= 3.0 && dToCarrier <= 25.0;
+      
+      if (shouldRun) {
+        if (isFwd) {
+          // ★ FWD: ALWAYS try to run beyond the carrier and ball
+          // FWDs should be the furthest forward players, constantly making runs
+          const runDist = iAmBehind ? 12.0 : 8.0; // Run further if behind carrier
+          const target = findForwardRunTarget(runDist, 3.0);
+          if (target) {
+            baseTgt = target;
             me.wantsBall = true;
-            me.burstCD = 1.0; // Cooldown after forward run
+            me.burstCD = 0.4; // Short cooldown - FWDs should run frequently
+            // Sprint burst for the run
+            if (me.burstT <= 0 && me.staminaShort > 0.3) {
+              me.burstT = 1.5;
+            }
+          } else if (iAmBehind) {
+            // Can't find open space ahead - at least get level with carrier
+            const levelTarget = pitchClamp(v(
+              carrier.pos.x - attackDir * 5.0,
+              me.home.y + rng(-2.0, 2.0)
+            ));
+            if (!isOffside(st, { ...me, pos: levelTarget } as Player, carrier.pos)) {
+              baseTgt = levelTarget;
+              me.wantsBall = true;
+              me.burstCD = 0.5;
+            }
           }
-        } else if (iAmAhead && blocked) {
-          // Original lateral shift behavior when pass lane is blocked
-          const dir = vnorm(vsub(me.pos, carrier.pos));
-          const perp = v(-dir.y, dir.x);
-
-          const shift = 2.5; // Increased from 2.2
-          const cand1 = pitchClamp(vadd(baseTgt, vscl(perp,  shift)));
-          const cand2 = pitchClamp(vadd(baseTgt, vscl(perp, -shift)));
-
-          const ok1 = !laneBlocked(st, carrier.pos, cand1, me.team);
-          const ok2 = !laneBlocked(st, carrier.pos, cand2, me.team);
-
-          if (ok1 || ok2) {
-            const score = (tp: V) => {
-              const gp = (tp.x - carrier.pos.x) * attackDir;
-              let minD = Infinity;
-              for (const opp of st.pl) if (opp.team !== me.team) minD = Math.min(minD, vdist(tp, opp.pos));
-              const open = Math.min(minD / 3.0, 1.0);
-              return gp * 1.5 + open * 2.5;
-            };
-            const pick = (ok1 && ok2) ? (score(cand1) >= score(cand2) ? cand1 : cand2) : (ok1 ? cand1 : cand2);
-
-            baseTgt = pick;
-            me.burstCD = 0.7;
+        } else if (isWidePlayer) {
+          // ★ Wide MID: Overlap runs - run beyond the ball on the flank
+          // This is the classic overlapping run that creates width AND depth
+          const runDist = iAmBehind ? 10.0 : 6.0;
+          const target = findForwardRunTarget(runDist, 2.0);
+          if (target) {
+            baseTgt = target;
+            me.wantsBall = true;
+            me.burstCD = 0.5; // Short cooldown for wide players too
+            if (me.burstT <= 0 && me.staminaShort > 0.3) {
+              me.burstT = 1.2;
+            }
+          }
+        } else {
+          // ★ Central MID: Support runs - get ahead when pass lane is clear
+          if (iAmAhead) {
+            // Already ahead - check if pass lane is blocked, shift if needed
+            const blocked = laneBlocked(st, carrier.pos, me.pos, me.team);
+            if (blocked) {
+              const dir = vnorm(vsub(me.pos, carrier.pos));
+              const perp = v(-dir.y, dir.x);
+              const shift = 3.0;
+              const cand1 = pitchClamp(vadd(baseTgt, vscl(perp, shift)));
+              const cand2 = pitchClamp(vadd(baseTgt, vscl(perp, -shift)));
+              const ok1 = !laneBlocked(st, carrier.pos, cand1, me.team);
+              const ok2 = !laneBlocked(st, carrier.pos, cand2, me.team);
+              if (ok1 || ok2) {
+                const scorePos = (tp: V) => {
+                  const gp = (tp.x - carrier.pos.x) * attackDir;
+                  let minD = Infinity;
+                  for (const opp of st.pl) if (opp.team !== me.team) minD = Math.min(minD, vdist(tp, opp.pos));
+                  return gp * 1.5 + Math.min(minD / 3.0, 1.0) * 2.5;
+                };
+                baseTgt = (ok1 && ok2) ? (scorePos(cand1) >= scorePos(cand2) ? cand1 : cand2) : (ok1 ? cand1 : cand2);
+                me.burstCD = 0.5;
+              }
+            }
           } else {
-            me.burstCD = 0.4;
-          }
-        } else if (!iAmAhead && dToCarrier >= 5.0 && me.role === "FWD") {
-          // ★ v9.18.0: FWD behind carrier should run forward to get ahead
-          // Maintain side discipline
-          const runAheadTarget = pitchClamp(v(
-            carrier.pos.x - attackDir * (8.0 + rng(0, 4.0)),
-            me.home.y + rng(-2.0, 2.0) // Was -5.0 to 5.0 - much tighter
-          ));
-          let runAheadOpen = true;
-          for (const opp of st.pl) {
-            if (opp.team === me.team) continue;
-            if (vdist(runAheadTarget, opp.pos) < 3.0) { runAheadOpen = false; break; }
-          }
-          if (runAheadOpen && !isOffside(st, { ...me, pos: runAheadTarget } as Player, carrier.pos)) {
-            baseTgt = runAheadTarget;
-            me.wantsBall = true;
-            me.burstCD = 1.2;
+            // Behind carrier - make a forward run to get ahead
+            const target = findForwardRunTarget(6.0, 2.0);
+            if (target) {
+              baseTgt = target;
+              me.wantsBall = true;
+              me.burstCD = 0.6;
+            }
           }
         }
       }
