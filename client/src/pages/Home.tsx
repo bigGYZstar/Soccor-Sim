@@ -721,6 +721,91 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
     
     ctx.restore();
   }
+  
+  // ★ v9.11.0: Screen effect overlay (dribble breakthrough, goals)
+  if (st.screenEffect && st.screenEffect.timer > 0) {
+    ctx.save();
+    const eff = st.screenEffect;
+    const progress = 1.0 - (eff.timer / (eff.type === "goal" ? 2.5 : 1.5));
+    
+    if (eff.type === "dribbleSuccess") {
+      // Flash overlay - quick white flash that fades
+      if (progress < 0.15) {
+        const flashAlpha = (1.0 - progress / 0.15) * 0.4;
+        ctx.fillStyle = `rgba(255, 255, 200, ${flashAlpha})`;
+        ctx.fillRect(0, 0, w, h);
+      }
+      
+      // Speed lines radiating from center
+      if (progress < 0.6) {
+        const lineAlpha = (1.0 - progress / 0.6) * 0.3;
+        ctx.strokeStyle = `rgba(255, 220, 100, ${lineAlpha})`;
+        ctx.lineWidth = 2;
+        for (let i = 0; i < 12; i++) {
+          const angle = (i / 12) * Math.PI * 2 + st.time * 3;
+          const innerR = w * 0.15 * progress;
+          const outerR = w * 0.5 * (0.3 + progress * 0.7);
+          ctx.beginPath();
+          ctx.moveTo(w/2 + Math.cos(angle) * innerR, h/2 + Math.sin(angle) * innerR);
+          ctx.lineTo(w/2 + Math.cos(angle) * outerR, h/2 + Math.sin(angle) * outerR);
+          ctx.stroke();
+        }
+      }
+      
+      // Big text with shake effect
+      const textAlpha = progress < 0.1 ? progress / 0.1 : progress > 0.7 ? (1.0 - progress) / 0.3 : 1.0;
+      const shakeX = progress < 0.3 ? (Math.random() - 0.5) * 4 : 0;
+      const shakeY = progress < 0.3 ? (Math.random() - 0.5) * 4 : 0;
+      const fontSize = Math.max(16, Math.min(36, w * 0.04));
+      const scale = progress < 0.15 ? 1.0 + (1.0 - progress / 0.15) * 0.5 : 1.0;
+      
+      ctx.font = `bold ${fontSize * scale}px ${RETRO_FONT}`;
+      ctx.textAlign = "center";
+      // Text shadow
+      ctx.fillStyle = `rgba(0, 0, 0, ${textAlpha * 0.8})`;
+      ctx.fillText(eff.text, w/2 + shakeX + 2, h * 0.35 + shakeY + 2);
+      // Main text - team color
+      const teamGold = eff.team === -1 ? `rgba(96, 165, 250, ${textAlpha})` : `rgba(248, 113, 113, ${textAlpha})`;
+      ctx.fillStyle = teamGold;
+      ctx.fillText(eff.text, w/2 + shakeX, h * 0.35 + shakeY);
+      // Gold outline
+      ctx.strokeStyle = `rgba(245, 197, 66, ${textAlpha * 0.6})`;
+      ctx.lineWidth = 1;
+      ctx.strokeText(eff.text, w/2 + shakeX, h * 0.35 + shakeY);
+    } else if (eff.type === "goal") {
+      // Goal: dramatic full-screen flash
+      if (progress < 0.1) {
+        const flashAlpha = (1.0 - progress / 0.1) * 0.6;
+        ctx.fillStyle = `rgba(255, 255, 255, ${flashAlpha})`;
+        ctx.fillRect(0, 0, w, h);
+      }
+      
+      // Pulsing border glow
+      const pulseAlpha = 0.2 + 0.15 * Math.sin(st.time * 10);
+      const borderW = 6;
+      ctx.strokeStyle = `rgba(245, 197, 66, ${pulseAlpha})`;
+      ctx.lineWidth = borderW;
+      ctx.strokeRect(borderW/2, borderW/2, w - borderW, h - borderW);
+      
+      // Big GOAL text
+      const goalAlpha = progress < 0.08 ? progress / 0.08 : progress > 0.8 ? (1.0 - progress) / 0.2 : 1.0;
+      const goalSize = Math.max(24, Math.min(56, w * 0.06));
+      const goalScale = progress < 0.12 ? 1.0 + (1.0 - progress / 0.12) * 0.8 : 1.0;
+      const goalShakeX = progress < 0.2 ? (Math.random() - 0.5) * 6 : 0;
+      const goalShakeY = progress < 0.2 ? (Math.random() - 0.5) * 6 : 0;
+      
+      ctx.font = `bold ${goalSize * goalScale}px ${RETRO_FONT}`;
+      ctx.textAlign = "center";
+      // Shadow
+      ctx.fillStyle = `rgba(0, 0, 0, ${goalAlpha * 0.9})`;
+      ctx.fillText(eff.text, w/2 + goalShakeX + 3, h * 0.4 + goalShakeY + 3);
+      // Main text gold
+      ctx.fillStyle = `rgba(245, 197, 66, ${goalAlpha})`;
+      ctx.fillText(eff.text, w/2 + goalShakeX, h * 0.4 + goalShakeY);
+    }
+    
+    ctx.restore();
+  }
 };
 
 // ============================================================

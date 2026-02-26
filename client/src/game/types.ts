@@ -133,6 +133,7 @@ export interface Player {
   isGK: boolean;
   slot: number;
   role: Role;
+  posLabel: string;  // ★ v9.11.0: Detailed position label (RCB, LCB, LB, RB, etc.)
   jumpY: number;
   turnDebt: number;  // 0-1, turning inertia penalty
   staminaShort: number;  // 0-1, short-term stamina
@@ -241,5 +242,13 @@ export interface State {
     team: number;       // Which team currently has sustained possession (-1, 0, 1)
     duration: number;   // How long this team has held possession (seconds)
     pushLevel: number;  // 0.0 to 1.0 - how far the team has pushed up
+  };
+  // ★ v9.11.0: Screen effects for dramatic moments (dribble breakthrough, goals)
+  screenEffect: {
+    type: "none" | "dribbleSuccess" | "goal" | "save";
+    timer: number;      // Countdown timer (seconds)
+    text: string;       // Big text to display
+    playerNum: number;  // Player number involved
+    team: number;       // Team involved
   };
 }

@@ -253,7 +253,9 @@ export function mkPlayers(blueFormation: FormationId = "4-4-2", redFormation: Fo
       pos: { ...home },
       vel: v(0, 0),
       team: -1, num: FORMATIONS[blueFormation].jerseyNumbers[i], home, face,
-      act: "idle", tgt: { ...home }, dt: Math.random() * PExt.decisionInterval, isGK: i === 0, slot: i, role: roleForSlot(blueFormation, i), jumpY: 0,
+      act: "idle", tgt: { ...home }, dt: Math.random() * PExt.decisionInterval, isGK: i === 0, slot: i, role: roleForSlot(blueFormation, i),
+      posLabel: FORMATIONS[blueFormation].posLabels[i],
+      jumpY: 0,
       turnDebt: 0,
       staminaShort: 1,
       burstT: 0,
@@ -275,7 +277,9 @@ export function mkPlayers(blueFormation: FormationId = "4-4-2", redFormation: Fo
       pos: { ...home },
       vel: v(0, 0),
       team: 1, num: FORMATIONS[redFormation].jerseyNumbers[i], home, face,
-      act: "idle", tgt: { ...home }, dt: Math.random() * PExt.decisionInterval, isGK: i === 0, slot: i, role: roleForSlot(redFormation, i), jumpY: 0,
+      act: "idle", tgt: { ...home }, dt: Math.random() * PExt.decisionInterval, isGK: i === 0, slot: i, role: roleForSlot(redFormation, i),
+      posLabel: FORMATIONS[redFormation].posLabels[i],
+      jumpY: 0,
       turnDebt: 0,
       staminaShort: 1,
       burstT: 0,
@@ -352,7 +356,8 @@ export function mkState(blueFormation: FormationId = "4-4-2", redFormation: Form
     ballTrail: [],
     // ★ v9.9.0: Action log
     actionLog: [],
-    possessionPush: { team: 0, duration: 0, pushLevel: 0 }
+    possessionPush: { team: 0, duration: 0, pushLevel: 0 },
+    screenEffect: { type: "none", timer: 0, text: "", playerNum: 0, team: 0 }
   };
 }
 
@@ -870,7 +875,16 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
     
     // DEF routing: look for MID first, CB switch second
     if (me.role === "DEF" && tm.role === "MID") score += 10.0;  // DEF→MID: primary outlet
-    if (me.role === "DEF" && tm.role === "DEF") score += 6.0;   // DEF→DEF: CB switch
+    if (me.role === "DEF" && tm.role === "DEF") {
+      score += 6.0;   // DEF→DEF: CB switch base
+      // ★ v9.11.0: CB side-change under pressure — switch play to opposite CB
+      const onOppositeSide = (me.pos.y * tm.pos.y < 0); // different sides of pitch
+      if (onOppositeSide && underPressure) {
+        score += 12.0; // Strong bonus for switching play under pressure
+      } else if (onOppositeSide) {
+        score += 5.0;  // Moderate bonus for switching play even without pressure
+      }
+    }
     if (me.role === "DEF" && tm.role === "FWD" && !isBlocked) score += 2.0; // DEF→FWD: long ball (rare)
     
     // GK buildup
@@ -1020,33 +1034,90 @@ export function doPassTo(st: State, idx: number, targetIdx: number) {
   
   kick(st, idx, passSpd, false, tp, false, baseErr);
   
-  // ★ v9.9.0: Pass-and-move - after passing, run forward into space
-  // MID and FWD players make forward runs after passing (not DEF/GK)
-  if (!me.isGK && (me.role === "FWD" || me.role === "MID")) {
-    const attackDir = -me.team;
-    // Find open space ahead of current position
-    const fwdOffset = me.role === "FWD" ? 6.0 : 4.0;
-    const lateralJitter = rng(-3.0, 3.0);
-    const runTarget = pitchClamp(v(
-      me.pos.x + attackDir * fwdOffset,
-      me.pos.y + lateralJitter
-    ));
-    // Only trigger if the run target is in open space
-    let nearestOpp = Infinity;
-    for (const opp of st.pl) {
-      if (opp.team === me.team) continue;
-      nearestOpp = Math.min(nearestOpp, vdist(runTarget, opp.pos));
+  // ★ v9.11.0: Enhanced pass-and-move - after passing, run forward into space
+  // Key principle: pass then move into space to become a receiving option
+  const attackDir = -me.team;
+  const isBackpass = (tm.pos.x * attackDir) < (me.pos.x * attackDir); // target is behind me
+  
+  if (!me.isGK && me.role === "FWD") {
+    // FWD: After backpass to MF/DEF, make a deep run into enemy territory
+    if (isBackpass) {
+      // Deep run forward after laying off - this is the key buildup move
+      const deepRunDist = 10.0 + rng(0, 4.0);
+      const lateralShift = rng(-5.0, 5.0);
+      const runTarget = pitchClamp(v(
+        me.pos.x + attackDir * deepRunDist,
+        me.pos.y + lateralShift
+      ));
+      let nearestOpp = Infinity;
+      for (const opp of st.pl) {
+        if (opp.team === me.team) continue;
+        nearestOpp = Math.min(nearestOpp, vdist(runTarget, opp.pos));
+      }
+      if (nearestOpp > 3.0) {
+        me.passAndMoveTimer = 1.8; // Longer run time for deep runs
+        me.passAndMoveTarget = runTarget;
+        me.wantsBall = true; // Signal that I want the ball back
+      }
+    } else {
+      // Forward pass: short forward burst to stay in play
+      const fwdOffset = 5.0 + rng(0, 3.0);
+      const runTarget = pitchClamp(v(
+        me.pos.x + attackDir * fwdOffset,
+        me.pos.y + rng(-3.0, 3.0)
+      ));
+      let nearestOpp = Infinity;
+      for (const opp of st.pl) {
+        if (opp.team === me.team) continue;
+        nearestOpp = Math.min(nearestOpp, vdist(runTarget, opp.pos));
+      }
+      if (nearestOpp > 3.5) {
+        me.passAndMoveTimer = 1.0;
+        me.passAndMoveTarget = runTarget;
+      }
     }
-    if (nearestOpp > 3.5) {
-      me.passAndMoveTimer = 1.2; // Run for 1.2 seconds
-      me.passAndMoveTarget = runTarget;
+  } else if (!me.isGK && me.role === "MID") {
+    // MID: After backpass to DEF, push forward into attacking space to receive
+    if (isBackpass) {
+      // Key buildup: pass back then advance to create passing lane
+      const advanceDist = 6.0 + rng(0, 3.0);
+      const lateralShift = rng(-4.0, 4.0);
+      const runTarget = pitchClamp(v(
+        me.pos.x + attackDir * advanceDist,
+        me.pos.y + lateralShift
+      ));
+      let nearestOpp = Infinity;
+      for (const opp of st.pl) {
+        if (opp.team === me.team) continue;
+        nearestOpp = Math.min(nearestOpp, vdist(runTarget, opp.pos));
+      }
+      if (nearestOpp > 3.0) {
+        me.passAndMoveTimer = 1.5;
+        me.passAndMoveTarget = runTarget;
+        me.wantsBall = true;
+      }
+    } else {
+      // Forward pass: continue forward movement
+      const fwdOffset = 4.0 + rng(0, 2.0);
+      const runTarget = pitchClamp(v(
+        me.pos.x + attackDir * fwdOffset,
+        me.pos.y + rng(-2.0, 2.0)
+      ));
+      let nearestOpp = Infinity;
+      for (const opp of st.pl) {
+        if (opp.team === me.team) continue;
+        nearestOpp = Math.min(nearestOpp, vdist(runTarget, opp.pos));
+      }
+      if (nearestOpp > 3.5) {
+        me.passAndMoveTimer = 1.0;
+        me.passAndMoveTarget = runTarget;
+      }
     }
-  }
-  // ★ v9.9.0: DEF/SB pass-and-move - after backpass, push up slightly
-  if (me.role === "DEF" && !me.isGK) {
-    const attackDir = -me.team;
+  } else if (me.role === "DEF" && !me.isGK) {
+    // DEF: After passing, push up slightly to compress the team shape
+    const pushDist = isBackpass ? 1.5 : 3.0;
     const pushTarget = pitchClamp(v(
-      me.pos.x + attackDir * 2.5,
+      me.pos.x + attackDir * pushDist,
       me.pos.y
     ));
     me.passAndMoveTimer = 0.8;
@@ -1120,6 +1191,21 @@ export function doDribble(st: State, idx: number) {
   // ★ v9.9.0: Log dribble attempt (success path)
   logDribbleAttempt(st, me);
   
+  // ★ v9.11.0: Screen effect for dribble breakthrough
+  const dribbleTexts = [
+    `★ #${me.num} 突破！！`,
+    `#${me.num} ドリブル成功！`,
+    `★ #${me.num} 抜いた！！`,
+    `#${me.num} 美技！！`,
+  ];
+  st.screenEffect = {
+    type: "dribbleSuccess",
+    timer: 1.5,
+    text: dribbleTexts[Math.floor(Math.random() * dribbleTexts.length)],
+    playerNum: me.num,
+    team: me.team,
+  };
+  
   const fwd = vnorm(v(-me.team + rng(-0.4, 0.4), rng(-0.6, 0.6)));
   me.act = "dribble"; me.tgt = vadd(me.pos, vscl(fwd, 5));
   me.face = fwd; me.dt = 0;
@@ -1178,6 +1264,34 @@ export function decideHasBall(st: State, idx: number) {
   //   }
   // }
   
+  // ★ v9.11.0: GK buildup - carry forward slightly then distribute to CB
+  if (me.isGK && me.act === "carry") {
+    const carryTime = st.ball.holdT;
+    // GK carries forward for 0.3-0.6s to draw press, then distributes
+    if (carryTime < 0.4) {
+      // Step forward slightly to draw opponents
+      const fwd = v(-me.team * 3.0, 0);
+      me.tgt = pitchClamp(vadd(me.home, fwd));
+      me.act = "carry";
+      return;
+    }
+    // After 0.4s, distribute to CB or MF
+    const passTgt = bestPass(st, idx);
+    if (passTgt !== null) {
+      doPassTo(st, idx, passTgt);
+      return;
+    }
+    // Fallback: long pass to MF
+    const longTgt = bestLongPass(st, idx);
+    if (longTgt !== null) {
+      doLongPassTo(st, idx, longTgt);
+      return;
+    }
+    // Last resort: kick forward
+    kick(st, idx, 12, false, v(-me.team, 0), false);
+    return;
+  }
+
   // ★ v9.7.0: Carry state lock - aggressive pass-first with short carry windows
   if (me.act === "carry") {
     let closestEnemy = Infinity;
@@ -2088,6 +2202,14 @@ export function update(st: State, dt: number) {
   // ★ v9.9.0: Update action log TTL
   updateLogTTL(st, dt);
   
+  // ★ v9.11.0: Update screen effect timer
+  if (st.screenEffect.timer > 0) {
+    st.screenEffect.timer -= dt;
+    if (st.screenEffect.timer <= 0) {
+      st.screenEffect = { type: "none", timer: 0, text: "", playerNum: 0, team: 0 };
+    }
+  }
+  
   // Pause
   if (st.paused) {
     st.pauseT -= dt;
@@ -2465,7 +2587,16 @@ export function update(st: State, dt: number) {
       st.flashTxt = "GOAL!";
       // ★ v9.9.0: Log goal
       if (b.lastKickerIdx >= 0 && b.lastKickerIdx < st.pl.length) {
-        logGoal(st, st.pl[b.lastKickerIdx]);
+        const scorer = st.pl[b.lastKickerIdx];
+        logGoal(st, scorer);
+        // ★ v9.11.0: Goal screen effect
+        st.screenEffect = {
+          type: "goal",
+          timer: 2.5,
+          text: `⚽ GOAL!! #${scorer.num}`,
+          playerNum: scorer.num,
+          team: scorer.team,
+        };
       }
       st.koSide = g;  // Fixed: scoring team's opponent gets kickoff
       doKickOff(st);

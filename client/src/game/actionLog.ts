@@ -18,8 +18,13 @@ function roleName(role: string): string {
   }
 }
 
+// ★ v9.11.0: Use detailed position label for display
+function posName(p: Player): string {
+  return p.posLabel || roleName(p.role);
+}
+
 function playerLabel(p: Player): string {
-  return `#${p.num}`;
+  return `#${p.num}(${posName(p)})`;
 }
 
 export function emitLog(st: State, entry: Omit<ActionLogEntry, "ttl">) {
@@ -59,7 +64,7 @@ export function logPass(st: State, passer: Player, targetNum: number, dist: numb
     time: st.time,
     team: passer.team,
     playerNum: passer.num,
-    playerRole: passer.role,
+    playerRole: passer.posLabel || passer.role,
     action: isLong ? "longPass" : "pass",
     detail: texts[Math.floor(Math.random() * texts.length)],
     targetNum,
@@ -73,7 +78,7 @@ export function logPassReceive(st: State, receiver: Player, passerNum: number) {
     time: st.time,
     team: receiver.team,
     playerNum: receiver.num,
-    playerRole: receiver.role,
+    playerRole: receiver.posLabel || receiver.role,
     action: "passReceive",
     detail: `${playerLabel(receiver)} パスを受ける`,
     success: true,
@@ -93,7 +98,7 @@ export function logShot(st: State, shooter: Player, dist: number) {
     time: st.time,
     team: shooter.team,
     playerNum: shooter.num,
-    playerRole: shooter.role,
+    playerRole: shooter.posLabel || shooter.role,
     action: "shot",
     detail: texts[Math.floor(Math.random() * texts.length)],
     success: true,
@@ -112,7 +117,7 @@ export function logDribbleAttempt(st: State, dribbler: Player) {
     time: st.time,
     team: dribbler.team,
     playerNum: dribbler.num,
-    playerRole: dribbler.role,
+    playerRole: dribbler.posLabel || dribbler.role,
     action: "dribble",
     detail: texts[Math.floor(Math.random() * texts.length)],
     success: true,
@@ -131,7 +136,7 @@ export function logDribbleSuccess(st: State, dribbler: Player) {
     time: st.time,
     team: dribbler.team,
     playerNum: dribbler.num,
-    playerRole: dribbler.role,
+    playerRole: dribbler.posLabel || dribbler.role,
     action: "dribbleSuccess",
     detail: texts[Math.floor(Math.random() * texts.length)],
     success: true,
@@ -150,7 +155,7 @@ export function logDribbleFail(st: State, dribbler: Player, tacklerNum: number) 
     time: st.time,
     team: dribbler.team,
     playerNum: dribbler.num,
-    playerRole: dribbler.role,
+    playerRole: dribbler.posLabel || dribbler.role,
     action: "dribbleFail",
     detail: texts[Math.floor(Math.random() * texts.length)],
     targetNum: tacklerNum,
@@ -170,7 +175,7 @@ export function logTackle(st: State, tackler: Player, targetNum: number, success
       time: st.time,
       team: tackler.team,
       playerNum: tackler.num,
-      playerRole: tackler.role,
+      playerRole: tackler.posLabel || tackler.role,
       action: "tackle",
       detail: texts[Math.floor(Math.random() * texts.length)],
       targetNum,
@@ -191,7 +196,7 @@ export function logIntercept(st: State, interceptor: Player) {
     time: st.time,
     team: interceptor.team,
     playerNum: interceptor.num,
-    playerRole: interceptor.role,
+    playerRole: interceptor.posLabel || interceptor.role,
     action: "intercept",
     detail: texts[Math.floor(Math.random() * texts.length)],
     success: true,
@@ -210,7 +215,7 @@ export function logGoal(st: State, scorer: Player) {
     time: st.time,
     team: scorer.team,
     playerNum: scorer.num,
-    playerRole: scorer.role,
+    playerRole: scorer.posLabel || scorer.role,
     action: "goal",
     detail: texts[Math.floor(Math.random() * texts.length)],
     success: true,
@@ -229,7 +234,7 @@ export function logSave(st: State, keeper: Player) {
     time: st.time,
     team: keeper.team,
     playerNum: keeper.num,
-    playerRole: keeper.role,
+    playerRole: keeper.posLabel || keeper.role,
     action: "save",
     detail: texts[Math.floor(Math.random() * texts.length)],
     success: true,
@@ -247,7 +252,7 @@ export function logTurnover(st: State, player: Player) {
     time: st.time,
     team: player.team,
     playerNum: player.num,
-    playerRole: player.role,
+    playerRole: player.posLabel || player.role,
     action: "turnover",
     detail: texts[Math.floor(Math.random() * texts.length)],
     success: false,

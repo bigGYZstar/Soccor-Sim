@@ -140,6 +140,8 @@ export interface FormationDef {
   // ★ v9.1.0: Realistic jersey numbers per formation
   // Index 0 = slot 0 (GK), index 1 = slot 1, etc.
   jerseyNumbers: number[];
+  // ★ v9.11.0: Detailed position labels (RCB, LCB, LB, RB, LCM, RCM, LW, RW, etc.)
+  posLabels: string[];
 }
 
 // 4-4-2 Formation (scaled for 105m x 68m soccer pitch)
@@ -197,6 +199,7 @@ export const FORMATIONS: Record<FormationId, FormationDef> = {
     positions: FORM_442_POS,
     roles: ["GK", "DEF", "DEF", "DEF", "DEF", "MID", "MID", "MID", "MID", "FWD", "FWD"],
     jerseyNumbers: [1, 3, 4, 5, 2, 11, 6, 8, 7, 9, 10],
+    posLabels: ["GK", "LB", "LCB", "RCB", "RB", "LM", "LCM", "RCM", "RM", "LST", "RST"],
   },
   "4-2-3-1": {
     id: "4-2-3-1",
@@ -204,6 +207,7 @@ export const FORMATIONS: Record<FormationId, FormationDef> = {
     positions: FORM_4231_POS,
     roles: ["GK", "DEF", "DEF", "DEF", "DEF", "MID", "MID", "MID", "MID", "MID", "FWD"],
     jerseyNumbers: [1, 3, 4, 5, 2, 6, 8, 11, 10, 7, 9],
+    posLabels: ["GK", "LB", "LCB", "RCB", "RB", "LCDM", "RCDM", "LAM", "CAM", "RAM", "ST"],
   },
   "3-4-3": {
     id: "3-4-3",
@@ -211,6 +215,7 @@ export const FORMATIONS: Record<FormationId, FormationDef> = {
     positions: FORM_343_POS,
     roles: ["GK", "DEF", "DEF", "DEF", "MID", "MID", "MID", "MID", "FWD", "FWD", "FWD"],
     jerseyNumbers: [1, 3, 4, 5, 6, 8, 10, 2, 11, 9, 7],
+    posLabels: ["GK", "LCB", "CB", "RCB", "LWB", "LCM", "RCM", "RWB", "LW", "ST", "RW"],
   },
 };
 
