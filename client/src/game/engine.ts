@@ -1526,6 +1526,38 @@ export function decideHasBall(st: State, idx: number) {
     return;
   }
 
+  // ★ v9.21.0: FORWARD CARRY PRIORITY - if path to goal is clear, carry forward immediately
+  // This check happens BEFORE carry state lock to ensure first-touch carry toward goal
+  if (!me.isGK && st.ball.holdT < 0.15) {
+    const toGoalDir = vnorm(vsub(gc, me.pos));
+    const fwdDir = v(-me.team, 0);
+    // Check if facing roughly toward goal (within 90 degrees)
+    const facingGoal = vdot(me.face, fwdDir) > 0.0;
+    
+    // Check for clear path: no enemy within cone toward goal
+    let clearPathDist = 15.0;
+    for (const p of st.pl) {
+      if (p.team === me.team) continue;
+      const toOpp = vsub(p.pos, me.pos);
+      const proj = vdot(toOpp, toGoalDir);
+      if (proj < 0 || proj > 15.0) continue;
+      const lateral = Math.abs(toOpp.y * toGoalDir.x - toOpp.x * toGoalDir.y);
+      if (lateral < 2.5 && proj < clearPathDist) {
+        clearPathDist = proj;
+      }
+    }
+    
+    // If clear path > 6m ahead and facing forward, carry toward goal
+    const minClearDist = me.role === "FWD" ? 5.0 : me.role === "MID" ? 6.0 : 8.0;
+    if (clearPathDist >= minClearDist && (facingGoal || clearPathDist >= 10.0)) {
+      me.act = "carry";
+      me.tgt = pitchClamp(vadd(me.pos, vscl(toGoalDir, Math.min(clearPathDist - 1.0, 12.0))));
+      me.face = toGoalDir;
+      chosenAction = "carry-forwardClear";
+      return;
+    }
+  }
+
   // ★ v9.7.0: Carry state lock - aggressive pass-first with short carry windows
   if (me.act === "carry") {
     let closestEnemy = Infinity;
@@ -1539,20 +1571,20 @@ export function decideHasBall(st: State, idx: number) {
     // ★ v9.13.0: Space-aware carry windows - longer when space ahead
     const carryTime = st.ball.holdT;
     const spaceAheadCarrier = spaceAhead(st, me);
-    // ★ v9.14.0: Moderate carry windows - enough to advance but not hold too long
+    // ★ v9.21.0: Extended carry windows when path to goal is clear
     let maxCarryTime: number;
     if (me.role === "FWD") {
-      maxCarryTime = spaceAheadCarrier > 8.0 ? 1.8 : spaceAheadCarrier > 5.0 ? 1.2 : 0.6;
+      maxCarryTime = spaceAheadCarrier > 10.0 ? 2.5 : spaceAheadCarrier > 7.0 ? 1.8 : spaceAheadCarrier > 4.0 ? 1.2 : 0.6;
     } else if (me.role === "MID" && Math.abs(me.home.y) > 15.0) {
-      maxCarryTime = spaceAheadCarrier > 8.0 ? 1.4 : spaceAheadCarrier > 5.0 ? 0.9 : 0.5;
+      maxCarryTime = spaceAheadCarrier > 10.0 ? 2.0 : spaceAheadCarrier > 7.0 ? 1.4 : spaceAheadCarrier > 4.0 ? 0.9 : 0.5;
     } else if (me.role === "MID") {
-      maxCarryTime = spaceAheadCarrier > 8.0 ? 0.8 : 0.5;
+      maxCarryTime = spaceAheadCarrier > 8.0 ? 1.0 : spaceAheadCarrier > 5.0 ? 0.6 : 0.4;
     } else {
-      maxCarryTime = 0.3;
+      maxCarryTime = spaceAheadCarrier > 8.0 ? 0.5 : 0.3;
     }
     
-    // ★ v9.14.0: HARD LIMIT
-    const hardLimit = me.role === "FWD" ? 2.2 : me.role === "MID" ? 1.5 : 1.2;
+    // ★ v9.21.0: Hard limit extended for clear-path carries
+    const hardLimit = me.role === "FWD" ? 3.0 : me.role === "MID" ? 2.2 : 1.2;
     if (carryTime > hardLimit) {
       const passTgt = bestPass(st, idx);
       if (passTgt !== null) {
@@ -1841,24 +1873,24 @@ export function decideHasBall(st: State, idx: number) {
     return;
   }
   
-  // ★ v9.13.0: Space-aware carry decision
-  // FWD and Wide MF should carry when there's space ahead, not just pass immediately
+  // ★ v9.21.0: Space-aware carry decision - much more aggressive when path is clear
   const spaceAheadOfMe = spaceAhead(st, me);
   let carryPref: number;
   if (me.role === "FWD") {
-    // FWD: carry aggressively when space is available
-    carryPref = spaceAheadOfMe > 8.0 ? 0.55 : spaceAheadOfMe > 5.0 ? 0.35 : 0.12;
+    // FWD: strongly prefer carry when space is available
+    carryPref = spaceAheadOfMe > 10.0 ? 0.85 : spaceAheadOfMe > 7.0 ? 0.65 : spaceAheadOfMe > 4.0 ? 0.40 : 0.12;
   } else if (me.role === "MID" && Math.abs(me.home.y) > 15.0) {
-    // Wide MF (LM/RM): carry when in space on the wing
-    carryPref = spaceAheadOfMe > 8.0 ? 0.45 : spaceAheadOfMe > 5.0 ? 0.25 : 0.08;
+    // Wide MF (LM/RM): aggressive carry on the wing when space exists
+    carryPref = spaceAheadOfMe > 10.0 ? 0.75 : spaceAheadOfMe > 7.0 ? 0.55 : spaceAheadOfMe > 4.0 ? 0.30 : 0.08;
   } else if (me.role === "MID") {
-    carryPref = spaceAheadOfMe > 8.0 ? 0.20 : 0.08;
+    carryPref = spaceAheadOfMe > 8.0 ? 0.35 : spaceAheadOfMe > 5.0 ? 0.15 : 0.08;
   } else {
-    carryPref = 0.03;
+    // DEF: carry when lots of space (e.g., SB overlap)
+    carryPref = spaceAheadOfMe > 10.0 ? 0.25 : spaceAheadOfMe > 7.0 ? 0.10 : 0.03;
   }
   // Under pressure: reduce carry; very open: boost carry
   const pressureMod = closestEnemyDist < 5.0 ? -0.15 : closestEnemyDist > 10.0 ? 0.10 : 0;
-  const carryChance = Math.max(0.02, Math.min(0.60, carryPref + pressureMod));
+  const carryChance = Math.max(0.02, Math.min(0.90, carryPref + pressureMod));
   
   if (canCarry && hasPass) {
     // ★ v9.13.0: If best pass is backward and I have space ahead, prefer carry
