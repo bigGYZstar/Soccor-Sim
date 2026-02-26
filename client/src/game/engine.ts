@@ -525,9 +525,9 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   b.kickKind = shot ? "SHOT" : isLong ? "LONG" : "PASS";
   b.kickTeam = kicker.team;
   // v9.2.0: intendedReceiverIdx is set by doPassTo/doLongPassTo BEFORE kick()
-  // If not pre-set, fall back to nearest teammate to finalTarget
+  // ★ v9.8.0: Fallback excludes the kicker to prevent self-pass tracking
   if (b.intendedReceiverIdx === null || b.intendedReceiverIdx === undefined) {
-    b.intendedReceiverIdx = tgt ? nearest(st, finalTarget, kicker.team) : null;
+    b.intendedReceiverIdx = tgt ? nearestEx(st, finalTarget, kicker.team, kickerIdx) : null;
   }
   b.kickActive = true;
   b.lastKickTime = st.time;
@@ -779,7 +779,8 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
     if (st.pl[i].team !== me.team || i === idx) continue;
     const tm = st.pl[i];
     const dist = vdist(me.pos, tm.pos);
-    if (dist < 2.0 || dist > 35.0) continue;
+    // ★ v9.8.0: Minimum 4m to prevent micro-passes that kicker re-intercepts
+    if (dist < 4.0 || dist > 35.0) continue;
     
     let score = 0;
     const gp = (tm.pos.x - me.pos.x) * -me.team;
@@ -919,18 +920,19 @@ export function doPassTo(st: State, idx: number, targetIdx: number) {
   // v9.2.0: Set intendedReceiverIdx BEFORE kick() so it's not overwritten
   st.ball.intendedReceiverIdx = targetIdx;
   
-  // ★ v9.4.0: Distance-proportional pass speed
-  // Short passes (< 8m): slower, more controlled (12-16 m/s)
-  // Medium passes (8-20m): normal speed (16-20 m/s)
-  // Long passes (> 20m): full power (20 m/s)
-  let passSpd: number;
-  if (passDist < 5) {
-    passSpd = 10 + passDist * 0.8; // 10-14 m/s for very short
-  } else if (passDist < 12) {
-    passSpd = 14 + (passDist - 5) * 0.6; // 14-18.2 m/s
-  } else {
-    passSpd = Math.min(PExt.passSpeed, 16 + (passDist - 12) * 0.3); // 16-20 m/s
-  }
+  // ★ v9.8.0: Physics-based pass speed calculation
+  // With fric=0.985, the relationship is approximately:
+  //   distance = speed * (1/60) / (1 - 0.985) = speed / 0.9
+  //   So speed ≈ distance * 0.9 (m/s per meter of target distance)
+  // We add ~20% overshoot so the ball arrives with some residual speed
+  // (receiver can control a moving ball, not chase a dead one)
+  const targetDist = vdist(me.pos, tp); // Distance to actual target point
+  const neededSpeed = targetDist * 0.9; // Base speed to reach target
+  const overshootFactor = 1.25; // Ball should arrive with ~25% residual speed
+  let passSpd = Math.max(6.0, Math.min(22.0, neededSpeed * overshootFactor));
+  // Short passes (< 5m): gentler touch, minimum 6 m/s
+  // Medium passes (5-15m): proportional
+  // Long passes (> 15m): capped at 22 m/s to stay realistic
   
   kick(st, idx, passSpd, false, tp, false, baseErr);
   
@@ -953,8 +955,12 @@ export function doLongPassTo(st: State, idx: number, targetIdx: number) {
   // v9.2.0: Set intendedReceiverIdx BEFORE kick() so it's not overwritten
   st.ball.intendedReceiverIdx = targetIdx;
   
+  // ★ v9.8.0: Distance-based long pass speed (lob has less friction: 0.99)
+  // With fric=0.99, distance ≈ speed / 0.6, so speed ≈ distance * 0.6
+  const lpDist = vdist(me.pos, tp);
+  const lpSpeed = Math.max(12.0, Math.min(28.0, lpDist * 0.7));
   const err = (1 - PExt.longPassAccuracy) * 2.0;
-  kick(st, idx, PExt.longPassSpeed, false, tp, true, err);
+  kick(st, idx, lpSpeed, false, tp, true, err);
   
   // v8.8.2: Track long pass attempt
   const team = me.team === -1 ? 'blue' : 'red';
@@ -978,6 +984,9 @@ export function doDribble(st: State, idx: number) {
   if (Math.random() > effectiveControl) {
     const fd = vnorm(v(rng(-1, 1), rng(-1, 1)));
     kick(st, idx, 3, false, vadd(me.pos, vscl(fd, 2)));
+    // ★ v9.8.0: Mark as dribble loss, not a pass
+    st.ball.kickKind = "DRIBBLE_LOST";
+    st.ball.kickActive = false; // Don't track as pass attempt
     return;
   }
   
@@ -1068,8 +1077,9 @@ export function decideHasBall(st: State, idx: number) {
       return;
     }
     
-    // ★ v9.7.0: Always check for pass after initial touch (0.15s grace)
-    if (carryTime > 0.15) {
+    // ★ v9.8.0: Check for pass after 0.3s grace period
+    // (0.15s was too short - kicker would kick and immediately re-intercept)
+    if (carryTime > 0.30) {
       const passTgt = bestPass(st, idx);
       if (passTgt !== null) {
         // Pass probability increases rapidly with carry time
@@ -1389,6 +1399,28 @@ export function decideNoBall(st: State, idx: number) {
     } else {
       // Others: recover toward home position (maintain formation)
       me.tgt = pitchClamp(vlerp(me.pos, me.home, 0.4));
+      return;
+    }
+  }
+  
+  // ★ v9.8.0: Intended receiver moves toward incoming ball
+  // In real soccer, the receiver always moves toward the pass to receive it
+  if (b.free && b.intendedReceiverIdx === idx && b.kickTeam === me.team) {
+    // I am the intended receiver of an in-flight pass from my team
+    // Move toward where the ball is heading (intercept point)
+    const ballSpeed = vlen(b.vel);
+    if (ballSpeed > 1.0) {
+      // Predict where ball will be when I can reach it
+      const toBall = vsub(b.pos, me.pos);
+      const distToBall = vlen(toBall);
+      // Simple intercept: move toward ball's current position
+      // (ball is moving toward me, so meeting point is between us)
+      const meetPoint = distToBall > 2.0 
+        ? vadd(b.pos, vscl(vnorm(b.vel), Math.min(distToBall * 0.3, 3.0)))
+        : b.pos;
+      me.tgt = pitchClamp(meetPoint);
+      me.face = vnorm(toBall);
+      me.act = "move";
       return;
     }
   }
@@ -1974,8 +2006,11 @@ export function update(st: State, dt: number) {
       b.spinY *= decay;
     }
     
-    // Friction (ground only - airborne balls have less friction)
-    const fric = b.z > 0.3 ? 0.995 : (b.lob > 0 ? 0.98 : 0.92);
+    // ★ v9.8.0: Realistic grass friction
+    // Real grass: 14m/s ball travels ~15m before stopping (fric=0.985)
+    // Previous 0.92 was catastrophically high - ball only traveled 2.9m
+    // Airborne: 0.998 (minimal air resistance), Lob: 0.99, Ground: 0.985
+    const fric = b.z > 0.3 ? 0.998 : (b.lob > 0 ? 0.99 : 0.985);
     b.vel = vscl(b.vel, Math.pow(fric, dt * 60));
     
     // Lob decay

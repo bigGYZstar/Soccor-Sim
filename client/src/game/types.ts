@@ -164,7 +164,7 @@ export interface Ball {
   phaseBBlockedPassStreak: number;  // v8.7.5: Consecutive blocked passes in Phase B
   // v8.8.3: Kick event tracking for accurate statistics
   kickSeq: number;  // Sequential kick ID
-  kickKind: "PASS" | "LONG" | "SHOT" | null;  // Type of current kick
+  kickKind: "PASS" | "LONG" | "SHOT" | "DRIBBLE_LOST" | null;  // Type of current kick
   kickTeam: number;  // Team that kicked (-1, 0, 1)
   intendedReceiverIdx: number | null;  // Intended receiver player index
   kickActive: boolean;  // Whether kick is still in flight/undecided
