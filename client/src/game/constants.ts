@@ -142,8 +142,21 @@ export const P = {
   footTackleLungeDuration: 0.25, // Tackle animation lasts 0.25s
 };
 
+// ★ Formation definitions (all coordinates are for the "left" team attacking right)
+// Mirror with v(-p.x, -p.y) for the "right" team
+
+export type FormationId = "4-4-2" | "4-2-3-1" | "3-4-3";
+
+export interface FormationDef {
+  id: FormationId;
+  label: string;
+  positions: { x: number; y: number }[];
+  // Role mapping: slot index -> role
+  roles: ("GK" | "DEF" | "MID" | "FWD")[];
+}
+
 // 4-4-2 Formation (scaled for 105m x 68m soccer pitch)
-export const FORM_442 = [
+const FORM_442_POS = [
   { x: -48.0, y: 0 },       // 0  GK
   { x: -36.0, y: -24.0 },   // 1  LB
   { x: -36.0, y: -8.0 },    // 2  CB
@@ -156,3 +169,59 @@ export const FORM_442 = [
   { x: -8.0, y: -10.0 },    // 9  ST
   { x: -8.0, y: 10.0 },     // 10 ST
 ];
+
+// 4-2-3-1 Formation
+const FORM_4231_POS = [
+  { x: -48.0, y: 0 },       // 0  GK
+  { x: -36.0, y: -24.0 },   // 1  LB
+  { x: -36.0, y: -8.0 },    // 2  CB
+  { x: -36.0, y: 8.0 },     // 3  CB
+  { x: -36.0, y: 24.0 },    // 4  RB
+  { x: -24.0, y: -7.0 },    // 5  CDM
+  { x: -24.0, y: 7.0 },     // 6  CDM
+  { x: -12.0, y: -22.0 },   // 7  LAM
+  { x: -12.0, y: 0 },       // 8  CAM
+  { x: -12.0, y: 22.0 },    // 9  RAM
+  { x: -5.0, y: 0 },        // 10 ST
+];
+
+// 3-4-3 Formation
+const FORM_343_POS = [
+  { x: -48.0, y: 0 },       // 0  GK
+  { x: -36.0, y: -18.0 },   // 1  CB
+  { x: -36.0, y: 0 },       // 2  CB
+  { x: -36.0, y: 18.0 },    // 3  CB
+  { x: -22.0, y: -26.0 },   // 4  LWB
+  { x: -22.0, y: -8.0 },    // 5  CM
+  { x: -22.0, y: 8.0 },     // 6  CM
+  { x: -22.0, y: 26.0 },    // 7  RWB
+  { x: -8.0, y: -18.0 },    // 8  LW
+  { x: -5.0, y: 0 },        // 9  ST
+  { x: -8.0, y: 18.0 },     // 10 RW
+];
+
+export const FORMATIONS: Record<FormationId, FormationDef> = {
+  "4-4-2": {
+    id: "4-4-2",
+    label: "4-4-2",
+    positions: FORM_442_POS,
+    roles: ["GK", "DEF", "DEF", "DEF", "DEF", "MID", "MID", "MID", "MID", "FWD", "FWD"],
+  },
+  "4-2-3-1": {
+    id: "4-2-3-1",
+    label: "4-2-3-1",
+    positions: FORM_4231_POS,
+    roles: ["GK", "DEF", "DEF", "DEF", "DEF", "MID", "MID", "MID", "MID", "MID", "FWD"],
+  },
+  "3-4-3": {
+    id: "3-4-3",
+    label: "3-4-3",
+    positions: FORM_343_POS,
+    roles: ["GK", "DEF", "DEF", "DEF", "MID", "MID", "MID", "MID", "FWD", "FWD", "FWD"],
+  },
+};
+
+export const FORMATION_IDS: FormationId[] = ["4-4-2", "4-2-3-1", "3-4-3"];
+
+// Legacy export for backward compatibility
+export const FORM_442 = FORM_442_POS;

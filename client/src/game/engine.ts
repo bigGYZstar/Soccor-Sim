@@ -2,7 +2,7 @@
 // UI-independent, testable simulation core
 
 import { State, Player, Ball, Role, V, Trail, Foot, FootSide, FootParams } from './types';
-import { P } from './constants';
+import { P, FORMATIONS, FormationId } from './constants';
 import {
   v, vadd, vsub, vscl, vlen, vnorm, vdist, vdot, vlerp, vang,
   clamp, rng, pitchClamp, vmove, distSegmentToPoint
@@ -222,32 +222,37 @@ function mkFoot(side: FootSide, playerPos: V, face: V): Foot {
   };
 }
 
-// Formation definitions
-// 4-4-2 Formation for soccer pitch (105m x 68m)
-const FORM_442_BLUE = [
-  v(-48.0, 0),     // GK
-  v(-35.0, -20.0), v(-35.0, -7.0), v(-35.0, 7.0), v(-35.0, 20.0), // DEF (back 4)
-  v(-15.0, -22.0), v(-15.0, -7.5), v(-15.0, 7.5), v(-15.0, 22.0), // MID (midfield 4)
-  v(-5.0, -10.0), v(-5.0, 10.0),  // FWD (strikers)
-];
-const FORM_442_RED = FORM_442_BLUE.map((p) => v(-p.x, -p.y));
+// Formation helper: convert formation positions to V[] for a team
+function formationToVecs(formId: FormationId, teamSign: -1 | 1): V[] {
+  const def = FORMATIONS[formId];
+  return def.positions.map(p => {
+    if (teamSign === -1) return v(p.x, p.y);       // Blue: left side
+    return v(-p.x, -p.y);                           // Red: mirrored
+  });
+}
 
-export function mkPlayers(): Player[] {
+function roleForSlot(formId: FormationId, slot: number): Role {
+  return FORMATIONS[formId].roles[slot];
+}
+
+export function mkPlayers(blueFormation: FormationId = "4-4-2", redFormation: FormationId = "4-4-2"): Player[] {
   const pl: Player[] = [];
+  const bluePositions = formationToVecs(blueFormation, -1);
+  const redPositions = formationToVecs(redFormation, 1);
+  
   for (let i = 0; i < 11; i++) {
-    const home = FORM_442_BLUE[i];
+    const home = bluePositions[i];
     const face = v(1, 0);
     pl.push({
       idx: pl.length,
       pos: { ...home },
       vel: v(0, 0),
       team: -1, num: i + 1, home, face,
-      act: "idle", tgt: { ...home }, dt: Math.random() * PExt.decisionInterval, isGK: i === 0, slot: i, role: slotRole(i), jumpY: 0,
+      act: "idle", tgt: { ...home }, dt: Math.random() * PExt.decisionInterval, isGK: i === 0, slot: i, role: roleForSlot(blueFormation, i), jumpY: 0,
       turnDebt: 0,
       staminaShort: 1,
       burstT: 0,
       burstCD: 0,
-      // ★ v8.9.0: Foot system
       leftFoot: mkFoot("L", home, face),
       rightFoot: mkFoot("R", home, face),
       footParams: mkFootParams(),
@@ -255,19 +260,18 @@ export function mkPlayers(): Player[] {
     });
   }
   for (let i = 0; i < 11; i++) {
-    const home = FORM_442_RED[i];
+    const home = redPositions[i];
     const face = v(-1, 0);
     pl.push({
       idx: pl.length,
       pos: { ...home },
       vel: v(0, 0),
       team: 1, num: i + 1, home, face,
-      act: "idle", tgt: { ...home }, dt: Math.random() * PExt.decisionInterval, isGK: i === 0, slot: i, role: slotRole(i), jumpY: 0,
+      act: "idle", tgt: { ...home }, dt: Math.random() * PExt.decisionInterval, isGK: i === 0, slot: i, role: roleForSlot(redFormation, i), jumpY: 0,
       turnDebt: 0,
       staminaShort: 1,
       burstT: 0,
       burstCD: 0,
-      // ★ v8.9.0: Foot system
       leftFoot: mkFoot("L", home, face),
       rightFoot: mkFoot("R", home, face),
       footParams: mkFootParams(),
@@ -277,9 +281,9 @@ export function mkPlayers(): Player[] {
   return pl;
 }
 
-export function mkState(): State {
+export function mkState(blueFormation: FormationId = "4-4-2", redFormation: FormationId = "4-4-2"): State {
   return {
-    pl: mkPlayers(),
+    pl: mkPlayers(blueFormation, redFormation),
     ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0, holdT: 0, holdAX0: 0, holdT0: 0, phaseBBlockedPassStreak: 0, kickSeq: 0, kickKind: null, kickTeam: 0, intendedReceiverIdx: null, kickActive: false, prevPos: v(0, 0), lastKickTime: 0, lastKickerIdx: -1 },
     sL: 0, sR: 0, time: 0, over: false, paused: false, pauseT: 0, koSide: Math.random() < 0.5 ? -1 : 1,  // Randomize initial kickoff
     trail: null, flash: 0, flashTxt: "", restartT: 0,
