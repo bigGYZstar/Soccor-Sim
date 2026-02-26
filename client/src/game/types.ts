@@ -236,4 +236,10 @@ export interface State {
   ballTrail: BallTrailDot[];
   // ★ v9.9.0: Action log for SFC-style commentary
   actionLog: ActionLogEntry[];
+  // ★ v9.10.0: Possession-based progressive line push
+  possessionPush: {
+    team: number;       // Which team currently has sustained possession (-1, 0, 1)
+    duration: number;   // How long this team has held possession (seconds)
+    pushLevel: number;  // 0.0 to 1.0 - how far the team has pushed up
+  };
 }

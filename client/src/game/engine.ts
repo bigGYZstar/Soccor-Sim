@@ -351,7 +351,8 @@ export function mkState(blueFormation: FormationId = "4-4-2", redFormation: Form
     // ★ v9.7.0: Ball trail dots
     ballTrail: [],
     // ★ v9.9.0: Action log
-    actionLog: []
+    actionLog: [],
+    possessionPush: { team: 0, duration: 0, pushLevel: 0 }
   };
 }
 
@@ -805,12 +806,14 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
     const isBackward = gp < -1.0;
     const isLateral = !isForward && !isBackward;
     
-    // Base forward progress bonus - ★ v9.9.0: Clamped to prevent extreme backpass penalties
-    // Forward: full bonus. Backward: capped at -5 so DEF backpasses remain viable
+    // Base forward progress bonus - ★ v9.10.0: No gp penalty for DEF/GK backpasses
     if (gp >= 0) {
       score += gp * 1.0; // Forward progress: full bonus
+    } else if (tm.role === "DEF" || tm.isGK) {
+      // ★ v9.10.0: DEF/GK backpass: no distance penalty (buildup recycling is natural)
+      score += Math.max(gp * 0.1, -2.0); // Very mild penalty
     } else {
-      score += Math.max(gp * 0.5, -5.0); // Backward: halved and capped at -5
+      score += Math.max(gp * 0.5, -5.0); // Other backpasses: halved and capped
     }
     
     // Receiver openness (how free they are from markers)
@@ -851,15 +854,28 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
       }
     }
     
-    // Role-based bonuses - ★ v9.9.0: Enhanced to include DEF participation in buildup
-    if (me.role === "FWD" && tm.role === "MID") score += 8.0;
-    if (me.role === "FWD" && tm.role === "DEF") score += underPressure ? 10.0 : 4.0; // FWD→DEF backpass
-    if (me.role === "MID" && (tm.role === "MID" || tm.role === "FWD" || tm.slot === 3)) score += 5.0;
-    if (me.role === "MID" && tm.role === "DEF") score += underPressure ? 12.0 : 5.0; // MID→DEF backpass (stronger under pressure)
-    if (me.role === "DEF" && tm.role === "DEF") score += 8.0; // CB-to-CB switch
-    if (me.role === "DEF" && tm.role === "MID") score += 6.0; // DEF→MID buildup
-    if (me.role === "DEF" && tm.role === "FWD" && !isBlocked) score += 4.0; // DEF→FWD long ball
-    if (me.isGK && tm.role === "DEF") score += 12.0; // GK→DEF buildup from back
+    // ★ v9.10.0: Role-based routing — MF is the hub of passing circulation
+    // Universal MF magnet: everyone prefers passing to MF
+    if (tm.role === "MID") score += 6.0;
+    
+    // FWD routing: MUST go through MF, not skip to DEF
+    if (me.role === "FWD" && tm.role === "MID") score += 12.0;  // FWD→MID: strongly preferred
+    if (me.role === "FWD" && tm.role === "DEF") score -= 8.0;   // FWD→DEF: heavily penalized (skip MID)
+    if (me.role === "FWD" && tm.role === "FWD") score += 3.0;   // FWD→FWD: combination play
+    
+    // MID is the playmaker — distributes to all positions
+    if (me.role === "MID" && tm.role === "FWD") score += 12.0;  // MID→FWD: key progression (boosted)
+    if (me.role === "MID" && tm.role === "MID") score += 4.0;   // MID→MID: circulation (slightly reduced to spread passes)
+    if (me.role === "MID" && tm.role === "DEF") score += underPressure ? 12.0 : 7.0; // MID→DEF: backpass (boosted)
+    
+    // DEF routing: look for MID first, CB switch second
+    if (me.role === "DEF" && tm.role === "MID") score += 10.0;  // DEF→MID: primary outlet
+    if (me.role === "DEF" && tm.role === "DEF") score += 6.0;   // DEF→DEF: CB switch
+    if (me.role === "DEF" && tm.role === "FWD" && !isBlocked) score += 2.0; // DEF→FWD: long ball (rare)
+    
+    // GK buildup
+    if (me.isGK && tm.role === "DEF") score += 12.0;  // GK→DEF
+    if (me.isGK && tm.role === "MID") score += 8.0;   // GK→MID (if DEF pressed)
     
     // ★ v9.5.0: Pressure-aware passing
     if (underPressure) {
@@ -894,15 +910,14 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
     if (isBackward) {
       if (underPressure) {
         // Under pressure: back-pass to open teammate is a smart escape
-        score += recvOpenness * 5.0 + 3.0;
+        score += recvOpenness * 5.0 + 5.0;
       } else if (tm.role === "DEF" || tm.isGK) {
-        // Backpass to DEF/GK: mild bonus if they're open (buildup recycling)
-        score += recvOpenness > 0.3 ? 2.0 : -2.0;
+        // ★ v9.10.0: Backpass to DEF/GK is a natural part of buildup
+        // Even without pressure, recycling to DEF is smart play
+        score += recvOpenness > 0.2 ? 5.0 : 1.0;
       } else if (recvOpenness > 0.5) {
-        // Not under pressure but receiver is very open: mild penalty
         score += PExt.backPassMinScore;
       } else {
-        // Not under pressure and receiver is marked: discourage
         score -= 3.0;
       }
     }
@@ -911,6 +926,35 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
   }
   
   if (bestScore < -8.0) return null;
+  
+  return bestIdx === -1 ? null : bestIdx;
+}
+
+// ★ v9.10.0: Find a DEF/GK behind the player to backpass to (for MF secondary movement)
+function findBackpassTarget(st: State, idx: number): number | null {
+  const me = st.pl[idx];
+  let bestIdx = -1;
+  let bestScore = -999;
+  
+  for (let i = 0; i < st.pl.length; i++) {
+    if (st.pl[i].team !== me.team || i === idx) continue;
+    const tm = st.pl[i];
+    // Only consider DEF and GK as backpass targets
+    if (tm.role !== "DEF" && !tm.isGK) continue;
+    const dist = vdist(me.pos, tm.pos);
+    if (dist < 4.0 || dist > 30.0) continue;
+    // Must be behind me (toward own goal)
+    const gp = (tm.pos.x - me.pos.x) * -me.team;
+    if (gp > -2.0) continue; // Must be at least 2m behind
+    
+    let score = 0;
+    score += openness(st, tm) * 5.0; // Prioritize open defenders
+    if (!laneBlocked(st, me.pos, tm.pos, me.team)) score += 10.0;
+    if (tm.role === "DEF") score += 5.0;
+    if (tm.isGK) score += 2.0;
+    
+    if (score > bestScore) { bestScore = score; bestIdx = i; }
+  }
   
   return bestIdx === -1 ? null : bestIdx;
 }
@@ -1378,6 +1422,23 @@ export function decideHasBall(st: State, idx: number) {
       return;
     }
   } else if (canCarry && !hasPass) {
+    // ★ v9.10.0: MF secondary movement - when no short pass, try alternatives before carrying
+    if (me.role === "MID") {
+      // 2nd option: Long pass to FWD to relieve pressure
+      const lp = bestLongPass(st, idx);
+      if (lp !== null) {
+        doLongPassTo(st, idx, lp);
+        chosenAction = "longPass-relief";
+        return;
+      }
+      // 3rd option: Backpass to DEF/GK and advance (pass & move)
+      const backTgt = findBackpassTarget(st, idx);
+      if (backTgt !== null) {
+        doPassTo(st, idx, backTgt);
+        chosenAction = "backpass-advance";
+        return;
+      }
+    }
     me.act = "carry";
     me.tgt = pitchClamp(vadd(me.pos, vscl(carryDir, 12.0)));
     me.face = carryDir;
@@ -1539,133 +1600,141 @@ export function decideNoBall(st: State, idx: number) {
         baseTgt = v(me.team * (PExt.pitchHalfW - 6.0), 0);
       }
     }
-    // ② FWD role division (pin and drop) - ★ v9.9.0: Enhanced buildup participation
+    // ② FWD role division (pin and drop) - ★ v9.10.0: Progressive line push
     else if (me.role === "FWD") {
-      // Check if carrier is under pressure (needs an outlet)
       let carrierPressure = Infinity;
       for (const opp of st.pl) {
         if (opp.team === me.team) continue;
         carrierPressure = Math.min(carrierPressure, vdist(carrier.pos, opp.pos));
       }
       const carrierUnderPressure = carrierPressure < 6.0;
+      const push = st.possessionPush.team === me.team ? st.possessionPush.pushLevel : 0;
       
       if (me.idx % 2 === 0) {
         if (carrierUnderPressure && isOwnHalf) {
-          // ★ v9.9.0: FW drops deep to offer short pass option when carrier is pressed
-          // "Come short" movement - drop toward carrier to create passing angle
-          const dropX = carrier.pos.x - me.team * 4.0; // Drop closer to carrier
-          const dropY = me.home.y * 0.5; // Come slightly central
+          // FW drops deep to offer short pass option
+          const dropX = carrier.pos.x - me.team * 4.0;
+          const dropY = me.home.y * 0.5;
           baseTgt = v(clamp(dropX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5), dropY);
           me.wantsBall = true;
         } else {
-          // Normal: Dropping FW - blend between home and ahead-of-carrier
-          const aheadX = carrier.pos.x - me.team * 8.0;
+          // ★ v9.10.0: Dropping FW pushes deeper into enemy territory with possession
+          const pushExtra = push * 6.0; // Up to 6m extra forward push
+          const aheadX = carrier.pos.x - me.team * (8.0 + pushExtra);
           const rawTgt = v(clamp(aheadX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5), me.home.y * 0.7);
-          baseTgt = vlerp(me.home, rawTgt, 0.6);
+          baseTgt = vlerp(me.home, rawTgt, 0.6 + push * 0.2); // More tactical with sustained possession
+          if (push > 0.5) me.wantsBall = true; // Request ball when pushed up
         }
       } else {
         if (carrierUnderPressure && !isOwnHalf) {
-          // ★ v9.9.0: Pinning FW makes diagonal run to create space
+          // Pinning FW makes diagonal run
           const diagX = carrier.pos.x - me.team * 10.0;
           const diagY = me.home.y > 0 ? me.home.y - 3.0 : me.home.y + 3.0;
           baseTgt = v(clamp(diagX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5), diagY);
           me.wantsBall = true;
         } else {
-          // Normal: Pin opponent CBs
-          baseTgt = v(targetGoalX * 0.85, me.home.y * 0.6);
+          // ★ v9.10.0: Pinning FW pushes higher with sustained possession
+          const pushExtra = push * 4.0;
+          baseTgt = v(targetGoalX * (0.85 + push * 0.1), me.home.y * 0.6);
+          if (push > 0.6) me.wantsBall = true;
         }
       }
     }
-    // ③ CM's dynamic stagger (段差) and 3-1/3-2 formation
+    // ③ CM's dynamic stagger (段差) and 3-1/3-2 formation - ★ v9.10.0: Progressive push
     else if (me.role === "MID" && Math.abs(me.home.y) <= 9.0) {
-      // ★ v9.9.0: Check carrier pressure for MID buildup
       let carrierPressureMid = Infinity;
       for (const opp of st.pl) {
         if (opp.team === me.team) continue;
         carrierPressureMid = Math.min(carrierPressureMid, vdist(carrier.pos, opp.pos));
       }
       const carrierPressedMid = carrierPressureMid < 6.0;
+      const push = st.possessionPush.team === me.team ? st.possessionPush.pushLevel : 0;
       
       const isWide = Math.abs(me.home.y) > 3.0;
       const isClosestCM = !isWide && nearestEx(st, carrier.pos, me.team, carrier.idx) === me.idx;
       
       if (isWide) {
         if (carrierPressedMid && isOwnHalf) {
-          // ★ v9.9.0: Wide MF drops back to offer passing outlet when carrier is pressed in own half
-          const dropX = carrier.pos.x + me.team * 1.0; // Come back toward carrier
+          // Wide MF drops back to offer passing outlet
+          const dropX = carrier.pos.x + me.team * 1.0;
           baseTgt = v(
             clamp(dropX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5),
-            me.home.y * 0.8  // Come slightly narrower
+            me.home.y * 0.8
           );
           me.wantsBall = true;
         } else {
-          // Normal: Wide MF maintains width
-          const wmX = carrier.pos.x - me.team * 5.0;
+          // ★ v9.10.0: Wide MF pushes forward with sustained possession (like overlapping wingback)
+          const pushExtra = push * 5.0;
+          const wmX = carrier.pos.x - me.team * (5.0 + pushExtra);
           const rawTgt = v(
             clamp(wmX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5),
-            me.home.y
+            me.home.y  // Maintain width
           );
-          baseTgt = vlerp(me.home, rawTgt, 0.5);
+          baseTgt = vlerp(me.home, rawTgt, 0.5 + push * 0.2);
+          if (push > 0.4) me.wantsBall = true;
         }
       } else if (isOwnHalf && isClosestCM) {
         // During own-half buildup, CM closest to ball drops to CB line
         baseTgt = v(carrier.pos.x + me.team * 2.0, carrier.pos.y > 0 ? 2.0 : -2.0);
-        me.wantsBall = true; // ★ v9.9.0: CM actively requests ball
+        me.wantsBall = true;
       } else {
         if (carrierPressedMid) {
-          // ★ v9.9.0: CM moves to open space between lines to receive
+          // CM moves to open space between lines to receive
           const cmX = carrier.pos.x - me.team * 5.0;
           const rawTgt = v(clamp(cmX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5), me.home.y * 0.8);
-          baseTgt = vlerp(me.home, rawTgt, 0.65); // More tactical, less home anchor
+          baseTgt = vlerp(me.home, rawTgt, 0.65);
           me.wantsBall = true;
         } else {
-          // Normal: CM pushes ahead
-          const cmX = carrier.pos.x - me.team * 8.0;
+          // ★ v9.10.0: CM pushes ahead progressively with possession
+          const pushExtra = push * 4.0;
+          const cmX = carrier.pos.x - me.team * (8.0 + pushExtra);
           const rawTgt = v(clamp(cmX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5), me.home.y);
-          baseTgt = vlerp(me.home, rawTgt, 0.55);
+          baseTgt = vlerp(me.home, rawTgt, 0.55 + push * 0.15);
         }
       }
     }
-    // ⑤ SB and CB's Rest Defence (2-3/3-2 remaining defense)
+    // ⑤ SB and CB's Rest Defence - ★ v9.10.0: Progressive push for SB
     else if (me.role === "DEF") {
-      // ★ v9.9.0: Check carrier pressure for DEF buildup
       let carrierPressureDef = Infinity;
       for (const opp of st.pl) {
         if (opp.team === me.team) continue;
         carrierPressureDef = Math.min(carrierPressureDef, vdist(carrier.pos, opp.pos));
       }
       const carrierPressedDef = carrierPressureDef < 6.0;
+      const push = st.possessionPush.team === me.team ? st.possessionPush.pushLevel : 0;
       
       if (Math.abs(me.home.y) > 3.0) {
-        // SB (Side Back)
+        // SB (Side Back) - ★ v9.10.0: Progressive overlap with sustained possession
         const isBallSide = (carrier.pos.y * me.home.y) > 0;
         if (isBallSide) {
           if (!isOwnHalf) {
-            // ★ v9.9.0: Ball-side SB pushes up more aggressively in opponent half
-            const sbX = carrier.pos.x - me.team * 2.0;
+            // Ball-side SB pushes up aggressively + progressive push
+            const pushExtra = push * 4.0;
+            const sbX = carrier.pos.x - me.team * (2.0 + pushExtra);
             const rawTgt = v(
               clamp(sbX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5),
-              me.home.y * 1.1  // Push even wider for overlap
+              me.home.y * 1.1
             );
-            baseTgt = vlerp(me.home, rawTgt, 0.55); // More tactical push
+            baseTgt = vlerp(me.home, rawTgt, 0.55 + push * 0.2);
             me.wantsBall = true;
           } else {
-            // Own half: moderate push
-            const sbX = carrier.pos.x - me.team * 3.0;
+            // Own half: moderate push + progressive
+            const pushExtra = push * 2.0;
+            const sbX = carrier.pos.x - me.team * (3.0 + pushExtra);
             const rawTgt = v(
               clamp(sbX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5),
               me.home.y
             );
-            baseTgt = vlerp(me.home, rawTgt, 0.4);
+            baseTgt = vlerp(me.home, rawTgt, 0.4 + push * 0.15);
+            if (push > 0.5) me.wantsBall = true;
           }
         } else {
-          // Far-side SB: tuck inside slightly but stay near home
+          // Far-side SB: tuck inside slightly
           const rawTgt = v(carrier.pos.x + me.team * 4.0, Math.sign(me.home.y) * Math.abs(me.home.y) * 0.6);
           baseTgt = vlerp(me.home, rawTgt, 0.35);
         }
       } else {
         // CB: Support behind ball, anchored to home
-        // ★ v9.9.0: When carrier is a CB under pressure, other CB spreads wide to offer switch
         const carrierIsCB = carrier.role === "DEF" && Math.abs(carrier.home.y) <= 3.0;
         if (carrierPressedDef && carrierIsCB && carrier.idx !== me.idx) {
           // Spread to opposite side to offer CB-to-CB switch pass
@@ -1673,8 +1742,10 @@ export function decideNoBall(st: State, idx: number) {
           baseTgt = v(carrier.pos.x + me.team * 2.0, spreadY);
           me.wantsBall = true;
         } else {
-          const rawTgt = v(carrier.pos.x + me.team * 5.0, me.home.y * 0.5);
-          baseTgt = vlerp(me.home, rawTgt, 0.4);
+          // ★ v9.10.0: CB pushes up slightly with sustained possession
+          const pushExtra = push * 2.0; // CB pushes less than others
+          const rawTgt = v(carrier.pos.x + me.team * (5.0 - pushExtra), me.home.y * 0.5);
+          baseTgt = vlerp(me.home, rawTgt, 0.4 + push * 0.1);
         }
       }
     }
@@ -2054,6 +2125,34 @@ export function update(st: State, dt: number) {
   // ★ v8.7.4: Counter-press timer decrement
   if (st.turnoverT > 0) {
     st.turnoverT = Math.max(0, st.turnoverT - dt);
+  }
+  
+  // ★ v9.10.0: Update possession push level
+  // Track team possession including ball in flight from team's kick
+  {
+    let possTeam = 0;
+    if (st.ball.owner !== null) {
+      possTeam = st.pl[st.ball.owner].team;
+    } else if (st.ball.free && st.ball.kickTeam !== 0) {
+      // Ball is in flight from a team's kick - still counts as their possession
+      possTeam = st.ball.kickTeam;
+    }
+    
+    if (possTeam !== 0 && possTeam === st.possessionPush.team) {
+      // Same team still has possession - increase push
+      st.possessionPush.duration += dt;
+      // Push level ramps up over 4 seconds: 0 at start, 1.0 after 4s of sustained possession
+      st.possessionPush.pushLevel = Math.min(1.0, st.possessionPush.duration / 4.0);
+    } else if (possTeam !== 0) {
+      // Different team has possession - reset
+      st.possessionPush.team = possTeam;
+      st.possessionPush.duration = 0;
+      st.possessionPush.pushLevel = 0;
+    } else {
+      // No possession - slowly decay
+      st.possessionPush.pushLevel = Math.max(0, st.possessionPush.pushLevel - dt * 0.3);
+      st.possessionPush.duration = Math.max(0, st.possessionPush.duration - dt * 0.3);
+    }
   }
   
   // ★ Stack detection: Check if ball is stuck in same position
