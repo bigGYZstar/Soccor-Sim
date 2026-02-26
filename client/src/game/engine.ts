@@ -907,9 +907,12 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
     if (tm.passAndMoveTimer > 0) {
       score += 10.0; // Very strong bonus for pass-and-move target
     }
-    // ★ v9.9.0: WantsBall bonus - player actively requesting the ball in open space
+    // ★ v9.12.0: WantsBall bonus - player actively requesting the ball in open space
     if (tm.wantsBall && !isBlocked) {
-      score += 6.0; // Strong bonus for players showing for the ball
+      score += 12.0; // Very strong bonus for players showing for the ball (was 6.0)
+      // Extra bonus if the wanting player is ahead of the passer (forward run)
+      const wantGp = (tm.pos.x - me.pos.x) * -me.team;
+      if (wantGp > 2.0) score += 5.0; // Forward-running player gets extra attraction
     }
     
     // ★ v9.5.0: Lateral pass bonus (switch of play)
@@ -1732,12 +1735,13 @@ export function decideNoBall(st: State, idx: number) {
           baseTgt = v(clamp(dropX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5), dropY);
           me.wantsBall = true;
         } else {
-          // ★ v9.10.0: Dropping FW pushes deeper into enemy territory with possession
-          const pushExtra = push * 6.0; // Up to 6m extra forward push
-          const aheadX = carrier.pos.x - me.team * (8.0 + pushExtra);
+          // ★ v9.12.0: Dropping FW pushes deeper into enemy territory with possession
+          // Moderate home anchor: was 0.6, now 0.75 base to allow forward movement
+          const pushExtra = push * 5.0; // Up to 5m extra forward push
+          const aheadX = carrier.pos.x - me.team * (9.0 + pushExtra);
           const rawTgt = v(clamp(aheadX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5), me.home.y * 0.7);
-          baseTgt = vlerp(me.home, rawTgt, 0.6 + push * 0.2); // More tactical with sustained possession
-          if (push > 0.5) me.wantsBall = true; // Request ball when pushed up
+          baseTgt = vlerp(me.home, rawTgt, 0.75 + push * 0.15); // Moderate home anchor (was 0.6)
+          me.wantsBall = true; // Always want ball when ahead
         }
       } else {
         if (carrierUnderPressure && !isOwnHalf) {
@@ -1747,15 +1751,15 @@ export function decideNoBall(st: State, idx: number) {
           baseTgt = v(clamp(diagX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5), diagY);
           me.wantsBall = true;
         } else {
-          // ★ v9.10.0: Pinning FW pushes higher with sustained possession
+          // ★ v9.12.0: Pinning FW pushes higher with sustained possession
           const pushExtra = push * 4.0;
-          baseTgt = v(targetGoalX * (0.85 + push * 0.1), me.home.y * 0.6);
-          if (push > 0.6) me.wantsBall = true;
+          baseTgt = v(targetGoalX * (0.82 + push * 0.12), me.home.y * 0.6);
+          me.wantsBall = push > 0.3; // Want ball when pushed up
         }
       }
     }
-    // ③ CM's dynamic stagger (段差) and 3-1/3-2 formation - ★ v9.10.0: Progressive push
-    else if (me.role === "MID" && Math.abs(me.home.y) <= 9.0) {
+    // ③ MID positioning: CM stagger + Wide MF overlap - ★ v9.12.0: All MIDs handled here
+    else if (me.role === "MID") {
       let carrierPressureMid = Infinity;
       for (const opp of st.pl) {
         if (opp.team === me.team) continue;
@@ -1764,10 +1768,15 @@ export function decideNoBall(st: State, idx: number) {
       const carrierPressedMid = carrierPressureMid < 6.0;
       const push = st.possessionPush.team === me.team ? st.possessionPush.pushLevel : 0;
       
-      const isWide = Math.abs(me.home.y) > 3.0;
-      const isClosestCM = !isWide && nearestEx(st, carrier.pos, me.team, carrier.idx) === me.idx;
+      // ★ v9.12.0: isWide threshold changed from 3.0 to include all wide MFs
+      // In 4-4-2: LM/RM have home.y = ±28, CM have home.y = ±9
+      // In 4-2-3-1: CDM have home.y = ±7, AM have home.y = ±22 or 0
+      const isWide = Math.abs(me.home.y) > 15.0; // Truly wide players (LM/RM/LW/RW)
+      const isSemiWide = Math.abs(me.home.y) > 3.0 && !isWide; // Semi-wide (CM with offset)
+      const isClosestCM = !isWide && !isSemiWide && nearestEx(st, carrier.pos, me.team, carrier.idx) === me.idx;
       
       if (isWide) {
+        // ★ v9.12.0: Wide MF (LM/RM/LW/RW) - overlapping runs like a wingback
         if (carrierPressedMid && isOwnHalf) {
           // Wide MF drops back to offer passing outlet
           const dropX = carrier.pos.x + me.team * 1.0;
@@ -1777,15 +1786,34 @@ export function decideNoBall(st: State, idx: number) {
           );
           me.wantsBall = true;
         } else {
-          // ★ v9.10.0: Wide MF pushes forward with sustained possession (like overlapping wingback)
+          // Wide MF pushes forward with sustained possession (like overlapping wingback)
           const pushExtra = push * 5.0;
-          const wmX = carrier.pos.x - me.team * (5.0 + pushExtra);
+          const wmX = carrier.pos.x - me.team * (6.0 + pushExtra);
           const rawTgt = v(
             clamp(wmX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5),
-            me.home.y  // Maintain width
+            me.home.y * 0.9  // Slightly tuck in when advancing
           );
-          baseTgt = vlerp(me.home, rawTgt, 0.5 + push * 0.2);
-          if (push > 0.4) me.wantsBall = true;
+          baseTgt = vlerp(me.home, rawTgt, 0.70 + push * 0.2); // Moderate forward bias
+          me.wantsBall = push > 0.3; // Want ball when pushed up
+        }
+      } else if (isSemiWide) {
+        // Semi-wide MF (e.g., wide CM in 4-2-3-1)
+        if (carrierPressedMid && isOwnHalf) {
+          const dropX = carrier.pos.x + me.team * 1.0;
+          baseTgt = v(
+            clamp(dropX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5),
+            me.home.y * 0.8
+          );
+          me.wantsBall = true;
+        } else {
+          const pushExtra = push * 5.0;
+          const wmX = carrier.pos.x - me.team * (6.0 + pushExtra);
+          const rawTgt = v(
+            clamp(wmX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5),
+            me.home.y
+          );
+          baseTgt = vlerp(me.home, rawTgt, 0.70 + push * 0.2);
+          if (push > 0.3) me.wantsBall = true;
         }
       } else if (isOwnHalf && isClosestCM) {
         // During own-half buildup, CM closest to ball drops to CB line
@@ -1799,11 +1827,11 @@ export function decideNoBall(st: State, idx: number) {
           baseTgt = vlerp(me.home, rawTgt, 0.65);
           me.wantsBall = true;
         } else {
-          // ★ v9.10.0: CM pushes ahead progressively with possession
+          // ★ v9.12.0: CM pushes ahead progressively with possession
           const pushExtra = push * 4.0;
           const cmX = carrier.pos.x - me.team * (8.0 + pushExtra);
           const rawTgt = v(clamp(cmX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5), me.home.y);
-          baseTgt = vlerp(me.home, rawTgt, 0.55 + push * 0.15);
+          baseTgt = vlerp(me.home, rawTgt, 0.65 + push * 0.15); // Moderate home anchor (was 0.55)
         }
       }
     }
@@ -1822,25 +1850,25 @@ export function decideNoBall(st: State, idx: number) {
         const isBallSide = (carrier.pos.y * me.home.y) > 0;
         if (isBallSide) {
           if (!isOwnHalf) {
-            // Ball-side SB pushes up aggressively + progressive push
-            const pushExtra = push * 4.0;
-            const sbX = carrier.pos.x - me.team * (2.0 + pushExtra);
+            // ★ v9.12.0: Ball-side SB pushes up aggressively + progressive push
+            const pushExtra = push * 3.0;
+            const sbX = carrier.pos.x - me.team * (2.5 + pushExtra);
             const rawTgt = v(
               clamp(sbX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5),
               me.home.y * 1.1
             );
-            baseTgt = vlerp(me.home, rawTgt, 0.55 + push * 0.2);
+            baseTgt = vlerp(me.home, rawTgt, 0.60 + push * 0.2); // Moderate home anchor
             me.wantsBall = true;
           } else {
-            // Own half: moderate push + progressive
+            // ★ v9.12.0: Own half: moderate push + progressive
             const pushExtra = push * 2.0;
             const sbX = carrier.pos.x - me.team * (3.0 + pushExtra);
             const rawTgt = v(
               clamp(sbX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5),
               me.home.y
             );
-            baseTgt = vlerp(me.home, rawTgt, 0.4 + push * 0.15);
-            if (push > 0.5) me.wantsBall = true;
+            baseTgt = vlerp(me.home, rawTgt, 0.50 + push * 0.15); // Moderate home anchor
+            if (push > 0.4) me.wantsBall = true;
           }
         } else {
           // Far-side SB: tuck inside slightly
@@ -1889,7 +1917,7 @@ export function decideNoBall(st: State, idx: number) {
       }
     }
 
-    // --- Phase 5.5: Off-the-Ball Movement (minimal, safe) ---
+    // --- Phase 5.5: Off-the-Ball Movement (★ v9.12.0: Forward runs + lateral shifts) ---
     if (!me.isGK && (me.role === "MID" || me.role === "FWD")) {
       me.burstCD = Math.max(0, (me.burstCD ?? 0) - P.decisionInterval);
 
@@ -1898,17 +1926,53 @@ export function decideNoBall(st: State, idx: number) {
 
       const iAmAhead = (me.pos.x - carrier.pos.x) * attackDir > 0.6;
       const dToCarrier = vdist(me.pos, carrier.pos);
-      const inRange = dToCarrier >= 3.0 && dToCarrier <= 14.0;
+      const inRange = dToCarrier >= 3.0 && dToCarrier <= 18.0; // Extended from 14.0
 
-      if (iAmAhead && inRange && me.burstCD <= 0) {
+      if (inRange && me.burstCD <= 0) {
         const blocked = laneBlocked(st, carrier.pos, me.pos, me.team);
-        if (blocked) {
-          // shift along perpendicular direction to open a new lane
+        
+        // ★ v9.12.0: FORWARD RUN into space (new behavior)
+        // When carrier has ball and I'm in range, check if there's space ahead to run into
+        const myForwardX = me.pos.x - attackDir * 6.0; // 6m ahead of current position
+        const forwardPoint = pitchClamp(v(myForwardX, me.pos.y + rng(-3.0, 3.0)));
+        
+        // Check if forward space is open (no opponents within 4m)
+        let forwardSpaceOpen = true;
+        let minOppDistForward = Infinity;
+        for (const opp of st.pl) {
+          if (opp.team === me.team) continue;
+          const d = vdist(forwardPoint, opp.pos);
+          if (d < minOppDistForward) minOppDistForward = d;
+          if (d < 3.5) { forwardSpaceOpen = false; break; }
+        }
+        
+        // Check if running forward wouldn't be offside
+        const wouldBeOffside = isOffside(st, { ...me, pos: forwardPoint } as Player, carrier.pos);
+        
+        if (forwardSpaceOpen && !wouldBeOffside && !blocked && iAmAhead) {
+          // Forward run: move deeper into attacking territory
+          const runDist = me.role === "FWD" ? 8.0 : 5.0;
+          const runTarget = pitchClamp(v(
+            me.pos.x - attackDir * runDist,
+            me.pos.y + rng(-4.0, 4.0) // Slight lateral variation
+          ));
+          // Verify run target is also in open space
+          let runTargetOpen = true;
+          for (const opp of st.pl) {
+            if (opp.team === me.team) continue;
+            if (vdist(runTarget, opp.pos) < 3.0) { runTargetOpen = false; break; }
+          }
+          if (runTargetOpen && !isOffside(st, { ...me, pos: runTarget } as Player, carrier.pos)) {
+            baseTgt = runTarget;
+            me.wantsBall = true;
+            me.burstCD = 1.0; // Cooldown after forward run
+          }
+        } else if (iAmAhead && blocked) {
+          // Original lateral shift behavior when pass lane is blocked
           const dir = vnorm(vsub(me.pos, carrier.pos));
           const perp = v(-dir.y, dir.x);
 
-          // E-1: Increase shift to 2.2 for stronger lateral movement
-          const shift = 2.2; // Increased from 1.9 to create more space
+          const shift = 2.5; // Increased from 2.2
           const cand1 = pitchClamp(vadd(baseTgt, vscl(perp,  shift)));
           const cand2 = pitchClamp(vadd(baseTgt, vscl(perp, -shift)));
 
@@ -1916,11 +1980,8 @@ export function decideNoBall(st: State, idx: number) {
           const ok2 = !laneBlocked(st, carrier.pos, cand2, me.team);
 
           if (ok1 || ok2) {
-            // choose better one: prefer more open + more forward
             const score = (tp: V) => {
               const gp = (tp.x - carrier.pos.x) * attackDir;
-              // reuse "openness" by creating a temporary player-like evaluation:
-              // simplest: use nearest opponent distance to the point
               let minD = Infinity;
               for (const opp of st.pl) if (opp.team !== me.team) minD = Math.min(minD, vdist(tp, opp.pos));
               const open = Math.min(minD / 3.0, 1.0);
@@ -1929,11 +1990,25 @@ export function decideNoBall(st: State, idx: number) {
             const pick = (ok1 && ok2) ? (score(cand1) >= score(cand2) ? cand1 : cand2) : (ok1 ? cand1 : cand2);
 
             baseTgt = pick;
-            // E-2: Reduce cooldown from 1.0 to 0.8 for more frequent movement
-            me.burstCD = 0.8;
+            me.burstCD = 0.7;
           } else {
-            // E-2: Reduce failure cooldown from 0.6 to 0.5
-            me.burstCD = 0.5;
+            me.burstCD = 0.4;
+          }
+        } else if (!iAmAhead && dToCarrier >= 5.0 && me.role === "FWD") {
+          // ★ v9.12.0: FWD behind carrier should run forward to get ahead
+          const runAheadTarget = pitchClamp(v(
+            carrier.pos.x - attackDir * (8.0 + rng(0, 4.0)),
+            me.home.y + rng(-5.0, 5.0)
+          ));
+          let runAheadOpen = true;
+          for (const opp of st.pl) {
+            if (opp.team === me.team) continue;
+            if (vdist(runAheadTarget, opp.pos) < 3.0) { runAheadOpen = false; break; }
+          }
+          if (runAheadOpen && !isOffside(st, { ...me, pos: runAheadTarget } as Player, carrier.pos)) {
+            baseTgt = runAheadTarget;
+            me.wantsBall = true;
+            me.burstCD = 1.2;
           }
         }
       }
