@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { useLocation } from 'wouter';
 
 // --- game/ モジュールから必要なものをすべてインポート ---
 import { State, V, SpeedMode } from '../game/types';
@@ -64,6 +65,7 @@ function FormationPreview({ formationId, teamColor, mirror }: { formationId: For
 // SFC-Style Start Screen (fully responsive)
 // ============================================================
 function StartScreen({ onStart }: { onStart: (blueForm: FormationId, redForm: FormationId) => void }) {
+  const [, setLocation] = useLocation();
   const [blueFormation, setBlueFormation] = useState<FormationId>("4-4-2");
   const [redFormation, setRedFormation] = useState<FormationId>("4-4-2");
   const [blinkVisible, setBlinkVisible] = useState(true);
@@ -188,6 +190,25 @@ function StartScreen({ onStart }: { onStart: (blueForm: FormationId, redForm: Fo
                      radial-gradient(circle at 80% 70%, #16213e 0%, transparent 50%)`,
         zIndex: 0,
       }} />
+
+      {/* Back to Top button */}
+      <div style={{ position: "absolute", top: "clamp(8px, 2vh, 16px)", left: "clamp(8px, 2vw, 16px)", zIndex: 20 }}>
+        <button
+          onClick={() => setLocation('/')}
+          style={{
+            background: RETRO_DARK,
+            border: `2px solid ${RETRO_GOLD}`,
+            color: RETRO_GOLD,
+            fontFamily: RETRO_FONT,
+            fontSize: "clamp(5px, 1vw, 9px)",
+            padding: "clamp(3px, 0.6vh, 6px) clamp(6px, 1.5vw, 12px)",
+            cursor: "pointer",
+            letterSpacing: "1px",
+          }}
+        >
+          ◀ TOP
+        </button>
+      </div>
 
       {/* Title */}
       <div style={{ position: "relative", zIndex: 5, textAlign: "center", marginBottom: "clamp(8px, 2vh, 24px)", flexShrink: 0 }}>

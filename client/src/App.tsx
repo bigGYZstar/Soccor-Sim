@@ -4,13 +4,17 @@ import NotFound from "@/pages/NotFound";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import TopPage from "./pages/TopPage";
 import Home from "./pages/Home";
+import GachaPage from "./pages/GachaPage";
 
 
 function Router() {
   return (
     <Switch>
-      <Route path={"/"} component={Home} />
+      <Route path={"/"} component={TopPage} />
+      <Route path={"/match"} component={Home} />
+      <Route path={"/gacha"} component={GachaPage} />
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />
