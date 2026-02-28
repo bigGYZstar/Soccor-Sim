@@ -10,6 +10,7 @@ function teamName(team: number): string {
 }
 
 // ★ v10.3.0: Helper to record on-ball heatmap event
+// ★ v10.6.0: Side normalization - flip coordinates in 2nd half
 function recordOnBall(
   st: State,
   player: Player,
@@ -19,8 +20,13 @@ function recordOnBall(
   if (!hm) return;
   const PH = 34;  // pitchHalfH
   const PW = 52.5;  // pitchHalfW
-  const nx = (player.pos.x + PW) / (PW * 2);
-  const ny = (player.pos.y + PH) / (PH * 2);
+  let nx = (player.pos.x + PW) / (PW * 2);
+  let ny = (player.pos.y + PH) / (PH * 2);
+  // ★ v10.6.0: Flip coordinates in 2nd half to normalize sides
+  if (st.half === 2) {
+    nx = 1 - nx;
+    ny = 1 - ny;
+  }
   hm.onBall.push({ x: Math.max(0, Math.min(1, nx)), y: Math.max(0, Math.min(1, ny)), type });
   // Limit to 500 on-ball events per player
   if (hm.onBall.length > 500) hm.onBall.shift();

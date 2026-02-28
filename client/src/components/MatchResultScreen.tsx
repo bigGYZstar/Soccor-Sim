@@ -1,4 +1,5 @@
 // ★ v10.5.0: Match Result Screen - SFC Style with All-Player Heatmaps, Ratings, Drill-down
+// ★ v10.6.0: Match Result Screen - SFC Style with Half-Pitch Heatmaps, Side-Normalized
 // Design: Super Famicom (SNES) aesthetic - dark palette, pixel fonts, scanline effects
 import { useState, useEffect, useMemo, useRef } from 'react';
 import type { State, PlayerHeatmap } from '../game/types';
@@ -115,43 +116,102 @@ function StatBar({ label, value, max, color }: { label: string; value: number; m
   );
 }
 
-// --- Heatmap Canvas (Full) ----------------------------------------------------
+// --- Heatmap Canvas (Half Pitch) -----------------------------------------------
+// ★ v10.6.0: Half-pitch display - shows only the attacking half for each team
+// Data is already side-normalized (2nd half flipped), so:
+//   team=-1 (Blue, 1st half): attacks right, so attacking half = x > 0.5
+//   team=1 (Red, 1st half): attacks left, so attacking half = x < 0.5
+// We remap coordinates so the goal is always on the right side of the canvas.
 function HeatmapCanvas({ hm, width = 280, height = 170 }: { hm: PlayerHeatmap; width?: number; height?: number }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Determine which half to show based on the team recorded at initialization (1st half team)
+  const attacksRight = hm.team === -1; // Blue attacks right in 1st half
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+
+    // Helper: remap full-pitch normalized coords (0-1) to half-pitch canvas coords
+    // For attacksRight team: attacking half is x in [0.5, 1.0] → canvas [0, width]
+    // For attacksLeft team: attacking half is x in [0.0, 0.5] → canvas [width, 0] (flipped)
+    // We always show goal on the right side of the canvas
+    const remapX = (fx: number): number => {
+      if (attacksRight) {
+        // x: 0.5→0, 1.0→width (attacking half is right side)
+        return ((fx - 0.5) * 2) * width;
+      } else {
+        // x: 0.0→width, 0.5→0 (attacking half is left side, flip to show goal on right)
+        return (1 - fx * 2) * width;
+      }
+    };
+    const remapY = (fy: number): number => fy * height;
+
+    // Clamp check: is this point in the attacking half?
+    const inAttackingHalf = (fx: number): boolean => {
+      if (attacksRight) return fx >= 0.35; // Include some of own half for context
+      return fx <= 0.65;
+    };
+
     // Background - dark green pitch
     ctx.fillStyle = '#0a1a0a';
     ctx.fillRect(0, 0, width, height);
-    // Pitch lines
+
+    // Pitch lines for half pitch
     ctx.strokeStyle = '#1e4a1e';
     ctx.lineWidth = 0.8;
-    // Center line
-    ctx.beginPath(); ctx.moveTo(width / 2, 0); ctx.lineTo(width / 2, height); ctx.stroke();
-    // Center circle
-    ctx.beginPath(); ctx.arc(width / 2, height / 2, Math.min(width, height) * 0.15, 0, Math.PI * 2); ctx.stroke();
-    // Penalty areas
-    const paW = width * 0.15; const paH = height * 0.5;
-    ctx.strokeRect(0, (height - paH) / 2, paW, paH);
+
+    // Halfway line (left edge of canvas = halfway line)
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, height); ctx.stroke();
+
+    // Center circle (half arc on left edge)
+    const ccR = Math.min(width, height) * 0.22;
+    ctx.beginPath(); ctx.arc(0, height / 2, ccR, -Math.PI / 2, Math.PI / 2); ctx.stroke();
+
+    // Penalty area (on the right = goal side)
+    const paW = width * 0.25; const paH = height * 0.6;
     ctx.strokeRect(width - paW, (height - paH) / 2, paW, paH);
-    // Goal areas
-    const gaW = width * 0.06; const gaH = height * 0.28;
-    ctx.strokeRect(0, (height - gaH) / 2, gaW, gaH);
+
+    // Goal area
+    const gaW = width * 0.10; const gaH = height * 0.32;
     ctx.strokeRect(width - gaW, (height - gaH) / 2, gaW, gaH);
+
+    // Penalty spot
+    ctx.fillStyle = '#1e4a1e';
+    ctx.beginPath(); ctx.arc(width * 0.78, height / 2, 1.5, 0, Math.PI * 2); ctx.fill();
+
+    // Penalty arc
+    ctx.strokeStyle = '#1e4a1e';
+    ctx.beginPath();
+    ctx.arc(width * 0.78, height / 2, paH * 0.32, -Math.PI * 0.45, Math.PI * 0.45);
+    ctx.stroke();
+
+    // Goal line (right edge)
+    ctx.strokeStyle = '#2a6a2a';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(width, 0); ctx.lineTo(width, height); ctx.stroke();
+
     // Outer border
     ctx.strokeStyle = '#2a6a2a';
     ctx.lineWidth = 1;
     ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+
+    // "ATK →" label
+    ctx.fillStyle = '#2a6a2a';
+    ctx.font = `bold 8px ${F}`;
+    ctx.textAlign = 'center';
+    ctx.fillText('ATK \u2192', width / 2, height - 4);
+
     // Off-ball heatmap
     if (hm.offBall.length > 0) {
-      const gridW = 24; const gridH = 14;
+      const gridW = 20; const gridH = 14;
       const grid = new Float32Array(gridW * gridH);
       for (const pt of hm.offBall) {
-        const gx = Math.floor(pt.x * gridW);
-        const gy = Math.floor(pt.y * gridH);
+        if (!inAttackingHalf(pt.x)) continue;
+        const cx = remapX(pt.x);
+        const cy = remapY(pt.y);
+        const gx = Math.floor((cx / width) * gridW);
+        const gy = Math.floor((cy / height) * gridH);
         for (let dy = -2; dy <= 2; dy++) {
           for (let dx = -2; dx <= 2; dx++) {
             const nx = gx + dx; const ny = gy + dy;
@@ -192,17 +252,20 @@ function HeatmapCanvas({ hm, width = 280, height = 170 }: { hm: PlayerHeatmap; w
     };
     ctx.globalAlpha = 0.92;
     for (const ev of hm.onBall) {
+      if (!inAttackingHalf(ev.x)) continue;
+      const ex = remapX(ev.x);
+      const ey = remapY(ev.y);
       const mc = markerColors[ev.type] || '#ffffff';
       ctx.fillStyle = mc;
       ctx.shadowColor = mc;
       ctx.shadowBlur = ev.type === 'shot' ? 6 : 3;
       ctx.beginPath();
-      ctx.arc(ev.x * width, ev.y * height, ev.type === 'shot' ? 3.5 : 2, 0, Math.PI * 2);
+      ctx.arc(ex, ey, ev.type === 'shot' ? 3.5 : 2, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.shadowBlur = 0;
     ctx.globalAlpha = 1;
-  }, [hm, width, height]);
+  }, [hm, width, height, attacksRight]);
   return (
     <canvas
       ref={canvasRef}
@@ -213,25 +276,48 @@ function HeatmapCanvas({ hm, width = 280, height = 170 }: { hm: PlayerHeatmap; w
   );
 }
 
-// --- Mini Heatmap Canvas ------------------------------------------------------
+// --- Mini Heatmap Canvas (Half Pitch) -----------------------------------------
+// ★ v10.6.0: Half-pitch display for mini heatmaps
 function MiniHeatmapCanvas({ hm, width = 72, height = 44 }: { hm: PlayerHeatmap; width?: number; height?: number }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const attacksRight = hm.team === -1;
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+
+    const remapX = (fx: number): number => {
+      if (attacksRight) return ((fx - 0.5) * 2) * width;
+      return (1 - fx * 2) * width;
+    };
+    const remapY = (fy: number): number => fy * height;
+    const inAttackingHalf = (fx: number): boolean => {
+      if (attacksRight) return fx >= 0.35;
+      return fx <= 0.65;
+    };
+
     ctx.fillStyle = '#0a1a0a';
     ctx.fillRect(0, 0, width, height);
+    // Half-pitch lines
     ctx.strokeStyle = '#1e4a1e'; ctx.lineWidth = 0.5;
-    ctx.beginPath(); ctx.moveTo(width / 2, 0); ctx.lineTo(width / 2, height); ctx.stroke();
+    // Halfway line (left edge)
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, height); ctx.stroke();
+    // Penalty area (right side = goal side)
+    const paW = width * 0.25; const paH = height * 0.6;
+    ctx.strokeRect(width - paW, (height - paH) / 2, paW, paH);
+    // Outer border
     ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+
     if (hm.offBall.length > 0) {
-      const gridW = 18; const gridH = 10;
+      const gridW = 14; const gridH = 10;
       const grid = new Float32Array(gridW * gridH);
       for (const pt of hm.offBall) {
-        const gx = Math.floor(pt.x * gridW);
-        const gy = Math.floor(pt.y * gridH);
+        if (!inAttackingHalf(pt.x)) continue;
+        const cx = remapX(pt.x);
+        const cy = remapY(pt.y);
+        const gx = Math.floor((cx / width) * gridW);
+        const gy = Math.floor((cy / height) * gridH);
         for (let dy = -1; dy <= 1; dy++) {
           for (let dx = -1; dx <= 1; dx++) {
             const nx = gx + dx; const ny = gy + dy;
@@ -261,13 +347,16 @@ function MiniHeatmapCanvas({ hm, width = 72, height = 44 }: { hm: PlayerHeatmap;
     const mc: Record<string, string> = { pass: '#44aaff', shot: '#ff4444', dribble: '#ffaa00', receive: '#44ff88', tackle: '#ff88ff', intercept: '#ff88ff', save: '#ffffff' };
     ctx.globalAlpha = 0.9;
     for (const ev of hm.onBall) {
+      if (!inAttackingHalf(ev.x)) continue;
+      const ex = remapX(ev.x);
+      const ey = remapY(ev.y);
       ctx.fillStyle = mc[ev.type] || '#fff';
       ctx.beginPath();
-      ctx.arc(ev.x * width, ev.y * height, ev.type === 'shot' ? 2 : 1.2, 0, Math.PI * 2);
+      ctx.arc(ex, ey, ev.type === 'shot' ? 2 : 1.2, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
-  }, [hm, width, height]);
+  }, [hm, width, height, attacksRight]);
   return (
     <canvas
       ref={canvasRef}

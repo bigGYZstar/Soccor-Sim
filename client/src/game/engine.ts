@@ -3478,6 +3478,11 @@ export function update(st: State, dt: number) {
   }
 
   // ★ v10.3.0: Heatmap off-ball sampling (every 15 frames ~= 0.25s at 60fps)
+  // ★ v10.6.0: Side normalization - in 2nd half, teams are swapped so we flip coordinates
+  // to ensure all data is recorded as if the player always attacks in the same direction.
+  // In 1st half: team=-1 attacks right (+x), team=1 attacks left (-x)
+  // In 2nd half: teams are swapped, so we need to flip x and y to normalize
+  const isSecondHalf = st.half === 2;
   const HEATMAP_SAMPLE_INTERVAL = 15;
   st.heatmapSampleCounter++;
   if (st.heatmapSampleCounter >= HEATMAP_SAMPLE_INTERVAL) {
@@ -3489,8 +3494,13 @@ export function update(st: State, dt: number) {
       if (!hm) continue;
       if (st.ball.owner !== p.idx) {
         // Off-ball: normalize to 0-1 range
-        const nx = (p.pos.x + PW) / (PW * 2);
-        const ny = (p.pos.y + PH) / (PH * 2);
+        let nx = (p.pos.x + PW) / (PW * 2);
+        let ny = (p.pos.y + PH) / (PH * 2);
+        // ★ v10.6.0: Flip coordinates in 2nd half to normalize sides
+        if (isSecondHalf) {
+          nx = 1 - nx;
+          ny = 1 - ny;
+        }
         hm.offBall.push({ x: Math.max(0, Math.min(1, nx)), y: Math.max(0, Math.min(1, ny)) });
         // Limit to 2000 samples per player
         if (hm.offBall.length > 2000) hm.offBall.shift();
