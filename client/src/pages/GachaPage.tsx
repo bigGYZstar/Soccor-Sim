@@ -7,13 +7,14 @@
  *             スクロールコンテナを明確化。touch-action: panYを設定。
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useLocation } from 'wouter';
-import type { PlayerCard, PackType } from '@/lib/cardData';
-import { PACK_CONFIGS } from '@/lib/cardData';
+import type { PlayerCard, PackType, Player } from '@/lib/cardData';
+import { PACK_CONFIGS, drawOpeningPack } from '@/lib/cardData';
 import PackOpening from '@/components/PackOpening';
 import PackSelector from '@/components/PackSelector';
 import Collection from '@/components/Collection';
+import OpeningPackModal from '@/components/OpeningPackModal';
 import { useCollection } from '@/hooks/useCollection';
 
 const HERO_BG_URL = 'https://private-us-east-1.manuscdn.com/sessionFile/bApKv3n2R3hCPPkHL3aSNL/sandbox/6o0og1QJ64AfUSMNxuP9Kq-img-1_1771940463000_na1fn_aGVyby1iZw.png?x-oss-process=image/resize,w_1920,h_1920/format,webp/quality,q_80&Expires=1798761600&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly9wcml2YXRlLXVzLWVhc3QtMS5tYW51c2Nkbi5jb20vc2Vzc2lvbkZpbGUvYkFwS3YzbjJSM2hDUFBrSEwzYVNOTC9zYW5kYm94LzZvMG9nMVFKNjRBZlVTTU54dVA5S3EtaW1nLTFfMTc3MTk0MDQ2MzAwMF9uYTFmbl9hR1Z5YnkxaVp3LnBuZz94LW9zcy1wcm9jZXNzPWltYWdlL3Jlc2l6ZSx3XzE5MjAsaF8xOTIwL2Zvcm1hdCx3ZWJwL3F1YWxpdHkscV84MCIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc5ODc2MTYwMH19fV19&Key-Pair-Id=K2HSFNDJXOU9YS&Signature=CqZimzM6bAG8NS8ps5q6QXImbKsbx2PynL4GNW8THQoe51NYlnid6N010NroY4h85SAieyUgACpBVXp1L9qM004aldcycwWtezZqL~~qSMA6caJewpGp4PUqufvWMQpAr1WLtf4uLzYmdRtkDU2QmHtVQgpAITG7FL9j-EPlLA6-NLqVgmsr9eC-SeqPbUsNO~J9XYrNmj~GIC-UGCboW3e8qbZoev7EIJzBevimpDB9EsEi-GzNplFAZ9xd928~8rJdK9w~vpoi6gxwfSsm6mtguvouWn84SkycZ1WQCVb8NRCCvPKWgY4MbvFZWyfpPviZ9MqhGXj8LoPB~sh7Gg__';
@@ -22,10 +23,30 @@ const STADIUM_URL = 'https://private-us-east-1.manuscdn.com/sessionFile/bApKv3n2
 
 export default function GachaPage() {
   const [, setLocation] = useLocation();
-  const { collection, totalOpened, coins, addCards, spendCoins } = useCollection();
+  const { collection, totalOpened, coins, openingPackDone, addCards, spendCoins, markOpeningPackDone } = useCollection();
   const [showCollection, setShowCollection] = useState(false);
   const [selectedPack, setSelectedPack] = useState<PackType>('standard');
   const [insufficientCoins, setInsufficientCoins] = useState(false);
+
+  // ★ オープニングパック: 初回のみ自動表示
+  const [showOpeningPack, setShowOpeningPack] = useState(false);
+  const [openingCards, setOpeningCards] = useState<Player[]>([]);
+
+  useEffect(() => {
+    if (!openingPackDone) {
+      // 初回訪問: オープニングパックを抽選して表示
+      const cards = drawOpeningPack();
+      setOpeningCards(cards);
+      setShowOpeningPack(true);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleOpeningPackClose = useCallback(() => {
+    // カードをコレクションに追加してモーダルを閉じる
+    addCards(openingCards);
+    markOpeningPackDone();
+    setShowOpeningPack(false);
+  }, [openingCards, addCards, markOpeningPackDone]);
 
   const packCost = PACK_CONFIGS[selectedPack].cost;
   const canAfford = coins >= packCost;
@@ -291,6 +312,14 @@ export default function GachaPage() {
         isOpen={showCollection}
         onClose={() => setShowCollection(false)}
       />
+
+      {/* ★ オープニングパック: 初回のみ表示 */}
+      {showOpeningPack && openingCards.length > 0 && (
+        <OpeningPackModal
+          cards={openingCards}
+          onClose={handleOpeningPackClose}
+        />
+      )}
     </div>
   );
 }

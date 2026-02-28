@@ -1324,3 +1324,46 @@ export const RARITY_CONFIG: Record<string, {
     flashColor: 'rgba(0,255,204,0.8)',
   },
 };
+
+// ============================================================
+// オープニングパック: 初回限定・全ポジション1名ずつ・ノーマルのみ
+// 構成: GK×1, DF×4, MF×4, FW×2 = 11枚
+// ============================================================
+
+/** ポジションカテゴリ判定 */
+function getPositionCategory(pos: string): 'GK' | 'DF' | 'MF' | 'FW' {
+  const p = pos.toUpperCase();
+  if (p === 'GK') return 'GK';
+  if (['DF', 'CB', 'LB', 'RB', 'LWB', 'RWB', 'SW'].some(r => p === r || p.includes(r))) return 'DF';
+  if (['MF', 'CM', 'CDM', 'CAM', 'DM', 'AM', 'LM', 'RM', 'WM'].some(r => p === r || p.includes(r))) return 'MF';
+  return 'FW';
+}
+
+/**
+ * オープニングパック抽選
+ * - ノーマル（N）レアリティのみ
+ * - GK×1, DF×4, MF×4, FW×2 の11枚構成
+ * - 各ポジションからランダムに1名ずつ選出（重複なし）
+ */
+export function drawOpeningPack(): Player[] {
+  const normals = ALL_PLAYERS.filter(p => p.rarity === 'N');
+
+  const byCategory: Record<string, Player[]> = { GK: [], DF: [], MF: [], FW: [] };
+  for (const p of normals) {
+    const cat = getPositionCategory(p.position);
+    byCategory[cat].push(p);
+  }
+
+  function pickRandom(arr: Player[], count: number): Player[] {
+    const shuffled = [...arr].sort(() => Math.random() - 0.5);
+    return shuffled.slice(0, count);
+  }
+
+  const gks = pickRandom(byCategory.GK, 1);
+  const dfs = pickRandom(byCategory.DF, 4);
+  const mfs = pickRandom(byCategory.MF, 4);
+  const fws = pickRandom(byCategory.FW, 2);
+
+  // Order: GK, DF×4, MF×4, FW×2
+  return [...gks, ...dfs, ...mfs, ...fws];
+}
