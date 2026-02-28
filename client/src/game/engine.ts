@@ -1558,7 +1558,7 @@ export function doPassTo(st: State, idx: number, targetIdx: number) {
   }
   
   // ★ v9.15.0: Action log with foot info
-  logPass(st, me, tm.num, passDist, false, usedFoot);
+  logPass(st, me, tm.num, passDist, false, usedFoot, tm.pos);
 }
 
 export function doLongPassTo(st: State, idx: number, targetIdx: number) {
@@ -1621,7 +1621,7 @@ export function doLongPassTo(st: State, idx: number, targetIdx: number) {
   }
   
   // ★ v9.15.0: Action log with foot info
-  logPass(st, me, tm.num, lpDist, true, usedFoot);
+  logPass(st, me, tm.num, lpDist, true, usedFoot, tm.pos);
 }
 
 export function doDribble(st: State, idx: number) {

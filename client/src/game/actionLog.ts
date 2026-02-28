@@ -11,10 +11,12 @@ function teamName(team: number): string {
 
 // ★ v10.3.0: Helper to record on-ball heatmap event
 // ★ v10.6.0: Side normalization - flip coordinates in 2nd half
+// ★ v10.9.0: Added toX/toY/success for pass/shot trajectory lines
 function recordOnBall(
   st: State,
   player: Player,
-  type: 'pass' | 'shot' | 'dribble' | 'receive' | 'tackle' | 'intercept' | 'save'
+  type: 'pass' | 'shot' | 'dribble' | 'receive' | 'tackle' | 'intercept' | 'save',
+  opts?: { toX?: number; toY?: number; success?: boolean }
 ) {
   const hm = st.heatmaps[player.idx];
   if (!hm) return;
@@ -27,7 +29,21 @@ function recordOnBall(
     nx = 1 - nx;
     ny = 1 - ny;
   }
-  hm.onBall.push({ x: Math.max(0, Math.min(1, nx)), y: Math.max(0, Math.min(1, ny)), type });
+  const entry: { x: number; y: number; type: typeof type; toX?: number; toY?: number; success?: boolean } = {
+    x: Math.max(0, Math.min(1, nx)),
+    y: Math.max(0, Math.min(1, ny)),
+    type,
+  };
+  if (opts?.toX !== undefined) {
+    // Also normalize toX/toY with same side normalization
+    let toNx = opts.toX;
+    let toNy = opts.toY ?? 0.5;
+    if (st.half === 2) { toNx = 1 - toNx; toNy = 1 - toNy; }
+    entry.toX = Math.max(0, Math.min(1, toNx));
+    entry.toY = Math.max(0, Math.min(1, toNy));
+  }
+  if (opts?.success !== undefined) entry.success = opts.success;
+  hm.onBall.push(entry);
   // Limit to 500 on-ball events per player
   if (hm.onBall.length > 500) hm.onBall.shift();
 }
@@ -85,8 +101,11 @@ export function updateLogTTL(st: State, dt: number) {
 
 // --- Commentary generators ---
 
-export function logPass(st: State, passer: Player, targetNum: number, dist: number, isLong: boolean, usedFoot?: "L" | "R") {
-  recordOnBall(st, passer, 'pass');
+export function logPass(st: State, passer: Player, targetNum: number, dist: number, isLong: boolean, usedFoot?: "L" | "R", targetPos?: { x: number; y: number }) {
+  const PH = 34; const PW = 52.5;
+  const toX = targetPos ? (targetPos.x + PW) / (PW * 2) : undefined;
+  const toY = targetPos ? (targetPos.y + PH) / (PH * 2) : undefined;
+  recordOnBall(st, passer, 'pass', { toX, toY, success: true });
   const distLabel = dist < 8 ? "ショート" : dist < 18 ? "ミドル" : "ロング";
   const typeLabel = isLong ? "ロングパス" : "パス";
   const footLabel = usedFoot ? (usedFoot === "R" ? "右足" : "左足") : "";
@@ -127,8 +146,14 @@ export function logPassReceive(st: State, receiver: Player, passerNum: number) {
   });
 }
 
-export function logShot(st: State, shooter: Player, dist: number) {
-  recordOnBall(st, shooter, 'shot');
+export function logShot(st: State, shooter: Player, dist: number, goalPos?: { x: number; y: number }) {
+  const PH = 34; const PW = 52.5;
+  // Shot target: toward opponent goal (x = -team * PW)
+  const goalX = goalPos ? goalPos.x : -shooter.team * PW;
+  const goalY = goalPos ? goalPos.y : 0;
+  const toX = (goalX + PW) / (PW * 2);
+  const toY = (goalY + PH) / (PH * 2);
+  recordOnBall(st, shooter, 'shot', { toX, toY, success: true });
   const distLabel = dist < 12 ? "至近距離" : dist < 20 ? "ミドル" : "ロング";
   const texts = [
     `${playerLabel(shooter)} ${distLabel}シュート！！`,

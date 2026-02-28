@@ -262,7 +262,7 @@ export interface PlayerHeatmap {
   /** Off-ball positions: sampled every N frames (normalized 0-1 in pitch coords) */
   offBall: { x: number; y: number }[];
   /** On-ball events: when player had possession or touched ball */
-  onBall: { x: number; y: number; type: 'pass' | 'shot' | 'dribble' | 'receive' | 'tackle' | 'intercept' | 'save' }[];
+  onBall: { x: number; y: number; type: 'pass' | 'shot' | 'dribble' | 'receive' | 'tackle' | 'intercept' | 'save'; toX?: number; toY?: number; success?: boolean }[];
 }
 
 export interface State {

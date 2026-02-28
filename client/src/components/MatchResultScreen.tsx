@@ -256,24 +256,110 @@ function HeatmapCanvas({ hm, width = 280, height = 170 }: { hm: PlayerHeatmap; w
         }
       }
     }
-    // On-ball events
+    // ★ v10.9.0: Draw pass/shot trajectory lines BEFORE markers
+    // Pass lines: solid blue (success), dashed gray (no explicit success)
+    // Shot lines: solid red with arrowhead
+    const drawArrow = (x1: number, y1: number, x2: number, y2: number, color: string, alpha: number, dashed: boolean, arrowSize: number) => {
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = 1.2;
+      if (dashed) ctx.setLineDash([3, 3]);
+      else ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      // Arrowhead
+      const angle = Math.atan2(y2 - y1, x2 - x1);
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(x2, y2);
+      ctx.lineTo(x2 - arrowSize * Math.cos(angle - Math.PI / 6), y2 - arrowSize * Math.sin(angle - Math.PI / 6));
+      ctx.lineTo(x2 - arrowSize * Math.cos(angle + Math.PI / 6), y2 - arrowSize * Math.sin(angle + Math.PI / 6));
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    };
+    for (const ev of hm.onBall) {
+      if ((ev.type === 'pass' || ev.type === 'shot') && ev.toX !== undefined && ev.toY !== undefined) {
+        const x1 = remapX(ev.x); const y1 = remapY(ev.y);
+        const x2 = remapX(ev.toX); const y2 = remapY(ev.toY);
+        const dist = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+        if (dist < 3) continue; // Skip very short lines
+        if (ev.type === 'pass') {
+          drawArrow(x1, y1, x2, y2, '#44aaff', 0.45, false, 4);
+        } else {
+          // Shot: bright red with glow
+          drawArrow(x1, y1, x2, y2, '#ff4444', 0.6, false, 5);
+        }
+      }
+    }
+
+    // On-ball event markers (drawn on top of lines)
     const markerColors: Record<string, string> = {
-      pass: '#44aaff', shot: '#ff4444', dribble: '#ffaa00',
+      pass: '#44aaff', shot: '#ff6644', dribble: '#ffaa00',
       receive: '#44ff88', tackle: '#ff88ff', intercept: '#ff88ff', save: '#ffffff',
     };
-    ctx.globalAlpha = 0.92;
+    ctx.globalAlpha = 0.95;
     for (const ev of hm.onBall) {
       const ex = remapX(ev.x);
       const ey = remapY(ev.y);
       const mc = markerColors[ev.type] || '#ffffff';
       ctx.fillStyle = mc;
       ctx.shadowColor = mc;
-      ctx.shadowBlur = ev.type === 'shot' ? 6 : 3;
+      ctx.shadowBlur = ev.type === 'shot' ? 8 : ev.type === 'pass' ? 4 : 3;
+      const r = ev.type === 'shot' ? 4 : ev.type === 'pass' ? 2.5 : 2;
       ctx.beginPath();
-      ctx.arc(ex, ey, ev.type === 'shot' ? 3.5 : 2, 0, Math.PI * 2);
+      ctx.arc(ex, ey, r, 0, Math.PI * 2);
       ctx.fill();
+      // Shot: add outer ring for emphasis
+      if (ev.type === 'shot') {
+        ctx.globalAlpha = 0.35;
+        ctx.strokeStyle = '#ff4444';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(ex, ey, 7, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 0.95;
+      }
     }
     ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+
+    // ★ v10.9.0: Legend at bottom
+    const legendY = height - 2;
+    const legendItems = [
+      { color: '#44aaff', label: 'Pass' },
+      { color: '#ff6644', label: 'Shot' },
+      { color: '#ffaa00', label: 'Drib' },
+      { color: '#44ff88', label: 'Recv' },
+    ];
+    ctx.font = `5px ${F}`;
+    let lx = 3;
+    for (const li of legendItems) {
+      ctx.fillStyle = li.color;
+      ctx.shadowColor = li.color;
+      ctx.shadowBlur = 3;
+      ctx.beginPath();
+      ctx.arc(lx + 3, legendY - 5, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = '#aaaacc';
+      ctx.textAlign = 'left';
+      ctx.fillText(li.label, lx + 8, legendY - 2);
+      lx += 38;
+    }
+    // Pass line legend
+    ctx.globalAlpha = 0.7;
+    ctx.strokeStyle = '#44aaff';
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(lx, legendY - 5); ctx.lineTo(lx + 10, legendY - 5); ctx.stroke();
+    ctx.fillStyle = '#aaaacc';
+    ctx.fillText('line=pass/shot', lx + 12, legendY - 2);
+    ctx.setLineDash([]);
     ctx.globalAlpha = 1;
   }, [hm, width, height, attacksRight]);
   return (
@@ -370,6 +456,98 @@ function MiniHeatmapCanvas({ hm, width = 72, height = 44 }: { hm: PlayerHeatmap;
       width={width}
       height={height}
       style={{ display: 'block', imageRendering: 'pixelated', border: `1px solid ${BORDER}`, flexShrink: 0 }}
+    />
+  );
+}
+
+// --- Team Heatmap Canvas (Full Pitch, aggregated all players) ----------------
+// ★ v10.9.0: Aggregates offBall data from all players on a team
+function TeamHeatmapCanvas({ heatmaps, team, width = 136, height = 82 }: { heatmaps: PlayerHeatmap[]; team: number; width?: number; height?: number }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const attacksRight = team === -1; // Blue attacks right
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const remapX = (fx: number): number => attacksRight ? fx * width : (1 - fx) * width;
+    const remapY = (fy: number): number => fy * height;
+
+    ctx.fillStyle = '#0a1a0a';
+    ctx.fillRect(0, 0, width, height);
+    // Full-pitch lines
+    ctx.strokeStyle = '#1e4a1e'; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(width / 2, 0); ctx.lineTo(width / 2, height); ctx.stroke();
+    const ccR = Math.min(width, height) * 0.13;
+    ctx.beginPath(); ctx.arc(width / 2, height / 2, ccR, 0, Math.PI * 2); ctx.stroke();
+    const paW = width * 0.125; const paH = height * 0.6;
+    ctx.strokeRect(width - paW, (height - paH) / 2, paW, paH);
+    ctx.strokeRect(0, (height - paH) / 2, paW, paH);
+    ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+
+    // Aggregate all players' offBall data
+    const gridW = 22; const gridH = 14;
+    const grid = new Float32Array(gridW * gridH);
+    for (const hm of heatmaps) {
+      for (const pt of hm.offBall) {
+        const cx = remapX(pt.x);
+        const cy = remapY(pt.y);
+        const gx = Math.floor((cx / width) * gridW);
+        const gy = Math.floor((cy / height) * gridH);
+        for (let dy = -2; dy <= 2; dy++) {
+          for (let dx = -2; dx <= 2; dx++) {
+            const nx = gx + dx; const ny = gy + dy;
+            if (nx >= 0 && nx < gridW && ny >= 0 && ny < gridH) {
+              const d = Math.sqrt(dx * dx + dy * dy);
+              grid[ny * gridW + nx] += Math.max(0, 1 - d / 2.5);
+            }
+          }
+        }
+      }
+    }
+    const maxD = Math.max(...Array.from(grid), 0.001);
+    const teamR = team === -1 ? 68 : 220;
+    const teamG = team === -1 ? 136 : 68;
+    const teamB = team === -1 ? 255 : 68;
+    for (let gy2 = 0; gy2 < gridH; gy2++) {
+      for (let gx2 = 0; gx2 < gridW; gx2++) {
+        const density = grid[gy2 * gridW + gx2] / maxD;
+        if (density < 0.04) continue;
+        const px = (gx2 / gridW) * width;
+        const py = (gy2 / gridH) * height;
+        // Team-colored heatmap: low=dark team color, high=bright yellow/white
+        let r, g, b;
+        if (density < 0.4) {
+          const t = density / 0.4;
+          r = Math.round(teamR * t * 0.6); g = Math.round(teamG * t * 0.6); b = Math.round(teamB * t * 0.8);
+        } else if (density < 0.75) {
+          const t = (density - 0.4) / 0.35;
+          r = Math.round(teamR * 0.6 + t * (255 - teamR * 0.6));
+          g = Math.round(teamG * 0.6 + t * (200 - teamG * 0.6));
+          b = Math.round(teamB * 0.8 - t * teamB * 0.6);
+        } else {
+          const t = (density - 0.75) / 0.25;
+          r = 255; g = Math.round(200 + t * 55); b = Math.round(50 - t * 50);
+        }
+        ctx.fillStyle = `rgba(${r},${g},${b},${density * 0.78})`;
+        ctx.fillRect(px, py, width / gridW + 1, height / gridH + 1);
+      }
+    }
+    // Direction labels
+    ctx.fillStyle = '#2a6a2a';
+    ctx.font = `5px ${F}`;
+    ctx.textAlign = 'left';
+    ctx.fillText('DEF', 2, height - 2);
+    ctx.textAlign = 'right';
+    ctx.fillText('ATK', width - 2, height - 2);
+  }, [heatmaps, team, width, height, attacksRight]);
+  return (
+    <canvas
+      ref={canvasRef}
+      width={width}
+      height={height}
+      style={{ display: 'block', imageRendering: 'pixelated', border: `1px solid ${BORDER}`, width: '100%' }}
     />
   );
 }
@@ -706,6 +884,35 @@ export default function MatchResultScreen({ state, onClose, onCoinsEarned }: Mat
           );
         })}
       </div>
+
+      {/* Team Heatmaps */}
+      {st.heatmaps && st.heatmaps.length > 0 && (
+        <div style={{ background: BG2, border: `1px solid ${BORDER}`, padding: '10px 12px', marginBottom: 10 }}>
+          <div style={{ fontFamily: F, fontSize: 6, color: GRAY, marginBottom: 8, letterSpacing: 2 }}>-- TEAM HEATMAP --</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {/* Blue team heatmap */}
+            <div style={{ flex: 1 }}>
+              <div style={{ fontFamily: F, fontSize: 6, color: BLUE_TEAM, marginBottom: 4, textAlign: 'center' }}>BLUE</div>
+              <TeamHeatmapCanvas
+                heatmaps={st.heatmaps.filter(h => h.team === -1)}
+                team={-1}
+                width={Math.floor((280 - 8) / 2)}
+                height={Math.floor((280 - 8) / 2 * 0.6)}
+              />
+            </div>
+            {/* Red team heatmap */}
+            <div style={{ flex: 1 }}>
+              <div style={{ fontFamily: F, fontSize: 6, color: RED_TEAM, marginBottom: 4, textAlign: 'center' }}>RED</div>
+              <TeamHeatmapCanvas
+                heatmaps={st.heatmaps.filter(h => h.team === 1)}
+                team={1}
+                width={Math.floor((280 - 8) / 2)}
+                height={Math.floor((280 - 8) / 2 * 0.6)}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Buttons */}
       <div style={{ display: 'flex', gap: 8 }}>
