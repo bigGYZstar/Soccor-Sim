@@ -683,81 +683,85 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
     ctx.fillText(st.flashTxt, ox, oy);
   }
 
-  // 9. SFC-style HUD (responsive)
-  const hudW = Math.min(w * 0.7, sval(22));
-  const hudH = Math.max(32, h * 0.055);
-  const hx = (w - hudW)/2;
-  const hy = 8;
+  // 9. SFC-style HUD (responsive) - v11.2.0: Completely redesigned to avoid overlap
+  // Layout: [BLU label | BLU score | dash | RED score | RED label] top row
+  //         [MM:SS  |  1ST/2ND] bottom tab
+  const hudW = Math.min(w * 0.72, sval(26));
+  const hudRowH = Math.max(28, h * 0.048);  // Top row height
+  const tabH = Math.max(20, h * 0.032);     // Bottom tab height
+  const hx = (w - hudW) / 2;
+  const hy = 6;
 
-  // HUD background
+  // Top row background
   ctx.fillStyle = RETRO_DARK;
-  ctx.fillRect(hx, hy, hudW, hudH);
+  ctx.fillRect(hx, hy, hudW, hudRowH);
   ctx.strokeStyle = RETRO_GOLD;
   ctx.lineWidth = 2;
-  ctx.strokeRect(hx, hy, hudW, hudH);
-  
-  // Team color bars
-  ctx.fillStyle = "#2563eb"; ctx.fillRect(hx, hy, 4, hudH);
-  ctx.fillStyle = "#dc2626"; ctx.fillRect(hx + hudW - 4, hy, 4, hudH);
+  ctx.strokeRect(hx, hy, hudW, hudRowH);
 
-  // HUD layout: [BLU score] [center divider] [score RED]
-  // Left: BLU label + score, Right: score + RED label, Center: dash
-  const hudFontSize = Math.max(6, hudH * 0.28);
-  const scoreFontSize = Math.max(9, hudH * 0.45);
+  // Team color bars (left=blue, right=red)
+  ctx.fillStyle = "#2563eb"; ctx.fillRect(hx, hy, 5, hudRowH);
+  ctx.fillStyle = "#dc2626"; ctx.fillRect(hx + hudW - 5, hy, 5, hudRowH);
+
+  // Font sizes for top row
+  const labelFontSize = Math.max(6, hudRowH * 0.30);
+  const scoreFontSize = Math.max(10, hudRowH * 0.52);
   const centerX = w / 2;
-  const quarterW = hudW / 4;
 
-  // Blue side: "BLU" label
+  // BLU label (left side)
   ctx.fillStyle = "#60a5fa";
-  ctx.font = `${hudFontSize}px ${RETRO_FONT}`;
+  ctx.font = `${labelFontSize}px ${RETRO_FONT}`;
   ctx.textAlign = "left";
-  ctx.fillText("BLU", hx + 8, hy + hudH * 0.42);
+  ctx.fillText("BLU", hx + 10, hy + hudRowH * 0.62);
 
-  // Blue score (right-aligned toward center)
+  // Blue score
   ctx.fillStyle = RETRO_WHITE;
   ctx.font = `${scoreFontSize}px ${RETRO_FONT}`;
   ctx.textAlign = "right";
-  ctx.fillText(`${st.scoreBlue}`, centerX - 8, hy + hudH * 0.68);
+  ctx.fillText(`${st.scoreBlue}`, centerX - scoreFontSize * 0.7, hy + hudRowH * 0.72);
 
   // Dash separator
   ctx.fillStyle = RETRO_WHITE;
   ctx.textAlign = "center";
-  ctx.fillText("-", centerX, hy + hudH * 0.68);
+  ctx.fillText("-", centerX, hy + hudRowH * 0.72);
 
-  // Red score (left-aligned from center)
+  // Red score
   ctx.fillStyle = RETRO_WHITE;
   ctx.textAlign = "left";
-  ctx.fillText(`${st.scoreRed}`, centerX + 8, hy + hudH * 0.68);
+  ctx.fillText(`${st.scoreRed}`, centerX + scoreFontSize * 0.3, hy + hudRowH * 0.72);
 
-  // Red label
+  // RED label (right side)
   ctx.fillStyle = "#f87171";
-  ctx.font = `${hudFontSize}px ${RETRO_FONT}`;
+  ctx.font = `${labelFontSize}px ${RETRO_FONT}`;
   ctx.textAlign = "right";
-  ctx.fillText("RED", hx + hudW - 8, hy + hudH * 0.42);
+  ctx.fillText("RED", hx + hudW - 10, hy + hudRowH * 0.62);
 
-  // Timer tab with half indicator
-  const tabW = Math.max(80, hudW * 0.28);
-  const tabH = Math.max(22, hudH * 0.55);
+  // Bottom tab: timer + half indicator side by side
+  const tabW = Math.max(100, hudW * 0.38);
+  const tabX = w / 2 - tabW / 2;
+  const tabY = hy + hudRowH;
   ctx.fillStyle = RETRO_DARK;
-  ctx.fillRect(w/2 - tabW/2, hy + hudH, tabW, tabH);
+  ctx.fillRect(tabX, tabY, tabW, tabH);
   ctx.strokeStyle = RETRO_GOLD;
-  ctx.lineWidth = 2;
-  ctx.strokeRect(w/2 - tabW/2, hy + hudH, tabW, tabH);
-  
-  // ★ v9.22.0: Display match clock (0-90 minutes) instead of simulation time
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(tabX, tabY, tabW, tabH);
+
+  // Timer (left side of tab)
   const matchMin = Math.floor(st.matchClock || 0);
   const matchSec = Math.floor(((st.matchClock || 0) % 1) * 60);
-  const timerFontSize = Math.max(6, tabH * 0.40);
+  const timerFontSize = Math.max(7, tabH * 0.52);
   ctx.fillStyle = RETRO_GREEN;
   ctx.font = `${timerFontSize}px ${RETRO_FONT}`;
-  ctx.fillText(`${matchMin.toString().padStart(2,'0')}:${matchSec.toString().padStart(2,'0')}`, w/2, hy + hudH + tabH * 0.55);
-  
-  // Half indicator
-  const halfFontSize = Math.max(5, tabH * 0.28);
+  ctx.textAlign = "left";
+  ctx.fillText(`${matchMin.toString().padStart(2,'0')}:${matchSec.toString().padStart(2,'0')}`, tabX + 8, tabY + tabH * 0.72);
+
+  // Half indicator (right side of tab)
+  const halfText = st.matchPhase === "halftime" ? "HT" : st.matchPhase === "fulltime" ? "FT" : st.half === 1 ? "1ST" : "2ND";
+  const halfFontSize = Math.max(6, tabH * 0.44);
   ctx.fillStyle = RETRO_GOLD;
   ctx.font = `${halfFontSize}px ${RETRO_FONT}`;
-  const halfText = st.matchPhase === "halftime" ? "HT" : st.matchPhase === "fulltime" ? "FT" : st.half === 1 ? "1ST" : "2ND";
-  ctx.fillText(halfText, w/2, hy + hudH + tabH * 0.88);
+  ctx.textAlign = "right";
+  ctx.fillText(halfText, tabX + tabW - 8, tabY + tabH * 0.72);
 
   // ★ v9.9.0: SFC-style Action Log overlay (bottom-left)
   if (st.actionLog && st.actionLog.length > 0) {
@@ -770,8 +774,8 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
     const maxVisible = Math.min(8, st.actionLog.length);
     const visibleLogs = st.actionLog.slice(-maxVisible);
     
-    // Log panel position: bottom-left, above the control bar - wider and taller
-    const logPanelW = Math.min(w * 0.55, 500);
+    // Log panel position: bottom, above the control bar - v11.2.0: full-width横長
+    const logPanelW = w - 16;  // 画面ほぼ全幅（左右8pxマージン）
     const logPanelH = maxVisible * logLineH + logPadY * 2;
     const logX = 8;
     const logY = h - logPanelH - 50; // Above control bar
