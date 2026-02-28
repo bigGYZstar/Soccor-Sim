@@ -148,6 +148,7 @@ export interface Player {
   pos: V;
   vel: V;  // Velocity vector for inertia
   team: number;
+  isBlue: boolean;  // ★ v11.1.0: Original team (true=Blue, false=Red) - never changes between halves
   num: number;
   home: V;
   face: V;

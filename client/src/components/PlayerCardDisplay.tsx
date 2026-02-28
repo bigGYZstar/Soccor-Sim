@@ -133,8 +133,8 @@ export default function PlayerCardDisplay({ card, revealed, index, onReveal }: P
       className="relative cursor-pointer select-none"
       style={{
         perspective: '1000px',
-        width: 'clamp(100px, 28vw, 160px)',
-        height: 'clamp(150px, 42vw, 240px)',
+        width: 'clamp(110px, 28vw, 160px)',
+        height: 'clamp(180px, 48vw, 270px)',
       }}
       onClick={handleClick}
     >
@@ -182,7 +182,7 @@ export default function PlayerCardDisplay({ card, revealed, index, onReveal }: P
           </div>
 
           {/* Player Info Area */}
-          <div className="px-3 pt-2 pb-1">
+          <div className="px-2 pt-1.5 pb-6" style={{ overflow: 'hidden', height: 'calc(100% - 26px)' }}>
             {/* Overall & Position */}
             <div className="flex justify-between items-start mb-1">
               <div
@@ -250,7 +250,7 @@ export default function PlayerCardDisplay({ card, revealed, index, onReveal }: P
             </div>
 
             {/* Stats */}
-            <div className="space-y-0.5">
+            <div style={{ marginTop: '2px' }}>
               {[
                 { label: 'SPD', value: card.stats.speed },
                 { label: 'SHT', value: card.stats.shoot },

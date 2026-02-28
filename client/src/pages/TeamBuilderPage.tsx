@@ -66,6 +66,7 @@ function FormationPitch({
   onSlotClick,
   teamColor,
   teamLabel,
+  isRed = false,
 }: {
   formationId: FormationId;
   slots: (CollectedCard | null)[];
@@ -73,16 +74,22 @@ function FormationPitch({
   onSlotClick: (idx: number) => void;
   teamColor: string;
   teamLabel: string;
+  isRed?: boolean;
 }) {
   const formation = FORMATIONS[formationId];
   // Normalize positions to 0-100 range for display
   // ★ v10.7.0: Invert Y to match match canvas (w2s uses y: oy - p.y*sc)
   // In match: positive y = screen UP, negative y = screen DOWN
   // So in TeamBuilder: negate y so LB (y=-24) → bottom, RB (y=+24) → top
-  const positions = formation.positions.map(p => ({
-    x: ((p.x + 52.5) / 105) * 100,  // 0 = left goal, 100 = right goal
-    y: ((-p.y + 34) / 68) * 100,     // 0 = top, 100 = bottom (Y inverted to match canvas)
-  }));
+  // ★ v11.1.0: Red team is mirrored (right side, attacking left)
+  const positions = formation.positions.map(p => {
+    const rawX = ((p.x + 52.5) / 105) * 100;  // 0 = left goal, 100 = right goal
+    const rawY = ((-p.y + 34) / 68) * 100;     // 0 = top, 100 = bottom (Y inverted)
+    return {
+      x: isRed ? (100 - rawX) : rawX,  // Red: mirror X so GK is on right side
+      y: isRed ? (100 - rawY) : rawY,  // Red: mirror Y so LB/RB sides are correct
+    };
+  });
 
   return (
     <div style={{
@@ -718,6 +725,7 @@ export default function TeamBuilderPage() {
             onSlotClick={handleSlotClick}
             teamColor={activeTeam === 'blue' ? '#4488ff' : '#ff4444'}
             teamLabel={activeTeam === 'blue' ? 'BLUE TEAM' : 'RED TEAM'}
+            isRed={activeTeam === 'red'}
           />
 
           {/* Action buttons */}

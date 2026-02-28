@@ -451,7 +451,7 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
     const unit = Math.max(2.0, r * 0.45); // Pixel unit size (v9.4.0: increased for visibility)
     
     // Team colors (SFC palette - limited, saturated colors)
-    const isBlue = p.team === -1;
+    const isBlue = p.isBlue;  // ★ v11.1.0: Use isBlue flag (never changes between halves)
     const shirtColor = isBlue 
       ? (p.isGK ? "#00a0e0" : "#2060d0") 
       : (p.isGK ? "#e0a000" : "#d02020");
@@ -700,20 +700,40 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
   ctx.fillStyle = "#2563eb"; ctx.fillRect(hx, hy, 4, hudH);
   ctx.fillStyle = "#dc2626"; ctx.fillRect(hx + hudW - 4, hy, 4, hudH);
 
-  // Team names
-  const hudFontSize = Math.max(6, hudH * 0.26);
+  // HUD layout: [BLU score] [center divider] [score RED]
+  // Left: BLU label + score, Right: score + RED label, Center: dash
+  const hudFontSize = Math.max(6, hudH * 0.28);
+  const scoreFontSize = Math.max(9, hudH * 0.45);
+  const centerX = w / 2;
+  const quarterW = hudW / 4;
+
+  // Blue side: "BLU" label
   ctx.fillStyle = "#60a5fa";
   ctx.font = `${hudFontSize}px ${RETRO_FONT}`;
-  ctx.textAlign = "left"; ctx.fillText("BLU", hx + 10, hy + hudH * 0.55);
-  ctx.fillStyle = "#f87171";
-  ctx.textAlign = "right"; ctx.fillText("RED", hx + hudW - 10, hy + hudH * 0.55);
-  
-  // Score
-  const scoreFontSize = Math.max(8, hudH * 0.4);
+  ctx.textAlign = "left";
+  ctx.fillText("BLU", hx + 8, hy + hudH * 0.42);
+
+  // Blue score (right-aligned toward center)
   ctx.fillStyle = RETRO_WHITE;
   ctx.font = `${scoreFontSize}px ${RETRO_FONT}`;
+  ctx.textAlign = "right";
+  ctx.fillText(`${st.scoreBlue}`, centerX - 8, hy + hudH * 0.68);
+
+  // Dash separator
+  ctx.fillStyle = RETRO_WHITE;
   ctx.textAlign = "center";
-  ctx.fillText(`${st.scoreBlue} - ${st.scoreRed}`, w/2, hy + hudH * 0.6);
+  ctx.fillText("-", centerX, hy + hudH * 0.68);
+
+  // Red score (left-aligned from center)
+  ctx.fillStyle = RETRO_WHITE;
+  ctx.textAlign = "left";
+  ctx.fillText(`${st.scoreRed}`, centerX + 8, hy + hudH * 0.68);
+
+  // Red label
+  ctx.fillStyle = "#f87171";
+  ctx.font = `${hudFontSize}px ${RETRO_FONT}`;
+  ctx.textAlign = "right";
+  ctx.fillText("RED", hx + hudW - 8, hy + hudH * 0.42);
 
   // Timer tab with half indicator
   const tabW = Math.max(80, hudW * 0.28);
