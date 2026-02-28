@@ -9,6 +9,23 @@ function teamName(team: number): string {
   return team === -1 ? "BLUE" : "RED";
 }
 
+// ★ v10.3.0: Helper to record on-ball heatmap event
+function recordOnBall(
+  st: State,
+  player: Player,
+  type: 'pass' | 'shot' | 'dribble' | 'receive' | 'tackle' | 'intercept' | 'save'
+) {
+  const hm = st.heatmaps[player.idx];
+  if (!hm) return;
+  const PH = 34;  // pitchHalfH
+  const PW = 52.5;  // pitchHalfW
+  const nx = (player.pos.x + PW) / (PW * 2);
+  const ny = (player.pos.y + PH) / (PH * 2);
+  hm.onBall.push({ x: Math.max(0, Math.min(1, nx)), y: Math.max(0, Math.min(1, ny)), type });
+  // Limit to 500 on-ball events per player
+  if (hm.onBall.length > 500) hm.onBall.shift();
+}
+
 // ★ v9.15.0: Use posLabel (sub-position) directly for display
 // e.g., RM, LM, RWG, LWG, LST, RST, LCM, RCM, LCB, RCB, CDM, CAM, GK
 // Falls back to abbreviated role only if posLabel is not set
@@ -43,10 +60,12 @@ export function emitLog(st: State, entry: Omit<ActionLogEntry, "ttl">) {
     ttl: entry.excitement >= 2 ? 6.0 : entry.excitement >= 1 ? 5.0 : DEFAULT_TTL,
   };
   st.actionLog.push(logEntry);
-  // Keep only the most recent entries
+  // Keep only the most recent entries (for UI display)
   if (st.actionLog.length > MAX_LOG_ENTRIES) {
     st.actionLog = st.actionLog.slice(-MAX_LOG_ENTRIES);
   }
+  // ★ v10.3.0: Also push to fullLog (unlimited, for headless mode analysis)
+  st.fullLog.push(logEntry);
 }
 
 export function updateLogTTL(st: State, dt: number) {
@@ -61,6 +80,7 @@ export function updateLogTTL(st: State, dt: number) {
 // --- Commentary generators ---
 
 export function logPass(st: State, passer: Player, targetNum: number, dist: number, isLong: boolean, usedFoot?: "L" | "R") {
+  recordOnBall(st, passer, 'pass');
   const distLabel = dist < 8 ? "ショート" : dist < 18 ? "ミドル" : "ロング";
   const typeLabel = isLong ? "ロングパス" : "パス";
   const footLabel = usedFoot ? (usedFoot === "R" ? "右足" : "左足") : "";
@@ -88,6 +108,7 @@ export function logPass(st: State, passer: Player, targetNum: number, dist: numb
 }
 
 export function logPassReceive(st: State, receiver: Player, passerNum: number) {
+  recordOnBall(st, receiver, 'receive');
   emitLog(st, {
     time: st.time,
     team: receiver.team,
@@ -101,6 +122,7 @@ export function logPassReceive(st: State, receiver: Player, passerNum: number) {
 }
 
 export function logShot(st: State, shooter: Player, dist: number) {
+  recordOnBall(st, shooter, 'shot');
   const distLabel = dist < 12 ? "至近距離" : dist < 20 ? "ミドル" : "ロング";
   const texts = [
     `${playerLabel(shooter)} ${distLabel}シュート！！`,
@@ -121,6 +143,7 @@ export function logShot(st: State, shooter: Player, dist: number) {
 }
 
 export function logDribbleAttempt(st: State, dribbler: Player) {
+  recordOnBall(st, dribbler, 'dribble');
   const texts = [
     `${playerLabel(dribbler)} ドリブル突破を試みる！`,
     `${playerLabel(dribbler)} 仕掛けた！ ドリブルで突破を狙う！`,
@@ -181,6 +204,7 @@ export function logDribbleFail(st: State, dribbler: Player, tacklerNum: number) 
 }
 
 export function logTackle(st: State, tackler: Player, targetNum: number, success: boolean) {
+  if (success) recordOnBall(st, tackler, 'tackle');
   if (success) {
     const targetPlayer = st.pl.find(p => p.num === targetNum && p.team !== tackler.team);
     const targetRef = targetPlayer ? playerRef(targetPlayer) : `#${targetNum}`;
@@ -204,6 +228,7 @@ export function logTackle(st: State, tackler: Player, targetNum: number, success
 }
 
 export function logIntercept(st: State, interceptor: Player) {
+  recordOnBall(st, interceptor, 'intercept');
   const texts = [
     `${playerLabel(interceptor)} インターセプト！`,
     `${playerLabel(interceptor)} パスカット！`,
@@ -223,6 +248,7 @@ export function logIntercept(st: State, interceptor: Player) {
 }
 
 export function logGoal(st: State, scorer: Player) {
+  recordOnBall(st, scorer, 'shot');
   const texts = [
     `⚽ GOAL！！ ${playerLabel(scorer)} ゴーーール！！！`,
     `⚽ ${playerLabel(scorer)} 決めた！！ ゴーーール！！！`,
@@ -242,6 +268,7 @@ export function logGoal(st: State, scorer: Player) {
 }
 
 export function logSave(st: State, keeper: Player) {
+  recordOnBall(st, keeper, 'save');
   const texts = [
     `${playerLabel(keeper)} ナイスセーブ！！`,
     `${playerLabel(keeper)} 好セーブ！ シュートを止めた！`,

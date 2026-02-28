@@ -102,6 +102,13 @@ export type MatchStats = {
     interceptions: number;
     saves: number;
     playerIdx: number;
+    // ★ v10.4.0: Progressive pass tracking
+    progPasses: number;       // Forward passes that advance >10m toward opponent goal
+    progPassSuccess: number;  // Successful progressive passes
+    longPasses: number;       // Long pass attempts
+    longPassSuccess: number;  // Successful long passes
+    keyPasses: number;        // Passes leading directly to shot (assist-like)
+    chancesCreated: number;   // Passes leading to goal
   }[];
 };
 
@@ -245,6 +252,19 @@ export interface ActionLogEntry {
   ttl: number;        // Time to live in seconds
 }
 
+/** ★ v10.3.0: Heatmap data for a single player */
+export interface PlayerHeatmap {
+  playerIdx: number;
+  team: number;       // -1 = blue, 1 = red
+  num: number;        // Jersey number
+  cardName?: string;  // Player name from gacha card
+  posLabel: string;   // Position label (GK, CB, LB, etc.)
+  /** Off-ball positions: sampled every N frames (normalized 0-1 in pitch coords) */
+  offBall: { x: number; y: number }[];
+  /** On-ball events: when player had possession or touched ball */
+  onBall: { x: number; y: number; type: 'pass' | 'shot' | 'dribble' | 'receive' | 'tackle' | 'intercept' | 'save' }[];
+}
+
 export interface State {
   pl: Player[];
   ball: Ball;
@@ -285,12 +305,17 @@ export interface State {
   ballTrail: BallTrailDot[];
   // ★ v9.9.0: Action log for SFC-style commentary
   actionLog: ActionLogEntry[];
+  // ★ v10.3.0: Complete log for headless mode (unlimited, all entries)
+  fullLog: ActionLogEntry[];
   // ★ v9.10.0: Possession-based progressive line push
   possessionPush: {
     team: number;       // Which team currently has sustained possession (-1, 0, 1)
     duration: number;   // How long this team has held possession (seconds)
     pushLevel: number;  // 0.0 to 1.0 - how far the team has pushed up
   };
+  // ★ v10.3.0: Per-player heatmap data collected during match
+  heatmaps: PlayerHeatmap[];
+  heatmapSampleCounter: number;  // Frame counter for sampling interval
   // ★ v9.11.0: Screen effects for dramatic moments (dribble breakthrough, goals)
   screenEffect: {
     type: "none" | "dribbleSuccess" | "goal" | "save";

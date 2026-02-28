@@ -1,10 +1,11 @@
-/*
- * GachaPage - サッカーカードパック開封シミュレーター メインページ
- * Design: SFC RPG風 16bitドット絵スタイル
- * パック選択 → 開封演出 → コレクション確認
- * ★ v10.2.0: コイン経済システム統合
- * ★ v10.2.1: iOS Safariスクロール修正 - position:fixedの背景を分離し
- *             スクロールコンテナを明確化。touch-action: panYを設定。
+/**
+ * GachaPage - SFC風ガチャページ
+ * Design: スーパーファミコン風 RPGショップ画面
+ * - 深い宇宙紺背景 + ゴールドアクセント
+ * - Press Start 2P + DotGothic16 フォント
+ * - ピクセルアート風ウィンドウ枠
+ * - 10連ガチャ初回無料
+ * - オープニングパック: 画面隅のバナーからポップアップ選択式
  */
 
 import { useState, useCallback, useEffect } from 'react';
@@ -17,309 +18,413 @@ import Collection from '@/components/Collection';
 import OpeningPackModal from '@/components/OpeningPackModal';
 import { useCollection } from '@/hooks/useCollection';
 
-const HERO_BG_URL = 'https://private-us-east-1.manuscdn.com/sessionFile/bApKv3n2R3hCPPkHL3aSNL/sandbox/6o0og1QJ64AfUSMNxuP9Kq-img-1_1771940463000_na1fn_aGVyby1iZw.png?x-oss-process=image/resize,w_1920,h_1920/format,webp/quality,q_80&Expires=1798761600&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly9wcml2YXRlLXVzLWVhc3QtMS5tYW51c2Nkbi5jb20vc2Vzc2lvbkZpbGUvYkFwS3YzbjJSM2hDUFBrSEwzYVNOTC9zYW5kYm94LzZvMG9nMVFKNjRBZlVTTU54dVA5S3EtaW1nLTFfMTc3MTk0MDQ2MzAwMF9uYTFmbl9hR1Z5YnkxaVp3LnBuZz94LW9zcy1wcm9jZXNzPWltYWdlL3Jlc2l6ZSx3XzE5MjAsaF8xOTIwL2Zvcm1hdCx3ZWJwL3F1YWxpdHkscV84MCIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc5ODc2MTYwMH19fV19&Key-Pair-Id=K2HSFNDJXOU9YS&Signature=CqZimzM6bAG8NS8ps5q6QXImbKsbx2PynL4GNW8THQoe51NYlnid6N010NroY4h85SAieyUgACpBVXp1L9qM004aldcycwWtezZqL~~qSMA6caJewpGp4PUqufvWMQpAr1WLtf4uLzYmdRtkDU2QmHtVQgpAITG7FL9j-EPlLA6-NLqVgmsr9eC-SeqPbUsNO~J9XYrNmj~GIC-UGCboW3e8qbZoev7EIJzBevimpDB9EsEi-GzNplFAZ9xd928~8rJdK9w~vpoi6gxwfSsm6mtguvouWn84SkycZ1WQCVb8NRCCvPKWgY4MbvFZWyfpPviZ9MqhGXj8LoPB~sh7Gg__';
+// ── Design constants ──────────────────────────────────────────
+const FONT_PIXEL = "'Press Start 2P', monospace";
+const FONT_DOT   = "'DotGothic16', monospace";
+const C_BG       = '#030810';
+const C_GOLD     = '#F5C542';
+const C_GOLD_DIM = '#8B6914';
+const C_BLUE     = '#4488FF';
+const C_RED      = '#E94560';
+const C_GREEN    = '#16C47F';
+const C_TEXT     = '#D0D8F0';
+const C_TEXT_DIM = '#4A5A7A';
+const C_PANEL    = '#0a1428';
+const C_BORDER   = '#1a3060';
 
-const STADIUM_URL = 'https://private-us-east-1.manuscdn.com/sessionFile/bApKv3n2R3hCPPkHL3aSNL/sandbox/6o0og1QJ64AfUSMNxuP9Kq-img-5_1771940471000_na1fn_cGl4ZWwtc3RhZGl1bQ.png?x-oss-process=image/resize,w_1920,h_1920/format,webp/quality,q_80&Expires=1798761600&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly9wcml2YXRlLXVzLWVhc3QtMS5tYW51c2Nkbi5jb20vc2Vzc2lvbkZpbGUvYkFwS3YzbjJSM2hDUFBrSEwzYVNOTC9zYW5kYm94LzZvMG9nMVFKNjRBZlVTTU54dVA5S3EtaW1nLTVfMTc3MTk0MDQ3MTAwMF9uYTFmbl9jR2w0Wld3dGMzUmhaR2wxYlEucG5nP3gtb3NzLXByb2Nlc3M9aW1hZ2UvcmVzaXplLHdfMTkyMCxoXzE5MjAvZm9ybWF0LHdlYnAvcXVhbGl0eSxxXzgwIiwiQ29uZGl0aW9uIjp7IkRhdGVMZXNzVGhhbiI6eyJBV1M6RXBvY2hUaW1lIjoxNzk4NzYxNjAwfX19XX0_&Key-Pair-Id=K2HSFNDJXOU9YS&Signature=LlzT9jWidb~deRw5OdV56ntfeLW~FZW99qAm6Q5hmfuYET6id5BjE8umB-Uo423BbfRtfVT3H-aQBKN17utfRX2N8eY7nyxFuUMQfhJ1d7FjtS3QNjxJarjzDDizaTd53FaU1bDKpZEFAEeDm9fUu3Kdvji2BOHcDkvFOmz-V0bD8xWj98iEtwrq-nBJ06oRLhgz7gy3SSXnBpDcuWTYtO4UzHk4rGzSzwkgYjRzhGq4WXwX9Gjqvu9wUDQXdgJ8iX7MquJOIjEOYYaZlLPLua3UnBkQ2B~uKhJpOjwaK-Rp1yyDSlsKiG0ue2a8fSMcCMiKy4bgry2b7kxeK90emw__';
+// ── SFC-style window border component ────────────────────────
+function SfcWindow({ children, style, accent = C_GOLD_DIM }: {
+  children: React.ReactNode;
+  style?: React.CSSProperties;
+  accent?: string;
+}) {
+  return (
+    <div style={{
+      position: 'relative',
+      background: `linear-gradient(160deg, rgba(15,30,66,0.97) 0%, rgba(8,16,40,0.99) 100%)`,
+      border: `2px solid ${accent}`,
+      boxShadow: `0 4px 20px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.05)`,
+      ...style,
+    }}>
+      {/* Inner border */}
+      <div style={{
+        position: 'absolute', inset: 3,
+        border: `1px solid ${accent}33`,
+        pointerEvents: 'none',
+      }} />
+      {/* Corner pixels */}
+      {[{top:0,left:0},{top:0,right:0},{bottom:0,left:0},{bottom:0,right:0}].map((pos, i) => (
+        <div key={i} style={{
+          position: 'absolute', width: 6, height: 6,
+          background: accent, ...pos as any,
+        }} />
+      ))}
+      {children}
+    </div>
+  );
+}
 
+// ── Opening Pack Banner (small, bottom-right corner) ─────────
+function OpeningPackBanner({ onOpen }: { onOpen: () => void }) {
+  const [blink, setBlink] = useState(true);
+  const [hovered, setHovered] = useState(false);
+  useEffect(() => {
+    const t = setInterval(() => setBlink(b => !b), 700);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div
+      onClick={onOpen}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        position: 'fixed',
+        bottom: 'calc(env(safe-area-inset-bottom, 0px) + 16px)',
+        right: '12px',
+        zIndex: 200,
+        cursor: 'pointer',
+        transform: hovered ? 'scale(1.05) translateY(-2px)' : 'scale(1)',
+        transition: 'transform 0.2s ease',
+      }}
+    >
+      <SfcWindow accent={C_GREEN} style={{ padding: '8px 12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {/* Blinking star */}
+          <div style={{
+            fontFamily: FONT_PIXEL, fontSize: '14px', color: C_GREEN,
+            opacity: blink ? 1 : 0.3, transition: 'opacity 0.1s',
+          }}>★</div>
+          <div>
+            <div style={{
+              fontFamily: FONT_PIXEL, fontSize: 'clamp(6px, 1vw, 8px)',
+              color: C_GREEN, letterSpacing: '0.05em',
+              textShadow: `0 0 8px ${C_GREEN}88`,
+            }}>OPENING PACK</div>
+            <div style={{
+              fontFamily: FONT_DOT, fontSize: 'clamp(9px, 1.3vw, 11px)',
+              color: '#A0C0A0', marginTop: '2px',
+            }}>スターターパックを受け取る</div>
+          </div>
+          <div style={{
+            fontFamily: FONT_PIXEL, fontSize: '10px', color: C_GREEN,
+            opacity: blink ? 1 : 0.3, transition: 'opacity 0.1s',
+          }}>▶</div>
+        </div>
+      </SfcWindow>
+    </div>
+  );
+}
+
+// ── Opening Pack Confirm Dialog ───────────────────────────────
+function OpeningPackConfirm({ onConfirm, onCancel }: { onConfirm: () => void; onCancel: () => void }) {
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 500,
+      background: 'rgba(0,4,16,0.88)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      padding: '16px',
+    }}>
+      <SfcWindow accent={C_GREEN} style={{ maxWidth: '360px', width: '100%', padding: '24px 20px' }}>
+        <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {/* Header */}
+          <div>
+            <div style={{
+              fontFamily: FONT_PIXEL, fontSize: 'clamp(9px, 2vw, 12px)',
+              color: C_GREEN, letterSpacing: '0.08em',
+              textShadow: `0 0 12px ${C_GREEN}88`,
+              marginBottom: '8px',
+            }}>★ OPENING PACK ★</div>
+            <div style={{
+              fontFamily: FONT_DOT, fontSize: 'clamp(14px, 2.5vw, 18px)',
+              color: C_TEXT, fontWeight: 'bold',
+            }}>スターターパック</div>
+          </div>
+          {/* Description */}
+          <div style={{
+            background: 'rgba(0,20,60,0.7)', border: `1px solid ${C_GREEN}44`,
+            padding: '12px', fontFamily: FONT_DOT,
+            fontSize: 'clamp(10px, 1.6vw, 13px)', color: '#A0C0A0',
+            lineHeight: 1.7, textAlign: 'left',
+          }}>
+            <div>📦 全ポジション 各1名</div>
+            <div>⚽ GK×1 / DF×4 / MF×4 / FW×2</div>
+            <div>🎴 ノーマル限定 11枚</div>
+            <div style={{ marginTop: '8px', color: C_GREEN, fontFamily: FONT_PIXEL, fontSize: 'clamp(7px, 1vw, 9px)' }}>
+              ★ 1回限り ★ 無料
+            </div>
+          </div>
+          {/* Buttons */}
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+            <button
+              onClick={onConfirm}
+              style={{
+                fontFamily: FONT_PIXEL, fontSize: 'clamp(8px, 1.3vw, 10px)',
+                background: `linear-gradient(180deg, ${C_GREEN}22 0%, rgba(0,20,40,0.9) 100%)`,
+                border: `2px solid ${C_GREEN}`, color: C_GREEN,
+                padding: '10px 20px', cursor: 'pointer',
+                letterSpacing: '0.05em',
+                boxShadow: `0 0 12px ${C_GREEN}44`,
+              }}
+            >▶ 受け取る</button>
+            <button
+              onClick={onCancel}
+              style={{
+                fontFamily: FONT_PIXEL, fontSize: 'clamp(8px, 1.3vw, 10px)',
+                background: 'rgba(0,10,30,0.9)',
+                border: `2px solid ${C_TEXT_DIM}`, color: C_TEXT_DIM,
+                padding: '10px 20px', cursor: 'pointer',
+                letterSpacing: '0.05em',
+              }}
+            >✕ あとで</button>
+          </div>
+        </div>
+      </SfcWindow>
+    </div>
+  );
+}
+
+// ── Main Component ────────────────────────────────────────────
 export default function GachaPage() {
   const [, setLocation] = useLocation();
-  const { collection, totalOpened, coins, openingPackDone, addCards, spendCoins, markOpeningPackDone } = useCollection();
+  const {
+    collection, totalOpened, coins, openingPackDone, free10xUsed,
+    addCards, spendCoins, markOpeningPackDone, markFree10xUsed,
+  } = useCollection();
   const [showCollection, setShowCollection] = useState(false);
   const [selectedPack, setSelectedPack] = useState<PackType>('standard');
   const [insufficientCoins, setInsufficientCoins] = useState(false);
 
-  // ★ オープニングパック: 初回のみ自動表示
-  const [showOpeningPack, setShowOpeningPack] = useState(false);
+  // Opening pack states
+  const [showOpeningConfirm, setShowOpeningConfirm] = useState(false);
+  const [showOpeningModal, setShowOpeningModal] = useState(false);
   const [openingCards, setOpeningCards] = useState<Player[]>([]);
 
-  useEffect(() => {
-    if (!openingPackDone) {
-      // 初回訪問: オープニングパックを抽選して表示
-      const cards = drawOpeningPack();
-      setOpeningCards(cards);
-      setShowOpeningPack(true);
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const handleOpeningBannerClick = useCallback(() => {
+    setShowOpeningConfirm(true);
+  }, []);
+
+  const handleOpeningConfirm = useCallback(() => {
+    const cards = drawOpeningPack();
+    setOpeningCards(cards);
+    setShowOpeningConfirm(false);
+    setShowOpeningModal(true);
+  }, []);
+
+  const handleOpeningCancel = useCallback(() => {
+    setShowOpeningConfirm(false);
+  }, []);
 
   const handleOpeningPackClose = useCallback(() => {
-    // カードをコレクションに追加してモーダルを閉じる
     addCards(openingCards);
     markOpeningPackDone();
-    setShowOpeningPack(false);
+    setShowOpeningModal(false);
   }, [openingCards, addCards, markOpeningPackDone]);
 
   const packCost = PACK_CONFIGS[selectedPack].cost;
-  const canAfford = coins >= packCost;
+  // 10連は初回無料
+  const isFree10x = selectedPack === 'ten' && !free10xUsed;
+  const effectiveCost = isFree10x ? 0 : packCost;
+  const canAfford = isFree10x || coins >= packCost;
 
   const handlePackOpened = useCallback((cards: PlayerCard[]) => {
     addCards(cards);
   }, [addCards]);
 
-  // ★ v10.2.0: Check coins before opening pack
   const handleTryOpen = useCallback((): boolean => {
+    if (isFree10x) {
+      markFree10xUsed();
+      return true;
+    }
     const cost = PACK_CONFIGS[selectedPack].cost;
     if (coins < cost) {
       setInsufficientCoins(true);
-      setTimeout(() => setInsufficientCoins(false), 2000);
+      setTimeout(() => setInsufficientCoins(false), 2500);
       return false;
     }
     spendCoins(cost);
     return true;
-  }, [selectedPack, coins, spendCoins]);
+  }, [selectedPack, coins, spendCoins, isFree10x, markFree10xUsed]);
 
-  // Flatten collection to PlayerCard[] for the Collection component
   const collectionCards = collection.map(c => c.card);
 
   return (
-    /*
-     * ★ スクロール修正ポイント:
-     * - 最外ラッパーは position:relative, height:100dvh, overflow:hidden にする
-     * - 背景は position:absolute (fixedではなく) にして最外ラッパー内に収める
-     * - スクロールするのは内側の scrollContainer のみ
-     * - touch-action: pan-y で iOS Safariのスクロールを確実に有効化
-     */
-    <div
-      className="scanlines"
-      style={{
-        position: 'relative',
-        height: '100dvh',
-        overflow: 'hidden',
-        backgroundColor: '#050a1a',
-      }}
-    >
-      {/* Background - absoluteで最外ラッパー内に固定 */}
-      <div
-        style={{
-          position: 'absolute',
-          inset: 0,
-          zIndex: 0,
-          backgroundImage: `url(${HERO_BG_URL})`,
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
-          filter: 'brightness(0.4)',
-          imageRendering: 'auto',
-          pointerEvents: 'none',
-        }}
-      />
+    <div style={{
+      position: 'relative',
+      height: '100dvh',
+      overflow: 'hidden',
+      backgroundColor: C_BG,
+      fontFamily: FONT_DOT,
+      color: C_TEXT,
+    }}>
+      {/* Scanlines */}
+      <div style={{
+        position: 'fixed', inset: 0, zIndex: 9000, pointerEvents: 'none',
+        background: 'repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,0,0,0.035) 3px, rgba(0,0,0,0.035) 4px)',
+      }} />
+      {/* Pixel grid */}
+      <div style={{
+        position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none', opacity: 0.04,
+        backgroundImage: `linear-gradient(rgba(255,215,0,0.4) 1px, transparent 1px), linear-gradient(90deg, rgba(255,215,0,0.4) 1px, transparent 1px)`,
+        backgroundSize: '6px 6px',
+      }} />
+      {/* Radial glow */}
+      <div style={{
+        position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none',
+        background: 'radial-gradient(ellipse 80% 60% at 50% 30%, rgba(245,197,66,0.06) 0%, transparent 70%)',
+      }} />
 
-      {/* Pixel grid overlay */}
-      <div
-        style={{
-          position: 'absolute',
-          inset: 0,
-          zIndex: 0,
-          pointerEvents: 'none',
-          opacity: 0.1,
-          backgroundImage: `
-            linear-gradient(rgba(255,215,0,0.1) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(255,215,0,0.1) 1px, transparent 1px)
-          `,
-          backgroundSize: '4px 4px',
-        }}
-      />
-
-      {/* ★ スクロールコンテナ: 明示的にoverflow-y:scrollとtouch-action:pan-yを設定 */}
-      <div
-        style={{
-          position: 'relative',
-          zIndex: 1,
-          height: '100%',
-          overflowY: 'scroll',
-          overflowX: 'hidden',
-          WebkitOverflowScrolling: 'touch' as any,
-          touchAction: 'pan-y',
-          paddingBottom: 'env(safe-area-inset-bottom, 16px)',
-        }}
-      >
-        {/* Header */}
-        <header style={{ padding: '12px 12px 0', flexShrink: 0 }}>
-          <div style={{ maxWidth: '896px', margin: '0 auto' }}>
-            <div className="rpg-window" style={{ padding: '8px 12px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
-                <div style={{ minWidth: 0 }}>
-                  <h1
-                    style={{
-                      fontFamily: "'Press Start 2P', monospace",
-                      fontSize: 'clamp(8px, 2vw, 12px)',
-                      color: '#FFD700',
-                      textShadow: '0 0 10px rgba(255,215,0,0.5), 2px 2px 0 rgba(0,0,0,0.8)',
-                      lineHeight: '1.8',
-                      letterSpacing: '0.05em',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    SOCCER CARD PACK
-                  </h1>
-                  <p
-                    style={{
-                      fontFamily: "'DotGothic16', monospace",
-                      fontSize: 'clamp(9px, 1.5vw, 12px)',
-                      color: '#8B9DC3',
-                      marginTop: '2px',
-                    }}
-                  >
-                    サッカーカードパック開封シミュレーター
-                  </p>
+      {/* Scroll container */}
+      <div style={{
+        position: 'relative', zIndex: 1,
+        height: '100%', overflowY: 'scroll', overflowX: 'hidden',
+        WebkitOverflowScrolling: 'touch' as any, touchAction: 'pan-y',
+        paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 80px)',
+      }}>
+        {/* ── Header ── */}
+        <div style={{ padding: 'clamp(10px, 2vw, 16px) clamp(10px, 2vw, 16px) 0' }}>
+          <SfcWindow accent={C_GOLD_DIM} style={{ padding: 'clamp(8px, 1.5vw, 14px) clamp(10px, 2vw, 18px)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
+              {/* Title */}
+              <div>
+                <div style={{
+                  fontFamily: FONT_PIXEL, fontSize: 'clamp(8px, 2vw, 13px)',
+                  color: C_GOLD, letterSpacing: '0.06em',
+                  textShadow: `2px 2px 0 #000, 0 0 12px ${C_GOLD}55`,
+                }}>SOCCER CARD PACK</div>
+                <div style={{
+                  fontFamily: FONT_DOT, fontSize: 'clamp(10px, 1.5vw, 13px)',
+                  color: '#6878A8', marginTop: '3px',
+                }}>サッカーカードパック開封シミュレーター</div>
+              </div>
+              {/* Controls */}
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap', flexShrink: 0 }}>
+                {/* Coin display */}
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: '5px',
+                  background: 'rgba(0,6,20,0.9)', border: `2px solid ${C_GOLD_DIM}`,
+                  padding: '4px 10px', fontFamily: FONT_PIXEL,
+                  fontSize: 'clamp(8px, 1.4vw, 11px)', color: C_GOLD,
+                  whiteSpace: 'nowrap',
+                }}>
+                  <span>🪙</span><span>{coins.toLocaleString()}</span>
                 </div>
-                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0, flexWrap: 'wrap' }}>
-                  {/* ★ v10.2.0: Coin display */}
-                  <div
-                    style={{
-                      fontFamily: "'Press Start 2P', monospace",
-                      fontSize: 'clamp(8px, 1.5vw, 11px)',
-                      color: '#FFD700',
-                      background: 'rgba(0,10,40,0.9)',
-                      border: '2px solid #B8860B',
-                      padding: '4px 8px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '4px',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    <span>🪙</span>
-                    <span>{coins.toLocaleString()}</span>
-                  </div>
-                  <button
-                    onClick={() => setLocation('/')}
-                    style={{
-                      fontFamily: "'Press Start 2P', monospace",
-                      fontSize: 'clamp(7px, 1.2vw, 9px)',
-                      padding: '4px 8px',
-                      background: 'rgba(0,10,40,0.8)',
-                      border: '2px solid #4488ff',
-                      color: '#88aacc',
-                      cursor: 'pointer',
-                      letterSpacing: '1px',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    ◀ TOP
-                  </button>
-                  <button
-                    className="pixel-btn"
-                    onClick={() => setShowCollection(true)}
-                    style={{ fontSize: 'clamp(9px, 1.5vw, 12px)', padding: '0.4rem 0.6rem', whiteSpace: 'nowrap' }}
-                  >
-                    図鑑 ({collectionCards.length})
-                  </button>
-                </div>
+                {/* Collection button */}
+                <button
+                  onClick={() => setShowCollection(true)}
+                  style={{
+                    fontFamily: FONT_PIXEL, fontSize: 'clamp(7px, 1.2vw, 9px)',
+                    background: `linear-gradient(180deg, rgba(68,136,255,0.15) 0%, rgba(0,10,40,0.9) 100%)`,
+                    border: `2px solid ${C_BLUE}`, color: C_BLUE,
+                    padding: '5px 10px', cursor: 'pointer', letterSpacing: '0.05em',
+                    whiteSpace: 'nowrap',
+                  }}
+                >図鑑 ({collectionCards.length})</button>
+                {/* TOP button */}
+                <button
+                  onClick={() => setLocation('/')}
+                  style={{
+                    fontFamily: FONT_PIXEL, fontSize: 'clamp(7px, 1.2vw, 9px)',
+                    background: 'rgba(0,6,20,0.9)', border: `2px solid ${C_BORDER}`,
+                    color: C_TEXT_DIM, padding: '5px 10px', cursor: 'pointer',
+                    letterSpacing: '0.05em', whiteSpace: 'nowrap',
+                  }}
+                >◀ TOP</button>
               </div>
             </div>
-          </div>
-        </header>
+          </SfcWindow>
+        </div>
 
-        {/* Insufficient coins warning */}
-        {insufficientCoins && (
-          <div
-            style={{
-              position: 'fixed',
-              top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
-              zIndex: 100,
-              background: 'rgba(139, 0, 0, 0.95)',
-              border: '3px solid #FF4444',
-              padding: '16px 24px',
-              fontFamily: "'Press Start 2P', monospace",
-              fontSize: 'clamp(8px, 1.5vw, 12px)',
-              color: '#FF8888',
-              textAlign: 'center',
-              boxShadow: '0 0 30px rgba(255,68,68,0.5)',
-              pointerEvents: 'none',
-            }}
-          >
-            コインが足りません！<br />
-            <span style={{ fontSize: 'clamp(6px, 1vw, 9px)', color: '#999', marginTop: '4px', display: 'block' }}>
-              試合で勝利してコインを稼ごう！
-            </span>
-          </div>
-        )}
+        {/* ── Main content ── */}
+        <div style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          padding: 'clamp(10px, 2vw, 16px)', gap: 'clamp(10px, 2vh, 16px)',
+        }}>
+          {/* Pack selector */}
+          <PackSelector selectedPack={selectedPack} onSelect={setSelectedPack} coins={coins} />
 
-        {/* Main Content */}
-        <main
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'flex-start',
-            padding: '12px',
-            gap: '12px',
-          }}
-        >
-          {/* Pack Selector with cost display */}
-          <PackSelector
-            selectedPack={selectedPack}
-            onSelect={setSelectedPack}
-            coins={coins}
-          />
-
-          {/* Cost indicator */}
-          <div
-            style={{
-              fontFamily: "'Press Start 2P', monospace",
-              fontSize: 'clamp(7px, 1.2vw, 10px)',
-              color: canAfford ? '#FFD700' : '#FF4444',
-              textAlign: 'center',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-            }}
-          >
-            <span>🪙</span>
-            <span>{packCost}</span>
-            <span style={{ color: '#666', fontSize: 'clamp(6px, 1vw, 8px)' }}>
-              {canAfford ? '/ 購入可能' : '/ コイン不足'}
-            </span>
+          {/* Cost / Free badge */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: '8px',
+            fontFamily: FONT_PIXEL, fontSize: 'clamp(7px, 1.2vw, 10px)',
+          }}>
+            {isFree10x ? (
+              <div style={{
+                background: `linear-gradient(90deg, ${C_GREEN}22, ${C_GREEN}11)`,
+                border: `2px solid ${C_GREEN}`, color: C_GREEN,
+                padding: '4px 14px', letterSpacing: '0.08em',
+                boxShadow: `0 0 12px ${C_GREEN}44`,
+              }}>★ 初回無料 ★</div>
+            ) : (
+              <>
+                <span>🪙</span>
+                <span style={{ color: canAfford ? C_GOLD : C_RED }}>{packCost}</span>
+                <span style={{ color: C_TEXT_DIM, fontSize: 'clamp(6px, 0.9vw, 8px)' }}>
+                  {canAfford ? '/ 購入可能' : '/ コイン不足'}
+                </span>
+              </>
+            )}
           </div>
 
-          {/* Pack Opening */}
+          {/* Pack opening */}
           <PackOpening
             onPackOpened={handlePackOpened}
             totalOpened={totalOpened}
             packType={selectedPack}
             onTryOpen={handleTryOpen}
           />
-        </main>
+        </div>
 
-        {/* Footer with Stadium */}
-        <footer style={{ flexShrink: 0, marginTop: 'auto' }}>
-          <div style={{ position: 'relative', height: '80px', overflow: 'hidden' }}>
-            <img
-              src={STADIUM_URL}
-              alt="Stadium"
-              style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.3, imageRendering: 'auto' }}
-            />
-            <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(0,0,0,0.8), transparent)' }} />
-            <div style={{ position: 'absolute', bottom: '8px', left: 0, right: 0, textAlign: 'center' }}>
-              <p
-                style={{
-                  fontFamily: "'DotGothic16', monospace",
-                  fontSize: 'clamp(8px, 1.3vw, 11px)',
-                  color: '#5a6f8a',
-                }}
-              >
-                総選手数 1034名 ／ ICON:0.5% / HERO:1.5% / UR:3% / SR:12% / R:28% / N:55%
-              </p>
-            </div>
+        {/* ── Footer ── */}
+        <div style={{ padding: '0 clamp(10px, 2vw, 16px)', paddingBottom: '8px' }}>
+          <div style={{
+            fontFamily: FONT_DOT, fontSize: 'clamp(8px, 1.2vw, 10px)',
+            color: C_TEXT_DIM, textAlign: 'center', padding: '8px',
+            borderTop: `1px solid ${C_BORDER}`,
+          }}>
+            総選手数 1034名 ／ ICON:0.5% / HERO:1.5% / UR:3% / SR:12% / R:28% / N:55%
           </div>
-        </footer>
+        </div>
       </div>
 
-      {/* Collection Modal - fixedでスクロールコンテナの外に配置 */}
+      {/* ── Insufficient coins toast ── */}
+      {insufficientCoins && (
+        <div style={{
+          position: 'fixed', top: '50%', left: '50%', zIndex: 9100,
+          transform: 'translate(-50%, -50%)',
+          background: 'rgba(100,0,0,0.97)', border: `3px solid ${C_RED}`,
+          padding: '16px 24px', textAlign: 'center',
+          boxShadow: `0 0 30px ${C_RED}55`, pointerEvents: 'none',
+        }}>
+          <div style={{ fontFamily: FONT_PIXEL, fontSize: 'clamp(8px, 1.5vw, 11px)', color: '#FF8888' }}>
+            コインが足りません！
+          </div>
+          <div style={{ fontFamily: FONT_DOT, fontSize: 'clamp(10px, 1.5vw, 12px)', color: '#888', marginTop: '6px' }}>
+            試合で勝利してコインを稼ごう！
+          </div>
+        </div>
+      )}
+
+      {/* ── Opening Pack Banner (bottom-right, only if not done) ── */}
+      {!openingPackDone && !showOpeningConfirm && !showOpeningModal && (
+        <OpeningPackBanner onOpen={handleOpeningBannerClick} />
+      )}
+
+      {/* ── Opening Pack Confirm Dialog ── */}
+      {showOpeningConfirm && (
+        <OpeningPackConfirm onConfirm={handleOpeningConfirm} onCancel={handleOpeningCancel} />
+      )}
+
+      {/* ── Opening Pack Modal ── */}
+      {showOpeningModal && openingCards.length > 0 && (
+        <OpeningPackModal cards={openingCards} onClose={handleOpeningPackClose} />
+      )}
+
+      {/* ── Collection Modal ── */}
       <Collection
         cards={collectionCards}
         isOpen={showCollection}
         onClose={() => setShowCollection(false)}
       />
-
-      {/* ★ オープニングパック: 初回のみ表示 */}
-      {showOpeningPack && openingCards.length > 0 && (
-        <OpeningPackModal
-          cards={openingCards}
-          onClose={handleOpeningPackClose}
-        />
-      )}
     </div>
   );
 }

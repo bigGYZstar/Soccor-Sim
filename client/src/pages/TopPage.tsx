@@ -1,550 +1,345 @@
-/*
- * TopPage - サッカーシミュレーター トップページ
- * 「試合」と「ガチャ」の2つのモードを選択できるメインメニュー
- * Design: SFC RPG風 16bitドット絵スタイル
+/**
+ * TopPage - SFC風トップページ
+ * Design: スーパーファミコン風 RPGタイトル画面
+ * - 深い宇宙紺背景 + ゴールドアクセント
+ * - Press Start 2P + DotGothic16 フォント
+ * - ピクセルアート風ボーダー・グロー効果
+ * - 星フィールドアニメーション
  */
-
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'wouter';
 import { useCollection } from '@/hooks/useCollection';
 
-// ============================================================
-// SFC-style retro pixel font helper
-// ============================================================
-const RETRO_FONT = "'Press Start 2P', monospace";
-const DOT_FONT = "'DotGothic16', monospace";
-const RETRO_BG = "#0a0a18";
-const RETRO_ACCENT = "#e94560";
-const RETRO_BLUE = "#0f3460";
-const RETRO_GOLD = "#f5c542";
-const RETRO_GREEN = "#16c47f";
-const RETRO_WHITE = "#eaeaea";
-const RETRO_DARK = "#0f0f23";
+const FONT_PIXEL = "'Press Start 2P', monospace";
+const FONT_DOT   = "'DotGothic16', monospace";
+const FONT_MONO  = "'Silkscreen', monospace";
+const C_BG_DEEP  = '#030810';
+const C_BG_DARK  = '#0a1428';
+const C_BG_PANEL = '#0f1e42';
+const C_GOLD     = '#F5C542';
+const C_GOLD_DIM = '#8B6914';
+const C_RED      = '#E94560';
+const C_BLUE     = '#4488FF';
+const C_GREEN    = '#16C47F';
+const C_TEXT     = '#D0D8F0';
+const C_TEXT_DIM = '#4A5A7A';
 
-// ============================================================
-// Animated star field background
-// ============================================================
+// ── Star Field ────────────────────────────────────────────────
 function StarField() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-
-    const resize = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-    };
+    const resize = () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight; };
     resize();
     window.addEventListener('resize', resize);
-
-    // Create stars
-    const stars: { x: number; y: number; size: number; speed: number; brightness: number; twinkleSpeed: number; twinklePhase: number }[] = [];
-    for (let i = 0; i < 120; i++) {
-      stars.push({
-        x: Math.random() * canvas.width,
-        y: Math.random() * canvas.height,
-        size: Math.random() * 2 + 0.5,
-        speed: Math.random() * 0.3 + 0.05,
-        brightness: Math.random(),
-        twinkleSpeed: Math.random() * 0.02 + 0.005,
-        twinklePhase: Math.random() * Math.PI * 2,
-      });
-    }
-
-    let animFrame = 0;
-    const animate = () => {
+    const stars = Array.from({ length: 180 }, () => ({
+      x: Math.random() * window.innerWidth,
+      y: Math.random() * window.innerHeight,
+      r: Math.random() * 1.4 + 0.3,
+      speed: Math.random() * 0.25 + 0.04,
+      phase: Math.random() * Math.PI * 2,
+      twinkle: Math.random() * 0.02 + 0.005,
+    }));
+    let animId: number;
+    const draw = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      // Draw gradient background
-      const grad = ctx.createRadialGradient(
-        canvas.width * 0.3, canvas.height * 0.3, 0,
-        canvas.width * 0.5, canvas.height * 0.5, canvas.width * 0.8
-      );
-      grad.addColorStop(0, '#0f1a3a');
-      grad.addColorStop(0.5, '#0a0e24');
-      grad.addColorStop(1, '#050510');
+      // Deep space gradient
+      const grad = ctx.createRadialGradient(canvas.width * 0.4, canvas.height * 0.3, 0, canvas.width * 0.5, canvas.height * 0.5, canvas.width);
+      grad.addColorStop(0, '#0d1a3a');
+      grad.addColorStop(0.6, '#070e20');
+      grad.addColorStop(1, '#030810');
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      // Draw stars
-      for (const star of stars) {
-        star.twinklePhase += star.twinkleSpeed;
-        const alpha = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(star.twinklePhase));
-        ctx.fillStyle = `rgba(255, 255, 200, ${alpha})`;
+      for (const s of stars) {
+        s.phase += s.twinkle;
+        const alpha = 0.25 + 0.75 * (0.5 + 0.5 * Math.sin(s.phase));
         ctx.beginPath();
-        ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(210,225,255,${alpha * 0.85})`;
         ctx.fill();
-
-        star.y += star.speed;
-        if (star.y > canvas.height + 5) {
-          star.y = -5;
-          star.x = Math.random() * canvas.width;
-        }
+        s.y += s.speed;
+        if (s.y > canvas.height) { s.y = 0; s.x = Math.random() * canvas.width; }
       }
-
-      animFrame = requestAnimationFrame(animate);
+      animId = requestAnimationFrame(draw);
     };
-    animate();
-
-    return () => {
-      cancelAnimationFrame(animFrame);
-      window.removeEventListener('resize', resize);
-    };
+    draw();
+    return () => { cancelAnimationFrame(animId); window.removeEventListener('resize', resize); };
   }, []);
-
-  return (
-    <canvas
-      ref={canvasRef}
-      style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        width: '100%',
-        height: '100%',
-        zIndex: 0,
-      }}
-    />
-  );
+  return <canvas ref={canvasRef} style={{ position: 'fixed', inset: 0, zIndex: 0, pointerEvents: 'none' }} />;
 }
 
-// ============================================================
-// Animated soccer ball icon
-// ============================================================
-function SoccerBallIcon({ size = 48 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 48 48" fill="none">
-      <circle cx="24" cy="24" r="22" fill="#fff" stroke="#333" strokeWidth="2" />
-      <path d="M24 2 L28 12 L24 10 L20 12 Z" fill="#333" opacity="0.3" />
-      <circle cx="24" cy="24" r="6" fill="#333" opacity="0.15" />
-      {/* Pentagon pattern */}
-      <polygon points="24,8 28,14 26,20 22,20 20,14" fill="#333" opacity="0.2" />
-      <polygon points="36,18 38,24 34,28 28,26 30,20" fill="#333" opacity="0.2" />
-      <polygon points="36,30 34,36 28,38 26,32 30,28" fill="#333" opacity="0.2" />
-      <polygon points="12,18 18,20 20,26 14,28 10,24" fill="#333" opacity="0.2" />
-      <polygon points="12,30 14,28 20,32 18,38 14,36" fill="#333" opacity="0.2" />
-    </svg>
-  );
-}
-
-// ============================================================
-// Mode selection card component
-// ============================================================
-function ModeCard({
-  title,
-  subtitle,
-  description,
-  icon,
-  accentColor,
-  borderColor,
-  onClick,
-  delay,
-}: {
-  title: string;
-  subtitle: string;
-  description: string;
-  icon: React.ReactNode;
-  accentColor: string;
-  borderColor: string;
-  onClick: () => void;
-  delay: number;
+// ── Mode Card ─────────────────────────────────────────────────
+function ModeCard({ title, subtitle, description, icon, accentColor, borderColor, onClick, delay, badge }: {
+  title: string; subtitle: string; description: string; icon: React.ReactNode;
+  accentColor: string; borderColor: string; onClick: () => void; delay: number; badge?: string;
 }) {
   const [visible, setVisible] = useState(false);
   const [hovered, setHovered] = useState(false);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setVisible(true), delay);
-    return () => clearTimeout(timer);
-  }, [delay]);
-
+  useEffect(() => { const t = setTimeout(() => setVisible(true), delay); return () => clearTimeout(t); }, [delay]);
   return (
-    <button
+    <div
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+      onTouchStart={() => setHovered(true)} onTouchEnd={() => { setTimeout(() => setHovered(false), 200); }}
       style={{
-        opacity: visible ? 1 : 0,
-        transform: visible
-          ? hovered
-            ? 'translateY(-6px) scale(1.03)'
-            : 'translateY(0) scale(1)'
-          : 'translateY(30px) scale(0.95)',
-        transition: 'all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)',
-        background: hovered
-          ? `linear-gradient(145deg, rgba(20,25,50,0.95), rgba(15,20,40,0.98))`
-          : 'rgba(10,14,30,0.9)',
-        border: `3px solid ${hovered ? accentColor : borderColor}`,
-        borderRadius: '0px',
-        padding: 'clamp(20px, 3vh, 36px) clamp(16px, 3vw, 32px)',
+        position: 'relative', flex: '1 1 180px', maxWidth: '230px', minWidth: '150px',
         cursor: 'pointer',
-        width: '100%',
-        maxWidth: '320px',
-        minHeight: 'clamp(200px, 30vh, 300px)',
-        display: 'flex',
-        flexDirection: 'column' as const,
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 'clamp(10px, 1.5vh, 20px)',
-        position: 'relative' as const,
-        overflow: 'hidden',
-        boxShadow: hovered
-          ? `0 0 30px ${accentColor}44, 0 8px 32px rgba(0,0,0,0.6), inset 0 0 60px ${accentColor}11`
-          : `0 4px 16px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)`,
-        imageRendering: 'pixelated' as any,
+        opacity: visible ? 1 : 0,
+        transform: visible ? (hovered ? 'translateY(-8px) scale(1.03)' : 'translateY(0)') : 'translateY(24px) scale(0.94)',
+        transition: `opacity 0.5s ease ${delay}ms, transform 0.3s cubic-bezier(0.34,1.56,0.64,1)`,
       }}
     >
-      {/* Inner border (RPG window style) */}
+      {/* Glow halo */}
+      {hovered && <div style={{
+        position: 'absolute', inset: -4, zIndex: 0,
+        background: `radial-gradient(ellipse at center, ${accentColor}30 0%, transparent 70%)`,
+        filter: 'blur(12px)',
+      }} />}
+      {/* Card */}
       <div style={{
-        position: 'absolute',
-        inset: '4px',
-        border: `2px solid ${hovered ? accentColor + '66' : borderColor + '44'}`,
-        pointerEvents: 'none',
-        transition: 'border-color 0.3s',
-      }} />
-
-      {/* Corner decorations */}
-      {['top-left', 'top-right', 'bottom-left', 'bottom-right'].map(pos => (
-        <div key={pos} style={{
-          position: 'absolute',
-          [pos.includes('top') ? 'top' : 'bottom']: '8px',
-          [pos.includes('left') ? 'left' : 'right']: '8px',
-          width: '6px',
-          height: '6px',
-          background: hovered ? accentColor : borderColor + '88',
-          transition: 'background 0.3s',
-        }} />
-      ))}
-
-      {/* Icon */}
-      <div style={{
-        filter: hovered ? `drop-shadow(0 0 12px ${accentColor})` : 'none',
-        transition: 'filter 0.3s',
-      }}>
-        {icon}
-      </div>
-
-      {/* Title */}
-      <div style={{
-        fontFamily: RETRO_FONT,
-        fontSize: 'clamp(14px, 3vw, 22px)',
-        color: hovered ? accentColor : RETRO_WHITE,
-        textShadow: hovered
-          ? `0 0 20px ${accentColor}88, 2px 2px 0 #000`
-          : '2px 2px 0 #000',
-        letterSpacing: '3px',
-        transition: 'color 0.3s, text-shadow 0.3s',
-      }}>
-        {title}
-      </div>
-
-      {/* Subtitle */}
-      <div style={{
-        fontFamily: DOT_FONT,
-        fontSize: 'clamp(11px, 1.8vw, 15px)',
-        color: hovered ? accentColor + 'cc' : '#8899bb',
-        letterSpacing: '1px',
-        transition: 'color 0.3s',
-      }}>
-        {subtitle}
-      </div>
-
-      {/* Description */}
-      <div style={{
-        fontFamily: DOT_FONT,
-        fontSize: 'clamp(9px, 1.2vw, 12px)',
-        color: '#5a6f8a',
-        lineHeight: '1.6',
-        textAlign: 'center' as const,
-        maxWidth: '260px',
-      }}>
-        {description}
-      </div>
-
-      {/* Bottom accent line */}
-      <div style={{
-        position: 'absolute',
-        bottom: '0',
-        left: '10%',
-        right: '10%',
-        height: '2px',
+        position: 'relative', zIndex: 1,
         background: hovered
-          ? `linear-gradient(90deg, transparent, ${accentColor}, transparent)`
-          : 'transparent',
-        transition: 'background 0.3s',
-      }} />
-    </button>
+          ? `linear-gradient(160deg, ${accentColor}14 0%, ${C_BG_PANEL} 50%, ${C_BG_DARK} 100%)`
+          : `linear-gradient(160deg, ${C_BG_PANEL} 0%, ${C_BG_DARK} 100%)`,
+        border: `2px solid ${hovered ? accentColor : borderColor}`,
+        boxShadow: hovered
+          ? `0 10px 40px rgba(0,0,0,0.8), 0 0 24px ${accentColor}30, inset 0 1px 0 rgba(255,255,255,0.07)`
+          : `0 4px 20px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.04)`,
+        padding: 'clamp(16px, 3vw, 28px) clamp(14px, 2.5vw, 22px)',
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        gap: 'clamp(8px, 1.5vh, 14px)',
+        transition: 'all 0.2s ease',
+        overflow: 'hidden',
+      }}>
+        {/* Inner double border */}
+        <div style={{
+          position: 'absolute', inset: 4,
+          border: `1px solid ${hovered ? accentColor + '44' : borderColor + '33'}`,
+          pointerEvents: 'none', transition: 'border-color 0.2s',
+        }} />
+        {/* Corner pixels */}
+        {[{t:'6px',l:'6px'},{t:'6px',r:'6px'},{b:'6px',l:'6px'},{b:'6px',r:'6px'}].map((pos, i) => (
+          <div key={i} style={{
+            position: 'absolute', width: 5, height: 5,
+            background: hovered ? accentColor : borderColor + 'aa',
+            transition: 'background 0.2s', ...pos as any,
+          }} />
+        ))}
+        {/* Badge */}
+        {badge && <div style={{
+          position: 'absolute', top: -10, right: 8,
+          background: C_RED, color: '#fff', fontFamily: FONT_PIXEL,
+          fontSize: 'clamp(5px, 0.9vw, 7px)', padding: '3px 7px',
+          border: '2px solid #FF6080', boxShadow: `0 0 10px ${C_RED}88`,
+          letterSpacing: '0.05em', zIndex: 10,
+        }}>{badge}</div>}
+        {/* Icon */}
+        <div style={{
+          color: accentColor,
+          filter: hovered ? `drop-shadow(0 0 10px ${accentColor}99)` : 'none',
+          transition: 'filter 0.2s',
+        }}>{icon}</div>
+        {/* Subtitle label */}
+        <div style={{
+          fontFamily: FONT_PIXEL, fontSize: 'clamp(8px, 1.5vw, 11px)',
+          color: accentColor, letterSpacing: '0.08em',
+          textShadow: `1px 1px 0 #000, 0 0 8px ${accentColor}55`,
+        }}>{subtitle}</div>
+        {/* Japanese title */}
+        <div style={{
+          fontFamily: FONT_DOT, fontSize: 'clamp(18px, 3.5vw, 26px)',
+          color: C_TEXT, fontWeight: 'bold', letterSpacing: '3px',
+        }}>{title}</div>
+        {/* Divider */}
+        <div style={{ width: '80%', height: '1px', background: `linear-gradient(90deg, transparent, ${accentColor}66, transparent)` }} />
+        {/* Description */}
+        <div style={{
+          fontFamily: FONT_DOT, fontSize: 'clamp(10px, 1.4vw, 12px)',
+          color: '#6878A8', textAlign: 'center', lineHeight: 1.65,
+        }}>{description}</div>
+        {/* Select indicator */}
+        <div style={{
+          fontFamily: FONT_PIXEL, fontSize: 'clamp(6px, 0.9vw, 8px)',
+          color: accentColor, opacity: hovered ? 1 : 0.4,
+          letterSpacing: '0.12em', transition: 'opacity 0.2s',
+        }}>▶ SELECT</div>
+      </div>
+    </div>
   );
 }
 
-// ============================================================
-// Card pack icon (SVG)
-// ============================================================
-function CardPackIcon({ size = 48 }: { size?: number }) {
+// ── SVG Icons ─────────────────────────────────────────────────
+function PitchIcon({ size = 52 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 48 48" fill="none">
-      {/* Back card */}
-      <rect x="10" y="4" width="28" height="38" rx="2" fill="#1a2744" stroke="#FFD700" strokeWidth="1.5" transform="rotate(-8 24 24)" />
-      {/* Middle card */}
-      <rect x="10" y="4" width="28" height="38" rx="2" fill="#1e2d4f" stroke="#FFD700" strokeWidth="1.5" transform="rotate(4 24 24)" />
-      {/* Front card */}
-      <rect x="10" y="6" width="28" height="38" rx="2" fill="#243656" stroke="#FFD700" strokeWidth="2" />
-      {/* Star on front card */}
-      <polygon
-        points="24,14 26,20 32,20 27,24 29,30 24,26 19,30 21,24 16,20 22,20"
-        fill="#FFD700"
-        opacity="0.8"
-      />
-      {/* Shine effect */}
-      <line x1="14" y1="10" x2="20" y2="10" stroke="#FFD700" strokeWidth="1" opacity="0.4" />
-      <line x1="14" y1="13" x2="18" y2="13" stroke="#FFD700" strokeWidth="1" opacity="0.3" />
+    <svg width={size} height={size} viewBox="0 0 52 52" fill="none">
+      <rect x="4" y="8" width="44" height="36" rx="1" stroke="currentColor" strokeWidth="2.5" fill="none"/>
+      <line x1="26" y1="8" x2="26" y2="44" stroke="currentColor" strokeWidth="1.5" opacity="0.5"/>
+      <circle cx="26" cy="26" r="7" stroke="currentColor" strokeWidth="1.5" fill="none" opacity="0.6"/>
+      <rect x="4" y="17" width="9" height="18" stroke="currentColor" strokeWidth="1.5" fill="none" opacity="0.7"/>
+      <rect x="39" y="17" width="9" height="18" stroke="currentColor" strokeWidth="1.5" fill="none" opacity="0.7"/>
+      <circle cx="26" cy="26" r="2.5" fill="currentColor" opacity="0.7"/>
+      <circle cx="4" cy="8" r="2" fill="currentColor" opacity="0.4"/>
+      <circle cx="48" cy="8" r="2" fill="currentColor" opacity="0.4"/>
+      <circle cx="4" cy="44" r="2" fill="currentColor" opacity="0.4"/>
+      <circle cx="48" cy="44" r="2" fill="currentColor" opacity="0.4"/>
+    </svg>
+  );
+}
+function CardPackIcon({ size = 52 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 52 52" fill="none">
+      <rect x="12" y="6" width="26" height="36" rx="2" fill="#1a2744" stroke="currentColor" strokeWidth="1.5" transform="rotate(-7 25 24)"/>
+      <rect x="12" y="6" width="26" height="36" rx="2" fill="#1e2d4f" stroke="currentColor" strokeWidth="1.5" transform="rotate(3 25 24)"/>
+      <rect x="12" y="8" width="26" height="36" rx="2" fill="#1a2850" stroke="currentColor" strokeWidth="2"/>
+      <line x1="12" y1="18" x2="38" y2="18" stroke="currentColor" strokeWidth="1.5" opacity="0.7"/>
+      <polygon points="25,22 27,27 33,27 28,30 30,36 25,32 20,36 22,30 17,27 23,27" fill="currentColor" opacity="0.85"/>
+    </svg>
+  );
+}
+function TeamBuildIcon({ size = 52 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 52 52" fill="none">
+      <circle cx="26" cy="12" r="6" stroke="currentColor" strokeWidth="2" fill="none"/>
+      <circle cx="10" cy="36" r="5" stroke="currentColor" strokeWidth="2" fill="none"/>
+      <circle cx="42" cy="36" r="5" stroke="currentColor" strokeWidth="2" fill="none"/>
+      <line x1="26" y1="18" x2="26" y2="27" stroke="currentColor" strokeWidth="1.5" opacity="0.6"/>
+      <line x1="26" y1="27" x2="10" y2="31" stroke="currentColor" strokeWidth="1.5" opacity="0.6"/>
+      <line x1="26" y1="27" x2="42" y2="31" stroke="currentColor" strokeWidth="1.5" opacity="0.6"/>
+      <circle cx="26" cy="27" r="2.5" fill="currentColor" opacity="0.7"/>
     </svg>
   );
 }
 
-// ============================================================
-// Pitch icon (SVG)
-// ============================================================
-function PitchIcon({ size = 48 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 48 48" fill="none">
-      {/* Pitch background */}
-      <rect x="2" y="6" width="44" height="36" rx="1" fill="#145e30" stroke="#2a8c4a" strokeWidth="1.5" />
-      {/* Center line */}
-      <line x1="24" y1="6" x2="24" y2="42" stroke="#2a8c4a" strokeWidth="1" />
-      {/* Center circle */}
-      <circle cx="24" cy="24" r="6" fill="none" stroke="#2a8c4a" strokeWidth="1" />
-      {/* Center spot */}
-      <circle cx="24" cy="24" r="1.5" fill="#2a8c4a" />
-      {/* Goal areas */}
-      <rect x="2" y="16" width="6" height="16" fill="none" stroke="#2a8c4a" strokeWidth="1" />
-      <rect x="40" y="16" width="6" height="16" fill="none" stroke="#2a8c4a" strokeWidth="1" />
-      {/* Players - blue team */}
-      <circle cx="10" cy="18" r="2" fill="#4488ff" />
-      <circle cx="10" cy="30" r="2" fill="#4488ff" />
-      <circle cx="16" cy="24" r="2" fill="#4488ff" />
-      <circle cx="18" cy="16" r="2" fill="#4488ff" />
-      <circle cx="18" cy="32" r="2" fill="#4488ff" />
-      {/* Players - red team */}
-      <circle cx="38" cy="18" r="2" fill="#ff4444" />
-      <circle cx="38" cy="30" r="2" fill="#ff4444" />
-      <circle cx="32" cy="24" r="2" fill="#ff4444" />
-      <circle cx="30" cy="16" r="2" fill="#ff4444" />
-      <circle cx="30" cy="32" r="2" fill="#ff4444" />
-      {/* Ball */}
-      <circle cx="24" cy="24" r="1.5" fill="#fff" stroke="#333" strokeWidth="0.5" />
-    </svg>
-  );
-}
-
-// ============================================================
-// Team build icon (SVG)
-// ============================================================
-function TeamBuildIcon({ size = 48 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 48 48" fill="none">
-      {/* Clipboard */}
-      <rect x="10" y="6" width="28" height="36" rx="2" fill="#1a2744" stroke="#e94560" strokeWidth="1.5" />
-      {/* Clipboard top */}
-      <rect x="18" y="3" width="12" height="6" rx="1" fill="#e94560" />
-      {/* Formation dots */}
-      <circle cx="24" cy="16" r="2" fill="#4488ff" />
-      <circle cx="18" cy="22" r="2" fill="#4488ff" />
-      <circle cx="30" cy="22" r="2" fill="#4488ff" />
-      <circle cx="16" cy="28" r="2" fill="#4488ff" />
-      <circle cx="24" cy="28" r="2" fill="#4488ff" />
-      <circle cx="32" cy="28" r="2" fill="#4488ff" />
-      {/* Arrow */}
-      <line x1="24" y1="33" x2="24" y2="38" stroke="#FFD700" strokeWidth="1.5" />
-      <polygon points="24,40 21,36 27,36" fill="#FFD700" />
-    </svg>
-  );
-}
-
-// ============================================================
-// Main TopPage Component
-// ============================================================
+// ── Main ──────────────────────────────────────────────────────
 export default function TopPage() {
   const [, setLocation] = useLocation();
-  const [titleVisible, setTitleVisible] = useState(false);
   const { coins, collection } = useCollection();
+  const [visible, setVisible] = useState(false);
+  const [blink, setBlink] = useState(true);
 
-  useEffect(() => {
-    const timer = setTimeout(() => setTitleVisible(true), 200);
-    return () => clearTimeout(timer);
-  }, []);
+  useEffect(() => { const t = setTimeout(() => setVisible(true), 80); return () => clearTimeout(t); }, []);
+  useEffect(() => { const t = setInterval(() => setBlink(b => !b), 550); return () => clearInterval(t); }, []);
 
   return (
     <div style={{
-      width: '100vw',
-      height: '100dvh',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontFamily: RETRO_FONT,
-      color: RETRO_WHITE,
-      position: 'relative',
-      overflow: 'hidden',
-      touchAction: 'pan-y',
-      imageRendering: 'pixelated' as any,
-      padding: 'clamp(12px, 3vh, 32px) clamp(12px, 4vw, 32px)',
-      boxSizing: 'border-box',
+      position: 'relative', height: '100dvh', overflow: 'hidden',
+      backgroundColor: C_BG_DEEP, fontFamily: FONT_DOT, color: C_TEXT,
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
     }}>
-      {/* Animated star field */}
       <StarField />
-
-      {/* Scanline overlay */}
+      {/* Scanlines */}
       <div style={{
-        position: 'fixed',
-        top: 0, left: 0, right: 0, bottom: 0,
-        background: 'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.06) 2px, rgba(0,0,0,0.06) 4px)',
-        pointerEvents: 'none',
-        zIndex: 100,
+        position: 'fixed', inset: 0, zIndex: 9000, pointerEvents: 'none',
+        background: 'repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,0,0,0.035) 3px, rgba(0,0,0,0.035) 4px)',
+      }} />
+      {/* Pixel grid */}
+      <div style={{
+        position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none', opacity: 0.035,
+        backgroundImage: `linear-gradient(rgba(68,136,255,0.6) 1px, transparent 1px), linear-gradient(90deg, rgba(68,136,255,0.6) 1px, transparent 1px)`,
+        backgroundSize: '8px 8px',
       }} />
 
-      {/* Title section */}
+      {/* Main content */}
       <div style={{
-        position: 'relative',
-        zIndex: 10,
-        textAlign: 'center',
-        marginBottom: 'clamp(20px, 4vh, 48px)',
-        opacity: titleVisible ? 1 : 0,
-        transform: titleVisible ? 'translateY(0)' : 'translateY(-20px)',
-        transition: 'all 0.8s cubic-bezier(0.34, 1.56, 0.64, 1)',
+        position: 'relative', zIndex: 10, display: 'flex', flexDirection: 'column',
+        alignItems: 'center', width: '100%', maxWidth: '820px',
+        padding: 'clamp(12px, 3vw, 36px)', gap: 'clamp(14px, 2.5vh, 28px)', boxSizing: 'border-box',
       }}>
-        {/* Main title */}
-        <div style={{
-          fontSize: 'clamp(18px, 5vw, 42px)',
-          color: RETRO_GOLD,
-          textShadow: `3px 3px 0px ${RETRO_ACCENT}, -1px -1px 0px #000, 0 0 30px rgba(245,197,66,0.3)`,
-          letterSpacing: 'clamp(2px, 0.8vw, 6px)',
-          marginBottom: 'clamp(4px, 1vh, 12px)',
-        }}>
-          SOCCER SIM
-        </div>
 
-        {/* Subtitle */}
+        {/* ── Title Block ── */}
         <div style={{
-          fontFamily: DOT_FONT,
-          fontSize: 'clamp(9px, 1.5vw, 14px)',
-          color: RETRO_GREEN,
-          letterSpacing: '2px',
+          textAlign: 'center',
+          opacity: visible ? 1 : 0,
+          transform: visible ? 'translateY(0)' : 'translateY(-20px)',
+          transition: 'all 0.7s cubic-bezier(0.34,1.56,0.64,1)',
         }}>
-          ⚽ サッカーシミュレーター ⚽
-        </div>
-
-        {/* Decorative line */}
-        <div style={{
-          width: 'clamp(80px, 20vw, 200px)',
-          height: '2px',
-          background: `linear-gradient(90deg, transparent, ${RETRO_GOLD}88, transparent)`,
-          margin: 'clamp(8px, 1.5vh, 16px) auto 0',
-        }} />
-
-        {/* ★ v10.2.0: Coin & Collection status bar */}
-        <div style={{
-          display: 'flex',
-          justifyContent: 'center',
-          gap: 'clamp(12px, 3vw, 24px)',
-          marginTop: 'clamp(6px, 1vh, 12px)',
-          fontFamily: "'Press Start 2P', monospace",
-          fontSize: 'clamp(7px, 1.2vw, 10px)',
-        }}>
+          {/* Logo frame */}
           <div style={{
-            color: RETRO_GOLD,
-            display: 'flex',
-            alignItems: 'center',
-            gap: '4px',
-            background: 'rgba(0,10,40,0.7)',
-            border: '2px solid #B8860B',
-            padding: '4px 10px',
+            display: 'inline-block', position: 'relative',
+            border: `3px solid ${C_GOLD_DIM}`,
+            padding: 'clamp(10px, 2vh, 20px) clamp(18px, 4vw, 44px)',
+            background: `linear-gradient(180deg, rgba(245,197,66,0.07) 0%, rgba(245,197,66,0.02) 100%)`,
+            boxShadow: `0 0 40px rgba(245,197,66,0.12), inset 0 1px 0 rgba(255,255,255,0.05)`,
+            marginBottom: 'clamp(6px, 1.2vh, 14px)',
           }}>
-            <span>🪙</span>
-            <span>{coins.toLocaleString()}</span>
+            {/* Corner pixels */}
+            {[{top:-2,left:-2},{top:-2,right:-2},{bottom:-2,left:-2},{bottom:-2,right:-2}].map((pos, i) => (
+              <div key={i} style={{ position:'absolute', width:8, height:8, background:C_GOLD, ...pos as any }} />
+            ))}
+            <div style={{
+              fontFamily: FONT_PIXEL, fontSize: 'clamp(15px, 4.2vw, 38px)',
+              color: C_GOLD, letterSpacing: 'clamp(2px, 0.8vw, 7px)',
+              textShadow: `3px 3px 0px #000, 0 0 24px rgba(245,197,66,0.45)`,
+              lineHeight: 1.15,
+            }}>SOCCER SIM</div>
+            <div style={{
+              fontFamily: FONT_DOT, fontSize: 'clamp(11px, 1.8vw, 15px)',
+              color: C_GREEN, letterSpacing: '3px', marginTop: '6px',
+            }}>⚽ サッカーシミュレーター ⚽</div>
           </div>
+
+          {/* Status bar */}
           <div style={{
-            color: '#8B9DC3',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '4px',
-            background: 'rgba(0,10,40,0.7)',
-            border: '2px solid #4a6fa5',
-            padding: '4px 10px',
+            display: 'flex', justifyContent: 'center',
+            gap: 'clamp(8px, 2vw, 16px)', fontFamily: FONT_MONO,
+            fontSize: 'clamp(8px, 1.2vw, 11px)',
           }}>
-            <span>🃏</span>
-            <span>{collection.length}枚</span>
+            {[
+              { icon: '🪙', val: `${coins.toLocaleString()}`, border: C_GOLD_DIM, color: C_GOLD },
+              { icon: '🃏', val: `${collection.length}枚`, border: '#2a4080', color: '#8B9DC3' },
+            ].map(({ icon, val, border, color }) => (
+              <div key={val} style={{
+                display: 'flex', alignItems: 'center', gap: '6px',
+                background: 'rgba(0,6,18,0.85)', border: `2px solid ${border}`,
+                padding: '5px 12px', color,
+                boxShadow: `0 0 6px ${border}44`,
+              }}>
+                <span>{icon}</span><span>{val}</span>
+              </div>
+            ))}
           </div>
         </div>
-      </div>
 
-      {/* Mode selection cards */}
-      <div style={{
-        position: 'relative',
-        zIndex: 10,
-        display: 'flex',
-        gap: 'clamp(12px, 3vw, 32px)',
-        justifyContent: 'center',
-        alignItems: 'stretch',
-        width: '100%',
-        maxWidth: '720px',
-        flexWrap: 'wrap' as const,
-      }}>
-        {/* Match mode */}
-        <ModeCard
-          title="試合"
-          subtitle="MATCH"
-          description="11vs11のサッカーシミュレーション。フォーメーションを選んでキックオフ！"
-          icon={<PitchIcon size={56} />}
-          accentColor="#4488ff"
-          borderColor="#2255aa"
-          onClick={() => setLocation('/match')}
-          delay={500}
-        />
-
-        {/* Gacha mode */}
-        <ModeCard
-          title="ガチャ"
-          subtitle="GACHA"
-          description="カードパックを開封して1034名の選手をコレクション！レアカードを引き当てろ！"
-          icon={<CardPackIcon size={56} />}
-          accentColor="#FFD700"
-          borderColor="#8B6914"
-          onClick={() => setLocation('/gacha')}
-          delay={700}
-        />
-
-        {/* Team Builder mode */}
-        <ModeCard
-          title="編成"
-          subtitle="TEAM BUILD"
-          description="ガチャで集めた選手でチームを組んで、カスタムマッチに挑戦！"
-          icon={<TeamBuildIcon size={56} />}
-          accentColor="#e94560"
-          borderColor="#8b2030"
-          onClick={() => setLocation('/team-builder')}
-          delay={900}
-        />
-      </div>
-
-      {/* Footer */}
-      <div style={{
-        position: 'relative',
-        zIndex: 10,
-        marginTop: 'clamp(16px, 3vh, 32px)',
-        textAlign: 'center',
-        opacity: titleVisible ? 1 : 0,
-        transition: 'opacity 1s ease 1s',
-      }}>
+        {/* ── Mode Cards ── */}
         <div style={{
-          fontFamily: DOT_FONT,
-          fontSize: 'clamp(8px, 1vw, 11px)',
-          color: '#3a4a6a',
-          letterSpacing: '1px',
+          display: 'flex', gap: 'clamp(10px, 2.5vw, 22px)',
+          justifyContent: 'center', alignItems: 'stretch',
+          width: '100%', flexWrap: 'wrap',
         }}>
-          © 2026 SOCCER SIM ENGINE v10.0.0
+          <ModeCard title="試合" subtitle="MATCH"
+            description="11vs11のサッカーシミュレーション。フォーメーションを選んでキックオフ！"
+            icon={<PitchIcon />} accentColor={C_BLUE} borderColor="#1a3366"
+            onClick={() => setLocation('/match')} delay={350}
+          />
+          <ModeCard title="ガチャ" subtitle="GACHA"
+            description="カードパックを開封して1034名の選手をコレクション！レアカードを引き当てろ！"
+            icon={<CardPackIcon />} accentColor={C_GOLD} borderColor={C_GOLD_DIM}
+            onClick={() => setLocation('/gacha')} delay={550}
+          />
+          <ModeCard title="編成" subtitle="TEAM BUILD"
+            description="ガチャで集めた選手でチームを組んで、カスタムマッチに挑戦！"
+            icon={<TeamBuildIcon />} accentColor={C_RED} borderColor="#5a1020"
+            onClick={() => setLocation('/team-builder')} delay={750}
+          />
         </div>
+
+        {/* ── Blink prompt ── */}
+        <div style={{
+          opacity: visible ? (blink ? 1 : 0) : 0,
+          transition: 'opacity 0.1s ease',
+          fontFamily: FONT_PIXEL, fontSize: 'clamp(7px, 1vw, 9px)',
+          color: C_TEXT_DIM, letterSpacing: '0.12em', textAlign: 'center',
+        }}>▼ SELECT MODE ▼</div>
+
+        {/* ── Footer ── */}
+        <div style={{
+          fontFamily: FONT_DOT, fontSize: 'clamp(9px, 1vw, 11px)',
+          color: '#1e2e4a', letterSpacing: '1px', textAlign: 'center',
+          opacity: visible ? 1 : 0, transition: 'opacity 1s ease 1.2s',
+        }}>© 2026 SOCCER SIM ENGINE v10.3.0</div>
       </div>
     </div>
   );

@@ -36,7 +36,7 @@ export const P = {
   // Adjusted for soccer pitch
   interceptRadius: 0.9,  // v9.3.0: Reduced from 1.5 to allow more passes through
   decisionInterval: 0.25,  // Slightly longer decision time
-  shotRange: 22.0,  // v9.3.0: Increased from 18 to allow more shots from distance
+  shotRange: 38.0,  // v10.0.0: Increased to allow shots from realistic distance (105m pitch, goal at x=52.5)
   shotAngle: 45,  // Narrower angle for longer distances
 
   looseBallDrag: 3.5,
@@ -151,50 +151,53 @@ export interface FormationDef {
 
 // 4-4-2 Formation (scaled for 105m x 68m soccer pitch)
 // Standard numbering: GK=1, RB=2, CB=4,5, LB=3, RM=7, CM=6,8, LM=11, ST=9,10
+// v10.0.0: Pushed FWD/MID positions forward for more attacking play
 const FORM_442_POS = [
   { x: -48.0, y: 0 },       // 0  GK     → #1
-  { x: -36.0, y: -24.0 },   // 1  LB     → #3
-  { x: -36.0, y: -8.0 },    // 2  CB     → #4
-  { x: -36.0, y: 8.0 },     // 3  CB     → #5
-  { x: -36.0, y: 24.0 },    // 4  RB     → #2
-  { x: -20.0, y: -28.0 },   // 5  LM     → #11
-  { x: -20.0, y: -9.0 },    // 6  CM     → #6
-  { x: -20.0, y: 9.0 },     // 7  CM     → #8
-  { x: -20.0, y: 28.0 },    // 8  RM     → #7
-  { x: -8.0, y: -10.0 },    // 9  ST     → #9
-  { x: -8.0, y: 10.0 },     // 10 ST     → #10
+  { x: -30.0, y: -24.0 },   // 1  LB     → #3
+  { x: -32.0, y: -8.0 },    // 2  CB     → #4
+  { x: -32.0, y: 8.0 },     // 3  CB     → #5
+  { x: -30.0, y: 24.0 },    // 4  RB     → #2
+  { x: -10.0, y: -28.0 },   // 5  LM     → #11 (pushed forward)
+  { x: -12.0, y: -9.0 },    // 6  CM     → #6 (pushed forward)
+  { x: -12.0, y: 9.0 },     // 7  CM     → #8 (pushed forward)
+  { x: -10.0, y: 28.0 },    // 8  RM     → #7 (pushed forward)
+  { x: 8.0, y: -10.0 },     // 9  ST     → #9 (in opponent half)
+  { x: 8.0, y: 10.0 },      // 10 ST     → #10 (in opponent half)
 ];
 
 // 4-2-3-1 Formation
 // Standard numbering: GK=1, RB=2, CB=4,5, LB=3, CDM=6,8, LAM=11, CAM=10, RAM=7, ST=9
+// v10.0.0: Pushed attacking positions forward
 const FORM_4231_POS = [
   { x: -48.0, y: 0 },       // 0  GK     → #1
-  { x: -36.0, y: -24.0 },   // 1  LB     → #3
-  { x: -36.0, y: -8.0 },    // 2  CB     → #4
-  { x: -36.0, y: 8.0 },     // 3  CB     → #5
-  { x: -36.0, y: 24.0 },    // 4  RB     → #2
-  { x: -24.0, y: -7.0 },    // 5  CDM    → #6
-  { x: -24.0, y: 7.0 },     // 6  CDM    → #8
-  { x: -12.0, y: -22.0 },   // 7  LAM    → #11
-  { x: -12.0, y: 0 },       // 8  CAM    → #10
-  { x: -12.0, y: 22.0 },    // 9  RAM    → #7
-  { x: -5.0, y: 0 },        // 10 ST     → #9
+  { x: -30.0, y: -24.0 },   // 1  LB     → #3
+  { x: -32.0, y: -8.0 },    // 2  CB     → #4
+  { x: -32.0, y: 8.0 },     // 3  CB     → #5
+  { x: -30.0, y: 24.0 },    // 4  RB     → #2
+  { x: -20.0, y: -7.0 },    // 5  CDM    → #6
+  { x: -20.0, y: 7.0 },     // 6  CDM    → #8
+  { x: -2.0, y: -22.0 },    // 7  LAM    → #11 (pushed into opp half)
+  { x: 0.0, y: 0 },         // 8  CAM    → #10 (at halfway)
+  { x: -2.0, y: 22.0 },     // 9  RAM    → #7 (pushed into opp half)
+  { x: 12.0, y: 0 },        // 10 ST     → #9 (deep in opp half)
 ];
 
 // 3-4-3 Formation
 // Standard numbering: GK=1, CB=4,5,3, LWB=6, CM=8,10, RWB=2, LW=11, ST=9, RW=7
+// v10.0.0: Pushed attacking positions forward
 const FORM_343_POS = [
   { x: -48.0, y: 0 },       // 0  GK     → #1
-  { x: -36.0, y: -18.0 },   // 1  CB     → #3
-  { x: -36.0, y: 0 },       // 2  CB     → #4
-  { x: -36.0, y: 18.0 },    // 3  CB     → #5
-  { x: -22.0, y: -26.0 },   // 4  LWB    → #6
-  { x: -22.0, y: -8.0 },    // 5  CM     → #8
-  { x: -22.0, y: 8.0 },     // 6  CM     → #10
-  { x: -22.0, y: 26.0 },    // 7  RWB    → #2
-  { x: -8.0, y: -18.0 },    // 8  LW     → #11
-  { x: -5.0, y: 0 },        // 9  ST     → #9
-  { x: -8.0, y: 18.0 },     // 10 RW     → #7
+  { x: -32.0, y: -18.0 },   // 1  CB     → #3
+  { x: -34.0, y: 0 },       // 2  CB     → #4
+  { x: -32.0, y: 18.0 },    // 3  CB     → #5
+  { x: -8.0, y: -26.0 },    // 4  LWB    → #6 (pushed forward)
+  { x: -14.0, y: -8.0 },    // 5  CM     → #8 (pushed forward)
+  { x: -14.0, y: 8.0 },     // 6  CM     → #10 (pushed forward)
+  { x: -8.0, y: 26.0 },     // 7  RWB    → #2 (pushed forward)
+  { x: 5.0, y: -18.0 },     // 8  LW     → #11 (in opp half)
+  { x: 12.0, y: 0 },        // 9  ST     → #9 (deep in opp half)
+  { x: 5.0, y: 18.0 },      // 10 RW     → #7 (in opp half)
 ];
 
 export const FORMATIONS: Record<FormationId, FormationDef> = {

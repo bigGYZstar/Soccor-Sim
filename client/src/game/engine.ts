@@ -494,6 +494,9 @@ export function mkState(blueFormation: FormationId = "4-4-2", redFormation: Form
         playerIdx: i, goals: 0, assists: 0, shots: 0, shotsOnTarget: 0,
         passes: 0, passSuccess: 0, dribbles: 0, dribbleSuccess: 0,
         tackles: 0, tackleSuccess: 0, interceptions: 0, saves: 0,
+        // ★ v10.4.0: Progressive pass tracking
+        progPasses: 0, progPassSuccess: 0, longPasses: 0, longPassSuccess: 0,
+        keyPasses: 0, chancesCreated: 0,
       })),
     },
     atkLevelBlue: 5,
@@ -509,8 +512,13 @@ export function mkState(blueFormation: FormationId = "4-4-2", redFormation: Form
     ballTrail: [],
     // ★ v9.9.0: Action log
     actionLog: [],
+    // ★ v10.3.0: Complete log for headless mode
+    fullLog: [],
     possessionPush: { team: 0, duration: 0, pushLevel: 0 },
-    screenEffect: { type: "none", timer: 0, text: "", playerNum: 0, team: 0 }
+    screenEffect: { type: "none", timer: 0, text: "", playerNum: 0, team: 0 },
+    // ★ v10.3.0: Heatmap data
+    heatmaps: [],  // Will be initialized after players are created
+    heatmapSampleCounter: 0,
   };
 }
 
@@ -560,6 +568,11 @@ export function give(ball: Ball, idx: number, pl: Player[], st: State, reason: "
           // ★ v10.2.0: Per-player pass success
           if (ball.lastKickerIdx >= 0 && st.stats.playerStats[ball.lastKickerIdx]) {
             st.stats.playerStats[ball.lastKickerIdx].passSuccess++;
+            // ★ v10.4.0: Progressive pass success tracking
+            if ((ball as any)._progPasserIdx === ball.lastKickerIdx) {
+              st.stats.playerStats[ball.lastKickerIdx].progPassSuccess++;
+              (ball as any)._progPasserIdx = undefined;
+            }
           }
           if (toIntended) {
             st.stats.passToIntended[team]++;
@@ -571,6 +584,12 @@ export function give(ball: Ball, idx: number, pl: Player[], st: State, reason: "
       } else if (ball.kickKind === "LONG") {
         if (sameTeam) {
           st.stats.longPassSuccess[team]++;
+          // ★ v10.4.0: Per-player long pass success
+          if (ball.lastKickerIdx >= 0 && st.stats.playerStats[ball.lastKickerIdx]) {
+            st.stats.playerStats[ball.lastKickerIdx].passSuccess++;
+            st.stats.playerStats[ball.lastKickerIdx].longPassSuccess++;
+            (ball as any)._longPasserIdx = undefined;
+          }
         }
         // Attempt already counted in doLongPassTo
       }
@@ -1169,7 +1188,7 @@ export function bestPass(st: State, idx: number, relaxed: boolean = false): numb
     const isBlocked = laneBlocked(st, me.pos, tm.pos, me.team);
     const ax = me.pos.x * (-me.team);
     const w = PExt.pitchHalfW;
-    const isPhaseA = ax < (2 * w / 3);
+    const isPhaseA = ax < (w * 0.4);  // v10.0.0: consistent with Phase B threshold
     if (isBlocked && !isPhaseA) score -= 2.0;
     if (isOffside(st, tm, me.pos)) score -= 100;
     
@@ -1504,7 +1523,17 @@ export function doPassTo(st: State, idx: number, targetIdx: number) {
   const team = me.team === -1 ? 'blue' : 'red';
   st.stats.passAttempts[team]++;
   // ★ v10.2.0: Per-player pass tracking
-  if (st.stats.playerStats[me.idx]) st.stats.playerStats[me.idx].passes++;
+  if (st.stats.playerStats[me.idx]) {
+    st.stats.playerStats[me.idx].passes++;
+    // ★ v10.4.0: Progressive pass tracking (forward pass advancing >10m toward opponent goal)
+    const attackDir2 = -me.team;
+    const progressDist = (tm.pos.x - me.pos.x) * attackDir2;
+    if (progressDist > 10.0) {
+      st.stats.playerStats[me.idx].progPasses++;
+      // Mark ball for progressive pass success tracking
+      (st.ball as any)._progPasserIdx = me.idx;
+    }
+  }
   
   // ★ v9.15.0: Action log with foot info
   logPass(st, me, tm.num, passDist, false, usedFoot);
@@ -1561,6 +1590,13 @@ export function doLongPassTo(st: State, idx: number, targetIdx: number) {
   // v8.8.2: Track long pass attempt
   const team = me.team === -1 ? 'blue' : 'red';
   st.stats.longPassAttempts[team]++;
+  // ★ v10.4.0: Per-player long pass tracking
+  if (st.stats.playerStats[me.idx]) {
+    st.stats.playerStats[me.idx].passes++;
+    st.stats.playerStats[me.idx].longPasses++;
+    // Mark ball for long pass success tracking
+    (st.ball as any)._longPasserIdx = me.idx;
+  }
   
   // ★ v9.15.0: Action log with foot info
   logPass(st, me, tm.num, lpDist, true, usedFoot);
@@ -1702,6 +1738,28 @@ export function decideHasBall(st: State, idx: number) {
     // Last resort: kick forward
     kick(st, idx, 12, false, v(-me.team, 0), false);
     return;
+  }
+
+  // ★ v10.0.0: SHOT PRIORITY - if close to goal, shoot before anything else
+  if (!me.isGK) {
+    const distToGoalEarly = vdist(me.pos, gc);
+    const axEarly = me.pos.x * (-me.team);
+    if (distToGoalEarly < 35.0 && axEarly > 5.0) {  // In opponent half (5m+), within 35m
+      const toGoal = vsub(gc, me.pos);
+      const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
+      let shotAngle = 90;
+      if (distToGoalEarly <= 8.0) shotAngle = 90;
+      else if (distToGoalEarly <= 14.0) shotAngle = 75;
+      else if (distToGoalEarly <= 22.0) shotAngle = 60;
+      else shotAngle = 40;  // Long range shots need narrower angle
+      if (angle < shotAngle) {
+        const pSA = (1 - PExt.shotAccuracy * (me.cardMods?.shotAccuracy ?? 1.0)) * 2.5;
+        const t = v(gc.x, gc.y + rng(-pSA, pSA));
+        kick(st, idx, PExt.shotSpeed, true, t);
+        chosenAction = "shot-priority";
+        return;
+      }
+    }
   }
 
   // ★ v9.21.0: FORWARD CARRY PRIORITY - if path to goal is clear, carry forward immediately
@@ -1879,8 +1937,8 @@ export function decideHasBall(st: State, idx: number) {
   const distToGoal = vdist(me.pos, gc);
   const ax = me.pos.x * (-me.team);
   const w = PExt.pitchHalfW;
-  const isPhaseA = ax < (2 * w / 3);
-  const isPhaseB = ax >= (2 * w / 3);
+  const isPhaseA = ax < (w * 0.4);  // v10.0.0: Phase A = own half + midfield (ax < 21m)
+  const isPhaseB = ax >= (w * 0.4);  // v10.0.0: Phase B = attacking half (ax >= 21m, was 2/3=35m)
   
   // ★ Stack resolution: Force long kick when stack detected (HIGHEST PRIORITY)
   if (st.stackDetection.isStacked) {
@@ -1944,16 +2002,17 @@ export function decideHasBall(st: State, idx: number) {
       }
     }
     
-    // v9.2.0: Extended shot range to match PExt.shotRange (18m)
+    // v10.0.0: Extended shot range with wider angle limits
     const shouldPrioritizeShot = distToGoal < PExt.shotRange;
     if (shouldPrioritizeShot) {
       const toGoal = vsub(gc, me.pos);
       const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
-      let allowedAngle = 30;
-      if (distToGoal <= 5.0) allowedAngle = 80;
-      else if (distToGoal <= 8.0) allowedAngle = 60;
-      else if (distToGoal <= 12.0) allowedAngle = 45;
-      else allowedAngle = 30;
+      let allowedAngle = 45;  // v10.0.0: wider base angle
+      if (distToGoal <= 5.0) allowedAngle = 90;
+      else if (distToGoal <= 10.0) allowedAngle = 75;
+      else if (distToGoal <= 18.0) allowedAngle = 60;
+      else if (distToGoal <= 28.0) allowedAngle = 45;
+      else allowedAngle = 35;  // Long range shots
       
       if (angle < allowedAngle) {
         const pSA2 = (1 - PExt.shotAccuracy * (me.cardMods?.shotAccuracy ?? 1.0)) * 2.5;
@@ -2158,11 +2217,15 @@ export function decideHasBall(st: State, idx: number) {
     return;
   }
   
-  // v9.2.0: Phase A shot - allow shots when close enough
+  // v10.0.0: Phase A shot - allow shots when close enough (widened angles)
   if (distToGoal < PExt.shotRange) {
     const toGoal = vsub(gc, me.pos);
     const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
-    let allowedAngle = distToGoal <= 8.0 ? 60 : 35;
+    let allowedAngle = 45;
+    if (distToGoal <= 8.0) allowedAngle = 75;
+    else if (distToGoal <= 18.0) allowedAngle = 60;
+    else if (distToGoal <= 28.0) allowedAngle = 45;
+    else allowedAngle = 35;
     if (angle < allowedAngle) {
       const pSA3 = (1 - PExt.shotAccuracy * (me.cardMods?.shotAccuracy ?? 1.0)) * 2.5;
       const t = v(gc.x, gc.y + rng(-pSA3, pSA3));
@@ -2186,7 +2249,7 @@ export function decideHasBall(st: State, idx: number) {
   if (shouldLog) {
     const ax = me.pos.x * (-me.team);
     const w = PExt.pitchHalfW;
-    const phase = ax < (2 * w / 3) ? "A" : "B";
+    const phase = ax < (w * 0.4) ? "A" : "B";
     // Debug log removed
   }
 }
@@ -3366,8 +3429,8 @@ export function update(st: State, dt: number) {
     const owner = st.pl[b.owner];
     const ax = b.pos.x * (-owner.team);
     const w = PExt.pitchHalfW;
-    const isAttThird = ax >= (2 * w / 3);  // ax >= 6.66
-    const isPhaseB = ax >= (2 * w / 3);  // Phase B: ax >= 6.66
+    const isAttThird = ax >= (w * 0.4);  // v10.0.0: attacking half (ax >= 21m)
+    const isPhaseB = ax >= (w * 0.4);  // v10.0.0: Phase B threshold consistent
     
     if (isAttThird) {
       // In attacking third - accumulate frames
@@ -3401,6 +3464,40 @@ export function update(st: State, dt: number) {
   
   b = st.ball;  // Re-assign for clarity
   
+  // ★ v10.3.0: Heatmap initialization (first frame)
+  if (st.heatmaps.length === 0 && st.pl.length > 0) {
+    st.heatmaps = st.pl.map(p => ({
+      playerIdx: p.idx,
+      team: p.team,
+      num: p.num,
+      cardName: p.cardName,
+      posLabel: p.posLabel,
+      offBall: [],
+      onBall: [],
+    }));
+  }
+
+  // ★ v10.3.0: Heatmap off-ball sampling (every 15 frames ~= 0.25s at 60fps)
+  const HEATMAP_SAMPLE_INTERVAL = 15;
+  st.heatmapSampleCounter++;
+  if (st.heatmapSampleCounter >= HEATMAP_SAMPLE_INTERVAL) {
+    st.heatmapSampleCounter = 0;
+    const PH = PExt.pitchHalfH;  // ~34m
+    const PW = PExt.pitchHalfW;  // ~52.5m
+    for (const p of st.pl) {
+      const hm = st.heatmaps[p.idx];
+      if (!hm) continue;
+      if (st.ball.owner !== p.idx) {
+        // Off-ball: normalize to 0-1 range
+        const nx = (p.pos.x + PW) / (PW * 2);
+        const ny = (p.pos.y + PH) / (PH * 2);
+        hm.offBall.push({ x: Math.max(0, Math.min(1, nx)), y: Math.max(0, Math.min(1, ny)) });
+        // Limit to 2000 samples per player
+        if (hm.offBall.length > 2000) hm.offBall.shift();
+      }
+    }
+  }
+
   // A. AI decisions
   // ★ v8.7.7 Patch 1: Randomize evaluation order to eliminate index bias
   const evalOrder = Array.from({length: st.pl.length}, (_, i) => i);

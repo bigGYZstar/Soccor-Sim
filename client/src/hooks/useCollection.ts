@@ -18,6 +18,7 @@ const STORAGE_KEY_BLUE_TEAM = 'soccer-sim-blue-team';
 const STORAGE_KEY_RED_TEAM = 'soccer-sim-red-team';
 const STORAGE_KEY_COINS = 'soccer-sim-coins';
 const STORAGE_KEY_OPENING_DONE = 'soccer-sim-opening-pack-done';
+const STORAGE_KEY_FREE10X_USED = 'soccer-sim-free10x-used';
 
 /** コレクション内の選手カード（取得時刻付き） */
 export interface CollectedCard {
@@ -73,6 +74,9 @@ export function useCollection() {
   const [openingPackDone, setOpeningPackDone] = useState<boolean>(() =>
     loadFromStorage<boolean>(STORAGE_KEY_OPENING_DONE, false)
   );
+  const [free10xUsed, setFree10xUsed] = useState<boolean>(() =>
+    loadFromStorage<boolean>(STORAGE_KEY_FREE10X_USED, false)
+  );
 
   // Persist collection changes
   useEffect(() => {
@@ -99,6 +103,10 @@ export function useCollection() {
     saveToStorage(STORAGE_KEY_OPENING_DONE, openingPackDone);
   }, [openingPackDone]);
 
+  useEffect(() => {
+    saveToStorage(STORAGE_KEY_FREE10X_USED, free10xUsed);
+  }, [free10xUsed]);
+
   /** Add cards from a pack opening */
   const addCards = useCallback((cards: Player[]) => {
     const newCards: CollectedCard[] = cards.map(card => ({
@@ -123,11 +131,17 @@ export function useCollection() {
     setRedTeam({ formationId: '4-4-2', slots: Array(11).fill(null) });
     setCoins(500);
     setOpeningPackDone(false);
+    setFree10xUsed(false);
   }, []);
 
   /** Mark opening pack as done (one-time only) */
   const markOpeningPackDone = useCallback(() => {
     setOpeningPackDone(true);
+  }, []);
+
+  /** Mark free 10x gacha as used (one-time only) */
+  const markFree10xUsed = useCallback(() => {
+    setFree10xUsed(true);
   }, []);
 
   /** Add coins */
@@ -206,6 +220,7 @@ export function useCollection() {
     totalOpened,
     coins,
     openingPackDone,
+    free10xUsed,
     blueTeam,
     redTeam,
     addCards,
@@ -220,5 +235,6 @@ export function useCollection() {
     addCoins,
     spendCoins,
     markOpeningPackDone,
+    markFree10xUsed,
   };
 }
