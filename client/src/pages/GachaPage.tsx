@@ -3,6 +3,8 @@
  * Design: SFC RPG風 16bitドット絵スタイル
  * パック選択 → 開封演出 → コレクション確認
  * ★ v10.2.0: コイン経済システム統合
+ * ★ v10.2.1: iOS Safariスクロール修正 - position:fixedの背景を分離し
+ *             スクロールコンテナを明確化。touch-action: panYを設定。
  */
 
 import { useState, useCallback } from 'react';
@@ -48,23 +50,45 @@ export default function GachaPage() {
   const collectionCards = collection.map(c => c.card);
 
   return (
-    <div className="flex flex-col relative scanlines" style={{ minHeight: '100dvh', overflow: 'auto', WebkitOverflowScrolling: 'touch' as any, paddingBottom: 'env(safe-area-inset-bottom)' }}>
-      {/* Background */}
+    /*
+     * ★ スクロール修正ポイント:
+     * - 最外ラッパーは position:relative, height:100dvh, overflow:hidden にする
+     * - 背景は position:absolute (fixedではなく) にして最外ラッパー内に収める
+     * - スクロールするのは内側の scrollContainer のみ
+     * - touch-action: pan-y で iOS Safariのスクロールを確実に有効化
+     */
+    <div
+      className="scanlines"
+      style={{
+        position: 'relative',
+        height: '100dvh',
+        overflow: 'hidden',
+        backgroundColor: '#050a1a',
+      }}
+    >
+      {/* Background - absoluteで最外ラッパー内に固定 */}
       <div
-        className="fixed inset-0 z-0"
         style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 0,
           backgroundImage: `url(${HERO_BG_URL})`,
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           filter: 'brightness(0.4)',
           imageRendering: 'auto',
+          pointerEvents: 'none',
         }}
       />
 
       {/* Pixel grid overlay */}
       <div
-        className="fixed inset-0 z-0 pointer-events-none opacity-10"
         style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 0,
+          pointerEvents: 'none',
+          opacity: 0.1,
           backgroundImage: `
             linear-gradient(rgba(255,215,0,0.1) 1px, transparent 1px),
             linear-gradient(90deg, rgba(255,215,0,0.1) 1px, transparent 1px)
@@ -73,173 +97,195 @@ export default function GachaPage() {
         }}
       />
 
-      {/* Header */}
-      <header className="relative z-10 py-3 px-3" style={{ flexShrink: 0 }}>
-        <div className="max-w-4xl mx-auto">
-          <div className="rpg-window" style={{ padding: '8px 12px' }}>
-            <div className="flex items-center justify-between gap-2" style={{ flexWrap: 'wrap' }}>
-              <div style={{ minWidth: 0 }}>
-                <h1
-                  style={{
-                    fontFamily: "'Press Start 2P', monospace",
-                    fontSize: 'clamp(8px, 2vw, 12px)',
-                    color: '#FFD700',
-                    textShadow: '0 0 10px rgba(255,215,0,0.5), 2px 2px 0 rgba(0,0,0,0.8)',
-                    lineHeight: '1.8',
-                    letterSpacing: '0.05em',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  SOCCER CARD PACK
-                </h1>
-                <p
-                  style={{
-                    fontFamily: "'DotGothic16', monospace",
-                    fontSize: 'clamp(9px, 1.5vw, 12px)',
-                    color: '#8B9DC3',
-                    marginTop: '2px',
-                  }}
-                >
-                  サッカーカードパック開封シミュレーター
-                </p>
-              </div>
-              <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0 }}>
-                {/* ★ v10.2.0: Coin display */}
-                <div
-                  style={{
-                    fontFamily: "'Press Start 2P', monospace",
-                    fontSize: 'clamp(8px, 1.5vw, 11px)',
-                    color: '#FFD700',
-                    background: 'rgba(0,10,40,0.9)',
-                    border: '2px solid #B8860B',
-                    padding: '4px 8px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  <span>🪙</span>
-                  <span>{coins.toLocaleString()}</span>
+      {/* ★ スクロールコンテナ: 明示的にoverflow-y:scrollとtouch-action:pan-yを設定 */}
+      <div
+        style={{
+          position: 'relative',
+          zIndex: 1,
+          height: '100%',
+          overflowY: 'scroll',
+          overflowX: 'hidden',
+          WebkitOverflowScrolling: 'touch' as any,
+          touchAction: 'pan-y',
+          paddingBottom: 'env(safe-area-inset-bottom, 16px)',
+        }}
+      >
+        {/* Header */}
+        <header style={{ padding: '12px 12px 0', flexShrink: 0 }}>
+          <div style={{ maxWidth: '896px', margin: '0 auto' }}>
+            <div className="rpg-window" style={{ padding: '8px 12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
+                <div style={{ minWidth: 0 }}>
+                  <h1
+                    style={{
+                      fontFamily: "'Press Start 2P', monospace",
+                      fontSize: 'clamp(8px, 2vw, 12px)',
+                      color: '#FFD700',
+                      textShadow: '0 0 10px rgba(255,215,0,0.5), 2px 2px 0 rgba(0,0,0,0.8)',
+                      lineHeight: '1.8',
+                      letterSpacing: '0.05em',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    SOCCER CARD PACK
+                  </h1>
+                  <p
+                    style={{
+                      fontFamily: "'DotGothic16', monospace",
+                      fontSize: 'clamp(9px, 1.5vw, 12px)',
+                      color: '#8B9DC3',
+                      marginTop: '2px',
+                    }}
+                  >
+                    サッカーカードパック開封シミュレーター
+                  </p>
                 </div>
-                <button
-                  onClick={() => setLocation('/')}
-                  style={{
-                    fontFamily: "'Press Start 2P', monospace",
-                    fontSize: 'clamp(7px, 1.2vw, 9px)',
-                    padding: '4px 8px',
-                    background: 'rgba(0,10,40,0.8)',
-                    border: '2px solid #4488ff',
-                    color: '#88aacc',
-                    cursor: 'pointer',
-                    letterSpacing: '1px',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  ◀ TOP
-                </button>
-                <button
-                  className="pixel-btn"
-                  onClick={() => setShowCollection(true)}
-                  style={{ fontSize: 'clamp(9px, 1.5vw, 12px)', padding: '0.4rem 0.6rem', whiteSpace: 'nowrap' }}
-                >
-                  図鑑 ({collectionCards.length})
-                </button>
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0, flexWrap: 'wrap' }}>
+                  {/* ★ v10.2.0: Coin display */}
+                  <div
+                    style={{
+                      fontFamily: "'Press Start 2P', monospace",
+                      fontSize: 'clamp(8px, 1.5vw, 11px)',
+                      color: '#FFD700',
+                      background: 'rgba(0,10,40,0.9)',
+                      border: '2px solid #B8860B',
+                      padding: '4px 8px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    <span>🪙</span>
+                    <span>{coins.toLocaleString()}</span>
+                  </div>
+                  <button
+                    onClick={() => setLocation('/')}
+                    style={{
+                      fontFamily: "'Press Start 2P', monospace",
+                      fontSize: 'clamp(7px, 1.2vw, 9px)',
+                      padding: '4px 8px',
+                      background: 'rgba(0,10,40,0.8)',
+                      border: '2px solid #4488ff',
+                      color: '#88aacc',
+                      cursor: 'pointer',
+                      letterSpacing: '1px',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    ◀ TOP
+                  </button>
+                  <button
+                    className="pixel-btn"
+                    onClick={() => setShowCollection(true)}
+                    style={{ fontSize: 'clamp(9px, 1.5vw, 12px)', padding: '0.4rem 0.6rem', whiteSpace: 'nowrap' }}
+                  >
+                    図鑑 ({collectionCards.length})
+                  </button>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      {/* Insufficient coins warning */}
-      {insufficientCoins && (
-        <div
-          style={{
-            position: 'fixed',
-            top: '50%',
-            left: '50%',
-            transform: 'translate(-50%, -50%)',
-            zIndex: 100,
-            background: 'rgba(139, 0, 0, 0.95)',
-            border: '3px solid #FF4444',
-            padding: '16px 24px',
-            fontFamily: "'Press Start 2P', monospace",
-            fontSize: 'clamp(8px, 1.5vw, 12px)',
-            color: '#FF8888',
-            textAlign: 'center',
-            boxShadow: '0 0 30px rgba(255,68,68,0.5)',
-            animation: 'pixel-cursor-blink 0.3s step-end 3',
-          }}
-        >
-          コインが足りません！<br />
-          <span style={{ fontSize: 'clamp(6px, 1vw, 9px)', color: '#999', marginTop: '4px', display: 'block' }}>
-            試合で勝利してコインを稼ごう！
-          </span>
-        </div>
-      )}
-
-      {/* Main Content */}
-      <main className="relative z-10 flex-1 flex flex-col items-center justify-start py-3 px-3 gap-3" style={{ minHeight: 0 }}>
-        {/* Pack Selector with cost display */}
-        <PackSelector
-          selectedPack={selectedPack}
-          onSelect={setSelectedPack}
-          coins={coins}
-        />
-
-        {/* Cost indicator */}
-        <div
-          style={{
-            fontFamily: "'Press Start 2P', monospace",
-            fontSize: 'clamp(7px, 1.2vw, 10px)',
-            color: canAfford ? '#FFD700' : '#FF4444',
-            textAlign: 'center',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-          }}
-        >
-          <span>🪙</span>
-          <span>{packCost}</span>
-          <span style={{ color: '#666', fontSize: 'clamp(6px, 1vw, 8px)' }}>
-            {canAfford ? '/ 購入可能' : '/ コイン不足'}
-          </span>
-        </div>
-
-        {/* Pack Opening */}
-        <PackOpening
-          onPackOpened={handlePackOpened}
-          totalOpened={totalOpened}
-          packType={selectedPack}
-          onTryOpen={handleTryOpen}
-        />
-      </main>
-
-      {/* Footer with Stadium */}
-      <footer className="relative z-10" style={{ flexShrink: 0, marginTop: 'auto' }}>
-        <div className="relative h-20 overflow-hidden">
-          <img
-            src={STADIUM_URL}
-            alt="Stadium"
-            className="w-full h-full object-cover opacity-30"
-            style={{ imageRendering: 'auto' }}
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent" />
-          <div className="absolute bottom-2 left-0 right-0 text-center">
-            <p
-              style={{
-                fontFamily: "'DotGothic16', monospace",
-                fontSize: 'clamp(8px, 1.3vw, 11px)',
-                color: '#5a6f8a',
-              }}
-            >
-              総選手数 1034名 ／ ICON:0.5% / HERO:1.5% / UR:3% / SR:12% / R:28% / N:55%
-            </p>
+        {/* Insufficient coins warning */}
+        {insufficientCoins && (
+          <div
+            style={{
+              position: 'fixed',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              zIndex: 100,
+              background: 'rgba(139, 0, 0, 0.95)',
+              border: '3px solid #FF4444',
+              padding: '16px 24px',
+              fontFamily: "'Press Start 2P', monospace",
+              fontSize: 'clamp(8px, 1.5vw, 12px)',
+              color: '#FF8888',
+              textAlign: 'center',
+              boxShadow: '0 0 30px rgba(255,68,68,0.5)',
+              pointerEvents: 'none',
+            }}
+          >
+            コインが足りません！<br />
+            <span style={{ fontSize: 'clamp(6px, 1vw, 9px)', color: '#999', marginTop: '4px', display: 'block' }}>
+              試合で勝利してコインを稼ごう！
+            </span>
           </div>
-        </div>
-      </footer>
+        )}
 
-      {/* Collection Modal */}
+        {/* Main Content */}
+        <main
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'flex-start',
+            padding: '12px',
+            gap: '12px',
+          }}
+        >
+          {/* Pack Selector with cost display */}
+          <PackSelector
+            selectedPack={selectedPack}
+            onSelect={setSelectedPack}
+            coins={coins}
+          />
+
+          {/* Cost indicator */}
+          <div
+            style={{
+              fontFamily: "'Press Start 2P', monospace",
+              fontSize: 'clamp(7px, 1.2vw, 10px)',
+              color: canAfford ? '#FFD700' : '#FF4444',
+              textAlign: 'center',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+            }}
+          >
+            <span>🪙</span>
+            <span>{packCost}</span>
+            <span style={{ color: '#666', fontSize: 'clamp(6px, 1vw, 8px)' }}>
+              {canAfford ? '/ 購入可能' : '/ コイン不足'}
+            </span>
+          </div>
+
+          {/* Pack Opening */}
+          <PackOpening
+            onPackOpened={handlePackOpened}
+            totalOpened={totalOpened}
+            packType={selectedPack}
+            onTryOpen={handleTryOpen}
+          />
+        </main>
+
+        {/* Footer with Stadium */}
+        <footer style={{ flexShrink: 0, marginTop: 'auto' }}>
+          <div style={{ position: 'relative', height: '80px', overflow: 'hidden' }}>
+            <img
+              src={STADIUM_URL}
+              alt="Stadium"
+              style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.3, imageRendering: 'auto' }}
+            />
+            <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(0,0,0,0.8), transparent)' }} />
+            <div style={{ position: 'absolute', bottom: '8px', left: 0, right: 0, textAlign: 'center' }}>
+              <p
+                style={{
+                  fontFamily: "'DotGothic16', monospace",
+                  fontSize: 'clamp(8px, 1.3vw, 11px)',
+                  color: '#5a6f8a',
+                }}
+              >
+                総選手数 1034名 ／ ICON:0.5% / HERO:1.5% / UR:3% / SR:12% / R:28% / N:55%
+              </p>
+            </div>
+          </div>
+        </footer>
+      </div>
+
+      {/* Collection Modal - fixedでスクロールコンテナの外に配置 */}
       <Collection
         cards={collectionCards}
         isOpen={showCollection}

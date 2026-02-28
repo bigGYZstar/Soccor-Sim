@@ -12,15 +12,17 @@ import TeamBuilderPage from "./pages/TeamBuilderPage";
 
 function Router() {
   return (
-    <Switch>
-      <Route path={"/"} component={TopPage} />
-      <Route path={"/match"} component={Home} />
-      <Route path={"/gacha"} component={GachaPage} />
-      <Route path={"/team-builder"} component={TeamBuilderPage} />
-      <Route path={"/404"} component={NotFound} />
-      {/* Final fallback route */}
-      <Route component={NotFound} />
-    </Switch>
+    <div style={{ width: '100%', height: '100%' }}>
+      <Switch>
+        <Route path={"/"} component={TopPage} />
+        <Route path={"/match"} component={Home} />
+        <Route path={"/gacha"} component={GachaPage} />
+        <Route path={"/team-builder"} component={TeamBuilderPage} />
+        <Route path={"/404"} component={NotFound} />
+        {/* Final fallback route */}
+        <Route component={NotFound} />
+      </Switch>
+    </div>
   );
 }
 

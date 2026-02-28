@@ -387,6 +387,7 @@ export default function TopPage() {
       color: RETRO_WHITE,
       position: 'relative',
       overflow: 'hidden',
+      touchAction: 'pan-y',
       imageRendering: 'pixelated' as any,
       padding: 'clamp(12px, 3vh, 32px) clamp(12px, 4vw, 32px)',
       boxSizing: 'border-box',

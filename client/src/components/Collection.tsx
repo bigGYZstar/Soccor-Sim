@@ -392,7 +392,7 @@ export default function Collection({ cards, isOpen, onClose }: CollectionProps) 
           </div>
 
           {/* Card List */}
-          <div className="overflow-y-auto flex-1 pr-1" style={{ scrollbarWidth: 'thin', scrollbarColor: '#4a6fa5 #0a1628' }}>
+          <div className="overflow-y-auto flex-1 pr-1" style={{ scrollbarWidth: 'thin', scrollbarColor: '#4a6fa5 #0a1628', WebkitOverflowScrolling: 'touch' as any, touchAction: 'pan-y' }}>
             {sortedCards.length === 0 ? (
               <div className="text-center py-8">
                 <p style={{ fontFamily: "'DotGothic16', monospace", fontSize: '14px', color: '#8B9DC3' }}>

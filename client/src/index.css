@@ -131,7 +131,8 @@
   html, body {
     margin: 0;
     padding: 0;
-    overflow: auto;
+    /* overflow:hidden にして各ページコンポーネントが自前でスクロールを管理する */
+    overflow: hidden;
     width: 100%;
     height: 100%;
   }
@@ -141,9 +142,8 @@
   #root {
     width: 100%;
     height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    /* flexのalign/justifyを外してページが100%高さを取れるようにする */
+    overflow: hidden;
   }
   canvas {
     display: block;

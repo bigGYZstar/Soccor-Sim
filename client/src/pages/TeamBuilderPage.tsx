@@ -552,15 +552,17 @@ export default function TeamBuilderPage() {
 
   return (
     <div style={{
-      minHeight: '100dvh',
+      height: '100dvh',
       background: 'linear-gradient(180deg, #050510 0%, #0a0e24 50%, #0f1a3a 100%)',
       fontFamily: DOT_FONT,
       color: '#eaeaea',
       display: 'flex',
       flexDirection: 'column',
-      overflow: 'auto',
+      overflowY: 'scroll',
+      overflowX: 'hidden',
       WebkitOverflowScrolling: 'touch' as any,
-      paddingBottom: 'env(safe-area-inset-bottom)',
+      touchAction: 'pan-y',
+      paddingBottom: 'env(safe-area-inset-bottom, 16px)',
     }}>
       {/* Header */}
       <header style={{
