@@ -134,6 +134,11 @@ export interface Player {
   slot: number;
   role: Role;
   posLabel: string;  // ★ v9.11.0: Detailed position label (RCB, LCB, LB, RB, etc.)
+  // ★ v10.1.0: Gacha card integration
+  cardName?: string;       // Player name from gacha card (e.g. "メッシ")
+  cardNameEn?: string;     // English name (e.g. "L. Messi")
+  cardOverall?: number;    // Overall rating from card (50-99)
+  cardRarity?: string;     // Rarity (ICON, HERO, UR, SR, R, N)
   jumpY: number;
   turnDebt: number;  // 0-1, turning inertia penalty
   staminaShort: number;  // 0-1, short-term stamina

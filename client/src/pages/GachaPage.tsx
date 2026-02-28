@@ -1,7 +1,8 @@
 /*
- * Home - サッカーカードパック開封シミュレーター メインページ
+ * GachaPage - サッカーカードパック開封シミュレーター メインページ
  * Design: SFC RPG風 16bitドット絵スタイル
  * パック選択 → 開封演出 → コレクション確認
+ * useCollectionフックでLocalStorageに永続化
  */
 
 import { useState, useCallback } from 'react';
@@ -10,6 +11,7 @@ import type { PlayerCard, PackType } from '@/lib/cardData';
 import PackOpening from '@/components/PackOpening';
 import PackSelector from '@/components/PackSelector';
 import Collection from '@/components/Collection';
+import { useCollection } from '@/hooks/useCollection';
 
 const HERO_BG_URL = 'https://private-us-east-1.manuscdn.com/sessionFile/bApKv3n2R3hCPPkHL3aSNL/sandbox/6o0og1QJ64AfUSMNxuP9Kq-img-1_1771940463000_na1fn_aGVyby1iZw.png?x-oss-process=image/resize,w_1920,h_1920/format,webp/quality,q_80&Expires=1798761600&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly9wcml2YXRlLXVzLWVhc3QtMS5tYW51c2Nkbi5jb20vc2Vzc2lvbkZpbGUvYkFwS3YzbjJSM2hDUFBrSEwzYVNOTC9zYW5kYm94LzZvMG9nMVFKNjRBZlVTTU54dVA5S3EtaW1nLTFfMTc3MTk0MDQ2MzAwMF9uYTFmbl9hR1Z5YnkxaVp3LnBuZz94LW9zcy1wcm9jZXNzPWltYWdlL3Jlc2l6ZSx3XzE5MjAsaF8xOTIwL2Zvcm1hdCx3ZWJwL3F1YWxpdHkscV84MCIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc5ODc2MTYwMH19fV19&Key-Pair-Id=K2HSFNDJXOU9YS&Signature=CqZimzM6bAG8NS8ps5q6QXImbKsbx2PynL4GNW8THQoe51NYlnid6N010NroY4h85SAieyUgACpBVXp1L9qM004aldcycwWtezZqL~~qSMA6caJewpGp4PUqufvWMQpAr1WLtf4uLzYmdRtkDU2QmHtVQgpAITG7FL9j-EPlLA6-NLqVgmsr9eC-SeqPbUsNO~J9XYrNmj~GIC-UGCboW3e8qbZoev7EIJzBevimpDB9EsEi-GzNplFAZ9xd928~8rJdK9w~vpoi6gxwfSsm6mtguvouWn84SkycZ1WQCVb8NRCCvPKWgY4MbvFZWyfpPviZ9MqhGXj8LoPB~sh7Gg__';
 
@@ -17,15 +19,16 @@ const STADIUM_URL = 'https://private-us-east-1.manuscdn.com/sessionFile/bApKv3n2
 
 export default function GachaPage() {
   const [, setLocation] = useLocation();
-  const [collection, setCollection] = useState<PlayerCard[]>([]);
+  const { collection, totalOpened, addCards } = useCollection();
   const [showCollection, setShowCollection] = useState(false);
-  const [totalOpened, setTotalOpened] = useState(0);
   const [selectedPack, setSelectedPack] = useState<PackType>('standard');
 
   const handlePackOpened = useCallback((cards: PlayerCard[]) => {
-    setCollection(prev => [...prev, ...cards]);
-    setTotalOpened(prev => prev + 1);
-  }, []);
+    addCards(cards);
+  }, [addCards]);
+
+  // Flatten collection to PlayerCard[] for the Collection component
+  const collectionCards = collection.map(c => c.card);
 
   return (
     <div className="min-h-screen flex flex-col relative scanlines overflow-hidden">
@@ -103,7 +106,7 @@ export default function GachaPage() {
                   onClick={() => setShowCollection(true)}
                   style={{ fontSize: '12px', padding: '0.5rem 1rem' }}
                 >
-                  コレクション ({collection.length})
+                  コレクション ({collectionCards.length})
                 </button>
               </div>
             </div>
@@ -153,7 +156,7 @@ export default function GachaPage() {
 
       {/* Collection Modal */}
       <Collection
-        cards={collection}
+        cards={collectionCards}
         isOpen={showCollection}
         onClose={() => setShowCollection(false)}
       />

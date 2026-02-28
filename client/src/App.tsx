@@ -7,6 +7,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import TopPage from "./pages/TopPage";
 import Home from "./pages/Home";
 import GachaPage from "./pages/GachaPage";
+import TeamBuilderPage from "./pages/TeamBuilderPage";
 
 
 function Router() {
@@ -15,6 +16,7 @@ function Router() {
       <Route path={"/"} component={TopPage} />
       <Route path={"/match"} component={Home} />
       <Route path={"/gacha"} component={GachaPage} />
+      <Route path={"/team-builder"} component={TeamBuilderPage} />
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />

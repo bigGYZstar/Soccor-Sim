@@ -5,7 +5,9 @@ import { useLocation } from 'wouter';
 import { State, V, SpeedMode } from '../game/types';
 import { P, FormationId, FORMATION_IDS, FORMATIONS } from '../game/constants';
 import { v, vadd, vscl } from '../game/math';
-import { mkState, doKickOff, update } from '../game/engine';
+import { mkState, mkCustomState, doKickOff, update } from '../game/engine';
+import type { CardPlayerData } from '../game/engine';
+import { useCollection } from '@/hooks/useCollection';
 
 // ============================================================
 // SFC-style retro pixel font helper
@@ -601,6 +603,16 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
     ctx.font = `bold ${fontSize}px ${RETRO_FONT}, monospace`;
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(p.num.toString(), pos.x, pos.y + unit*0.2);
+
+    // ★ v10.1.0: Show player name from gacha card below the sprite
+    if (p.cardName) {
+      const nameFontSize = Math.max(5, unit * 1.4);
+      ctx.font = `bold ${nameFontSize}px 'DotGothic16', monospace`;
+      ctx.fillStyle = isBlue ? '#88ccff' : '#ffaaaa';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      const displayName = p.cardName.length > 4 ? p.cardName.slice(0, 4) : p.cardName;
+      ctx.fillText(displayName, pos.x, pos.y + unit * 3.5);
+    }
   });
 
   // 7. ボール (SFC-style with Z-axis height visualization)
@@ -973,9 +985,19 @@ function SpeedToggle({ speed, onToggle }: { speed: SpeedMode; onToggle: () => vo
 // ============================================================
 // Game Screen (canvas-based simulation) - fully responsive
 // ============================================================
-function GameScreen({ blueFormation, redFormation, onBack }: { blueFormation: FormationId; redFormation: FormationId; onBack: () => void }) {
+function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards }: {
+  blueFormation: FormationId;
+  redFormation: FormationId;
+  onBack: () => void;
+  blueCards?: (CardPlayerData | null)[];
+  redCards?: (CardPlayerData | null)[];
+}) {
   const cvsRef = useRef<HTMLCanvasElement>(null);
-  const stRef = useRef<State>(mkState(blueFormation, redFormation));
+  const stRef = useRef<State>(
+    blueCards && redCards
+      ? mkCustomState(blueFormation, redFormation, blueCards, redCards)
+      : mkState(blueFormation, redFormation)
+  );
   const reqRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
   const [speed, setSpeed] = useState<SpeedMode>("MID");
@@ -1103,23 +1125,80 @@ function GameScreen({ blueFormation, redFormation, onBack }: { blueFormation: Fo
 // React コンポーネント本体
 // ============================================================
 export default function Home() {
+  const [, setLocation] = useLocation();
   const [screen, setScreen] = useState<"start" | "game">("start");
   const [blueFormation, setBlueFormation] = useState<FormationId>("4-4-2");
   const [redFormation, setRedFormation] = useState<FormationId>("4-4-2");
+  const [customBlueCards, setCustomBlueCards] = useState<(CardPlayerData | null)[] | undefined>(undefined);
+  const [customRedCards, setCustomRedCards] = useState<(CardPlayerData | null)[] | undefined>(undefined);
+
+  const { blueTeam, redTeam } = useCollection();
+
+  // Check for custom match mode from URL
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('mode') === 'custom') {
+      // Load team data from useCollection
+      const blueCards: (CardPlayerData | null)[] = blueTeam.slots.map(s => {
+        if (!s) return null;
+        return {
+          name: s.card.nameJa,
+          nameEn: s.card.name,
+          overall: s.card.overall,
+          rarity: s.card.rarity,
+          stats: s.card.stats,
+          position: s.card.position,
+          foot: s.card.positionDetail?.foot,
+        };
+      });
+      const redCards: (CardPlayerData | null)[] = redTeam.slots.map(s => {
+        if (!s) return null;
+        return {
+          name: s.card.nameJa,
+          nameEn: s.card.name,
+          overall: s.card.overall,
+          rarity: s.card.rarity,
+          stats: s.card.stats,
+          position: s.card.position,
+          foot: s.card.positionDetail?.foot,
+        };
+      });
+
+      setCustomBlueCards(blueCards);
+      setCustomRedCards(redCards);
+      setBlueFormation(blueTeam.formationId as FormationId);
+      setRedFormation(redTeam.formationId as FormationId);
+      setScreen("game");
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleStart = useCallback((bf: FormationId, rf: FormationId) => {
     setBlueFormation(bf);
     setRedFormation(rf);
+    setCustomBlueCards(undefined);
+    setCustomRedCards(undefined);
     setScreen("game");
   }, []);
 
   const handleBack = useCallback(() => {
-    setScreen("start");
-  }, []);
+    // If custom match, go back to team builder
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('mode') === 'custom') {
+      setLocation('/team-builder');
+    } else {
+      setScreen("start");
+    }
+  }, [setLocation]);
 
   if (screen === "start") {
     return <StartScreen onStart={handleStart} />;
   }
 
-  return <GameScreen blueFormation={blueFormation} redFormation={redFormation} onBack={handleBack} />;
+  return <GameScreen
+    blueFormation={blueFormation}
+    redFormation={redFormation}
+    onBack={handleBack}
+    blueCards={customBlueCards}
+    redCards={customRedCards}
+  />;
 }

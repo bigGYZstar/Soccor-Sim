@@ -338,6 +338,30 @@ function PitchIcon({ size = 48 }: { size?: number }) {
 }
 
 // ============================================================
+// Team build icon (SVG)
+// ============================================================
+function TeamBuildIcon({ size = 48 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 48 48" fill="none">
+      {/* Clipboard */}
+      <rect x="10" y="6" width="28" height="36" rx="2" fill="#1a2744" stroke="#e94560" strokeWidth="1.5" />
+      {/* Clipboard top */}
+      <rect x="18" y="3" width="12" height="6" rx="1" fill="#e94560" />
+      {/* Formation dots */}
+      <circle cx="24" cy="16" r="2" fill="#4488ff" />
+      <circle cx="18" cy="22" r="2" fill="#4488ff" />
+      <circle cx="30" cy="22" r="2" fill="#4488ff" />
+      <circle cx="16" cy="28" r="2" fill="#4488ff" />
+      <circle cx="24" cy="28" r="2" fill="#4488ff" />
+      <circle cx="32" cy="28" r="2" fill="#4488ff" />
+      {/* Arrow */}
+      <line x1="24" y1="33" x2="24" y2="38" stroke="#FFD700" strokeWidth="1.5" />
+      <polygon points="24,40 21,36 27,36" fill="#FFD700" />
+    </svg>
+  );
+}
+
+// ============================================================
 // Main TopPage Component
 // ============================================================
 export default function TopPage() {
@@ -451,6 +475,18 @@ export default function TopPage() {
           borderColor="#8B6914"
           onClick={() => setLocation('/gacha')}
           delay={700}
+        />
+
+        {/* Team Builder mode */}
+        <ModeCard
+          title="編成"
+          subtitle="TEAM BUILD"
+          description="ガチャで集めた選手でチームを組んで、カスタムマッチに挑戦！"
+          icon={<TeamBuildIcon size={56} />}
+          accentColor="#e94560"
+          borderColor="#8b2030"
+          onClick={() => setLocation('/team-builder')}
+          delay={900}
         />
       </div>
 

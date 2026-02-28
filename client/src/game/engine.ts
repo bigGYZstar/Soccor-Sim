@@ -308,6 +308,122 @@ export function mkPlayers(blueFormation: FormationId = "4-4-2", redFormation: Fo
   return pl;
 }
 
+/** ★ v10.1.0: Card data for custom team building */
+export interface CardPlayerData {
+  name: string;
+  nameEn: string;
+  overall: number;
+  rarity: string;
+  stats: { speed: number; shoot: number; pass: number; dribble: number; defense: number; physical: number };
+  position: string;
+  foot?: string; // "left" | "right" | "both"
+  jerseyNum?: number;
+}
+
+/** ★ v10.1.0: Create players from gacha card data */
+export function mkCustomPlayers(
+  blueFormation: FormationId,
+  redFormation: FormationId,
+  blueCards: (CardPlayerData | null)[],
+  redCards: (CardPlayerData | null)[]
+): Player[] {
+  const pl: Player[] = [];
+  const bluePositions = formationToVecs(blueFormation, -1);
+  const redPositions = formationToVecs(redFormation, 1);
+
+  // Helper: map card stats to engine parameters
+  function applyCardStats(p: Player, card: CardPlayerData) {
+    p.cardName = card.name;
+    p.cardNameEn = card.nameEn;
+    p.cardOverall = card.overall;
+    p.cardRarity = card.rarity;
+    if (card.jerseyNum) p.num = card.jerseyNum;
+
+    // Foot preference from card
+    if (card.foot === 'left') {
+      p.footParams.dominantFoot = 'L';
+      p.footParams.weakFootFreq = 2;
+      p.footParams.weakFootAccuracy = 4;
+    } else if (card.foot === 'both') {
+      p.footParams.weakFootFreq = 8;
+      p.footParams.weakFootAccuracy = 8;
+    }
+
+    // Ball control from dribble stat (1-10 scale, base 5)
+    p.footParams.ballControl = Math.round(card.stats.dribble / 10);
+  }
+
+  for (let i = 0; i < 11; i++) {
+    const home = bluePositions[i];
+    const face = v(1, 0);
+    const p: Player = {
+      idx: pl.length,
+      pos: { ...home },
+      vel: v(0, 0),
+      team: -1, num: FORMATIONS[blueFormation].jerseyNumbers[i], home, face,
+      act: "idle", tgt: { ...home }, dt: Math.random() * PExt.decisionInterval, isGK: i === 0, slot: i, role: roleForSlot(blueFormation, i),
+      posLabel: FORMATIONS[blueFormation].posLabels[i],
+      jumpY: 0,
+      turnDebt: 0,
+      staminaShort: 1,
+      burstT: 0,
+      burstCD: 0,
+      leftFoot: mkFoot("L", home, face),
+      rightFoot: mkFoot("R", home, face),
+      footParams: mkFootParams(),
+      dribbleTouchPhase: 0,
+      passAndMoveTimer: 0,
+      passAndMoveTarget: v(0, 0),
+      wantsBall: false,
+      committedRunTarget: null,
+      committedRunTimer: 0,
+    };
+    if (blueCards[i]) applyCardStats(p, blueCards[i]!);
+    pl.push(p);
+  }
+  for (let i = 0; i < 11; i++) {
+    const home = redPositions[i];
+    const face = v(-1, 0);
+    const p: Player = {
+      idx: pl.length,
+      pos: { ...home },
+      vel: v(0, 0),
+      team: 1, num: FORMATIONS[redFormation].jerseyNumbers[i], home, face,
+      act: "idle", tgt: { ...home }, dt: Math.random() * PExt.decisionInterval, isGK: i === 0, slot: i, role: roleForSlot(redFormation, i),
+      posLabel: FORMATIONS[redFormation].posLabels[i],
+      jumpY: 0,
+      turnDebt: 0,
+      staminaShort: 1,
+      burstT: 0,
+      burstCD: 0,
+      leftFoot: mkFoot("L", home, face),
+      rightFoot: mkFoot("R", home, face),
+      footParams: mkFootParams(),
+      dribbleTouchPhase: 0,
+      passAndMoveTimer: 0,
+      passAndMoveTarget: v(0, 0),
+      wantsBall: false,
+      committedRunTarget: null,
+      committedRunTimer: 0,
+    };
+    if (redCards[i]) applyCardStats(p, redCards[i]!);
+    pl.push(p);
+  }
+  return pl;
+}
+
+/** ★ v10.1.0: Create state with custom team lineups from gacha cards */
+export function mkCustomState(
+  blueFormation: FormationId,
+  redFormation: FormationId,
+  blueCards: (CardPlayerData | null)[],
+  redCards: (CardPlayerData | null)[]
+): State {
+  const st = mkState(blueFormation, redFormation);
+  st.pl = mkCustomPlayers(blueFormation, redFormation, blueCards, redCards);
+  return st;
+}
+
 export function mkState(blueFormation: FormationId = "4-4-2", redFormation: FormationId = "4-4-2"): State {
   return {
     pl: mkPlayers(blueFormation, redFormation),
