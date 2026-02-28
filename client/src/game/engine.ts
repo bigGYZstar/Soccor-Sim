@@ -519,6 +519,10 @@ export function mkState(blueFormation: FormationId = "4-4-2", redFormation: Form
     // ★ v10.3.0: Heatmap data
     heatmaps: [],  // Will be initialized after players are created
     heatmapSampleCounter: 0,
+    // ★ v11.0.0: Goal replay system
+    goalReplays: [],
+    replayBuffer: [],
+    replayFrameCounter: 0,
   };
 }
 
@@ -3555,6 +3559,24 @@ export function update(st: State, dt: number) {
     }
   }
 
+  // ★ v11.0.0: Goal replay buffer - capture lightweight frame snapshot every 2 frames
+  st.replayFrameCounter++;
+  if (st.replayFrameCounter >= 2) {
+    st.replayFrameCounter = 0;
+    const frame = {
+      players: st.pl.map(p => ({ x: p.pos.x, y: p.pos.y, team: p.team, num: p.num, isGK: p.isGK, face: { x: p.face.x, y: p.face.y }, act: p.act })),
+      ball: { x: st.ball.pos.x, y: st.ball.pos.y, z: st.ball.z, free: st.ball.free, owner: st.ball.owner },
+      trail: st.ballTrail.map(t => ({ pos: { x: t.pos.x, y: t.pos.y }, t: t.t })),
+      matchClock: st.matchClock,
+      scoreBlue: st.scoreBlue,
+      scoreRed: st.scoreRed,
+    };
+    st.replayBuffer.push(frame);
+    // Keep ~5 seconds at ~30fps (2 frames per capture) = 75 frames
+    const MAX_BUFFER = 80;
+    if (st.replayBuffer.length > MAX_BUFFER) st.replayBuffer.shift();
+  }
+
   // A. AI decisions
   // ★ v8.7.7 Patch 1: Randomize evaluation order to eliminate index bias
   const evalOrder = Array.from({length: st.pl.length}, (_, i) => i);
@@ -3953,6 +3975,29 @@ export function update(st: State, dt: number) {
           playerNum: scorer.num,
           team: scorer.team,
         };
+        // ★ v11.0.0: Save goal replay clip from buffer
+        const goalFrameIdx = st.replayBuffer.length - 1;
+        // Capture a few more frames after goal (post-goal celebration)
+        // We'll add the current frame too
+        const currentFrame = {
+          players: st.pl.map(p => ({ x: p.pos.x, y: p.pos.y, team: p.team, num: p.num, isGK: p.isGK, face: { x: p.face.x, y: p.face.y }, act: p.act })),
+          ball: { x: st.ball.pos.x, y: st.ball.pos.y, z: st.ball.z, free: st.ball.free, owner: st.ball.owner },
+          trail: st.ballTrail.map(t => ({ pos: { x: t.pos.x, y: t.pos.y }, t: t.t })),
+          matchClock: st.matchClock,
+          scoreBlue: st.scoreBlue,
+          scoreRed: st.scoreRed,
+        };
+        const frames = [...st.replayBuffer, currentFrame];
+        st.goalReplays.push({
+          goalIndex: st.goalReplays.length,
+          scorerName,
+          scorerTeam: scorer.team,
+          matchClock: st.matchClock,
+          scoreBlue: st.scoreBlue,
+          scoreRed: st.scoreRed,
+          frames,
+          goalFrameIdx: frames.length - 1,
+        });
       }
       st.koSide = g;  // Fixed: scoring team's opponent gets kickoff
       doKickOff(st);
@@ -4053,6 +4098,26 @@ export function update(st: State, dt: number) {
             playerNum: dribScorer.num,
             team: dribScorer.team,
           };
+          // ★ v11.0.0: Save goal replay clip (dribble goal)
+          const dribCurrentFrame = {
+            players: st.pl.map(p => ({ x: p.pos.x, y: p.pos.y, team: p.team, num: p.num, isGK: p.isGK, face: { x: p.face.x, y: p.face.y }, act: p.act })),
+            ball: { x: st.ball.pos.x, y: st.ball.pos.y, z: st.ball.z, free: st.ball.free, owner: st.ball.owner },
+            trail: st.ballTrail.map(t => ({ pos: { x: t.pos.x, y: t.pos.y }, t: t.t })),
+            matchClock: st.matchClock,
+            scoreBlue: st.scoreBlue,
+            scoreRed: st.scoreRed,
+          };
+          const dribFrames = [...st.replayBuffer, dribCurrentFrame];
+          st.goalReplays.push({
+            goalIndex: st.goalReplays.length,
+            scorerName: dribScorerName,
+            scorerTeam: dribScorer.team,
+            matchClock: st.matchClock,
+            scoreBlue: st.scoreBlue,
+            scoreRed: st.scoreRed,
+            frames: dribFrames,
+            goalFrameIdx: dribFrames.length - 1,
+          });
         }
         st.koSide = g;
         doKickOff(st);

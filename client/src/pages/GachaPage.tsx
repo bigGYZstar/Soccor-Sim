@@ -11,7 +11,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useLocation } from 'wouter';
 import type { PlayerCard, PackType, Player } from '@/lib/cardData';
-import { PACK_CONFIGS, drawOpeningPack } from '@/lib/cardData';
+import { PACK_CONFIGS, drawOpeningPack, drawDevPack } from '@/lib/cardData';
 import PackOpening from '@/components/PackOpening';
 import PackSelector from '@/components/PackSelector';
 import Collection from '@/components/Collection';
@@ -183,12 +183,127 @@ function OpeningPackConfirm({ onConfirm, onCancel }: { onConfirm: () => void; on
   );
 }
 
+// ── Dev Pack Banner (bottom-left corner) ─────────────────────
+function DevPackBanner({ onOpen }: { onOpen: () => void }) {
+  const [blink, setBlink] = useState(true);
+  const [hovered, setHovered] = useState(false);
+  useEffect(() => {
+    const t = setInterval(() => setBlink(b => !b), 600);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div
+      onClick={onOpen}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        position: 'fixed',
+        bottom: 'calc(env(safe-area-inset-bottom, 0px) + 16px)',
+        left: '12px',
+        zIndex: 200,
+        cursor: 'pointer',
+        transform: hovered ? 'scale(1.05) translateY(-2px)' : 'scale(1)',
+        transition: 'transform 0.2s ease',
+      }}
+    >
+      <SfcWindow accent={C_RED} style={{ padding: '8px 12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{
+            fontFamily: FONT_PIXEL, fontSize: '14px', color: C_RED,
+            opacity: blink ? 1 : 0.3, transition: 'opacity 0.1s',
+          }}>🛠</div>
+          <div>
+            <div style={{
+              fontFamily: FONT_PIXEL, fontSize: 'clamp(6px, 1vw, 8px)',
+              color: C_RED, letterSpacing: '0.05em',
+              textShadow: `0 0 8px ${C_RED}88`,
+            }}>DEV PACK</div>
+            <div style={{
+              fontFamily: FONT_DOT, fontSize: 'clamp(9px, 1.3vw, 11px)',
+              color: '#C0A0A0', marginTop: '2px',
+            }}>開発用パック（R×30枚）</div>
+          </div>
+          <div style={{
+            fontFamily: FONT_PIXEL, fontSize: '10px', color: C_RED,
+            opacity: blink ? 1 : 0.3, transition: 'opacity 0.1s',
+          }}>▶</div>
+        </div>
+      </SfcWindow>
+    </div>
+  );
+}
+
+// ── Dev Pack Confirm Dialog ───────────────────────────────────
+function DevPackConfirm({ onConfirm, onCancel }: { onConfirm: () => void; onCancel: () => void }) {
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 500,
+      background: 'rgba(0,4,16,0.88)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      padding: '16px',
+    }}>
+      <SfcWindow accent={C_RED} style={{ maxWidth: '360px', width: '100%', padding: '24px 20px' }}>
+        <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div>
+            <div style={{
+              fontFamily: FONT_PIXEL, fontSize: 'clamp(9px, 2vw, 12px)',
+              color: C_RED, letterSpacing: '0.08em',
+              textShadow: `0 0 12px ${C_RED}88`,
+              marginBottom: '8px',
+            }}>🛠 DEV PACK 🛠</div>
+            <div style={{
+              fontFamily: FONT_DOT, fontSize: 'clamp(14px, 2.5vw, 18px)',
+              color: C_TEXT, fontWeight: 'bold',
+            }}>開発用パック</div>
+          </div>
+          <div style={{
+            background: 'rgba(40,0,0,0.7)', border: `1px solid ${C_RED}44`,
+            padding: '12px', fontFamily: FONT_DOT,
+            fontSize: 'clamp(10px, 1.6vw, 13px)', color: '#C0A0A0',
+            lineHeight: 1.7, textAlign: 'left',
+          }}>
+            <div>🎴 R（レア）選手のみ</div>
+            <div>📦 30枚セット</div>
+            <div>⚙️ 編成テスト用パック</div>
+            <div style={{ marginTop: '8px', color: C_RED, fontFamily: FONT_PIXEL, fontSize: 'clamp(7px, 1vw, 9px)' }}>
+              ★ 1回限り ★ 無料
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+            <button
+              onClick={onConfirm}
+              style={{
+                fontFamily: FONT_PIXEL, fontSize: 'clamp(8px, 1.3vw, 10px)',
+                background: `linear-gradient(180deg, ${C_RED}22 0%, rgba(20,0,0,0.9) 100%)`,
+                border: `2px solid ${C_RED}`, color: C_RED,
+                padding: '10px 20px', cursor: 'pointer',
+                letterSpacing: '0.05em',
+                boxShadow: `0 0 12px ${C_RED}44`,
+              }}
+            >▶ 受け取る</button>
+            <button
+              onClick={onCancel}
+              style={{
+                fontFamily: FONT_PIXEL, fontSize: 'clamp(8px, 1.3vw, 10px)',
+                background: 'rgba(0,10,30,0.9)',
+                border: `2px solid ${C_TEXT_DIM}`, color: C_TEXT_DIM,
+                padding: '10px 20px', cursor: 'pointer',
+                letterSpacing: '0.05em',
+              }}
+            >✕ あとで</button>
+          </div>
+        </div>
+      </SfcWindow>
+    </div>
+  );
+}
+
 // ── Main Component ────────────────────────────────────────────
 export default function GachaPage() {
   const [, setLocation] = useLocation();
   const {
-    collection, totalOpened, coins, openingPackDone, free10xUsed,
-    addCards, spendCoins, markOpeningPackDone, markFree10xUsed,
+    collection, totalOpened, coins, openingPackDone, free10xUsed, devPackDone,
+    addCards, spendCoins, markOpeningPackDone, markFree10xUsed, markDevPackDone,
   } = useCollection();
   const [showCollection, setShowCollection] = useState(false);
   const [selectedPack, setSelectedPack] = useState<PackType>('standard');
@@ -198,6 +313,11 @@ export default function GachaPage() {
   const [showOpeningConfirm, setShowOpeningConfirm] = useState(false);
   const [showOpeningModal, setShowOpeningModal] = useState(false);
   const [openingCards, setOpeningCards] = useState<Player[]>([]);
+
+  // Dev pack states
+  const [showDevPackConfirm, setShowDevPackConfirm] = useState(false);
+  const [showDevPackModal, setShowDevPackModal] = useState(false);
+  const [devPackCards, setDevPackCards] = useState<Player[]>([]);
 
   const handleOpeningBannerClick = useCallback(() => {
     setShowOpeningConfirm(true);
@@ -219,6 +339,19 @@ export default function GachaPage() {
     markOpeningPackDone();
     setShowOpeningModal(false);
   }, [openingCards, addCards, markOpeningPackDone]);
+
+  const handleDevPackConfirm = useCallback(() => {
+    const cards = drawDevPack();
+    setDevPackCards(cards);
+    setShowDevPackConfirm(false);
+    setShowDevPackModal(true);
+  }, []);
+
+  const handleDevPackClose = useCallback(() => {
+    addCards(devPackCards);
+    markDevPackDone();
+    setShowDevPackModal(false);
+  }, [devPackCards, addCards, markDevPackDone]);
 
   const packCost = PACK_CONFIGS[selectedPack].cost;
   // 10連は初回無料
@@ -407,6 +540,21 @@ export default function GachaPage() {
       {/* ── Opening Pack Banner (bottom-right, only if not done) ── */}
       {!openingPackDone && !showOpeningConfirm && !showOpeningModal && (
         <OpeningPackBanner onOpen={handleOpeningBannerClick} />
+      )}
+
+      {/* ── Dev Pack Banner (bottom-left, only if not done) ── */}
+      {!devPackDone && !showDevPackConfirm && !showDevPackModal && (
+        <DevPackBanner onOpen={() => setShowDevPackConfirm(true)} />
+      )}
+
+      {/* ── Dev Pack Confirm Dialog ── */}
+      {showDevPackConfirm && (
+        <DevPackConfirm onConfirm={handleDevPackConfirm} onCancel={() => setShowDevPackConfirm(false)} />
+      )}
+
+      {/* ── Dev Pack Modal ── */}
+      {showDevPackModal && devPackCards.length > 0 && (
+        <OpeningPackModal cards={devPackCards} onClose={handleDevPackClose} />
       )}
 
       {/* ── Opening Pack Confirm Dialog ── */}

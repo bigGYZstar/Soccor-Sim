@@ -225,6 +225,10 @@ export default function PlayerCardDisplay({ card, revealed, index, onReveal }: P
                   fontFamily: "'DotGothic16', monospace",
                   color: '#fff',
                   textShadow: '1px 1px 0 rgba(0,0,0,0.8)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  maxWidth: '100%',
                 }}
               >
                 {card.nameJa}
@@ -235,6 +239,10 @@ export default function PlayerCardDisplay({ card, revealed, index, onReveal }: P
                   fontFamily: "'Silkscreen', monospace",
                   fontSize: '8px',
                   color: config.color,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  maxWidth: '100%',
                 }}
               >
                 {card.name}
@@ -333,7 +341,7 @@ export default function PlayerCardDisplay({ card, revealed, index, onReveal }: P
           </div>
 
           {/* メインコンテンツ */}
-          <div className="px-2 py-1.5 flex flex-col gap-1.5" style={{ height: 'calc(100% - 52px)' }}>
+          <div className="px-2 py-1.5 flex flex-col gap-1.5" style={{ height: 'calc(100% - 52px)', overflow: 'hidden' }}>
 
             {/* 選手説明 bio */}
             {bio && (
@@ -364,9 +372,13 @@ export default function PlayerCardDisplay({ card, revealed, index, onReveal }: P
                   fontFamily: "'DotGothic16', monospace",
                   fontSize: '9px',
                   color: '#d4e8ff',
-                  lineHeight: 1.7,
+                  lineHeight: 1.6,
                   textShadow: '1px 1px 0 rgba(0,0,0,0.9)',
                   marginTop: '2px',
+                  overflow: 'hidden',
+                  display: '-webkit-box',
+                  WebkitLineClamp: 5,
+                  WebkitBoxOrient: 'vertical' as any,
                 }}>
                   {bio}
                 </p>
@@ -416,6 +428,7 @@ export default function PlayerCardDisplay({ card, revealed, index, onReveal }: P
                   border: `1px solid ${config.borderColor}60`,
                   backgroundColor: 'rgba(0,0,0,0.4)',
                   position: 'relative',
+                  flexShrink: 0,
                 }}
               >
                 <div style={{
@@ -431,8 +444,8 @@ export default function PlayerCardDisplay({ card, revealed, index, onReveal }: P
                     opacity: 0.9,
                   }}>⚡ SPECIAL</span>
                 </div>
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {abilities.map((ability, i) => (
+                <div className="flex flex-wrap gap-1 mt-1" style={{ maxHeight: '60px', overflow: 'hidden' }}>
+                  {abilities.slice(0, 6).map((ability, i) => (
                     <div
                       key={i}
                       className="px-1 py-0.5"

@@ -1340,6 +1340,22 @@ function getPositionCategory(pos: string): 'GK' | 'DF' | 'MF' | 'FW' {
 }
 
 /**
+ * 開発用パック抽選（1回限り）
+ * - R（レア）レアリティのみ
+ * - 30枚構成
+ */
+export function drawDevPack(): Player[] {
+  const rares = ALL_PLAYERS.filter(p => p.rarity === 'R');
+  const shuffled = [...rares].sort(() => Math.random() - 0.5);
+  // If fewer than 30 R players, repeat with wrap-around
+  const result: Player[] = [];
+  for (let i = 0; i < 30; i++) {
+    result.push(shuffled[i % shuffled.length]);
+  }
+  return result;
+}
+
+/**
  * オープニングパック抽選
  * - ノーマル（N）レアリティのみ
  * - GK×1, DF×4, MF×4, FW×2 の11枚構成

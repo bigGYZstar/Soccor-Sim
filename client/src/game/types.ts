@@ -265,6 +265,40 @@ export interface PlayerHeatmap {
   onBall: { x: number; y: number; type: 'pass' | 'shot' | 'dribble' | 'receive' | 'tackle' | 'intercept' | 'save'; toX?: number; toY?: number; success?: boolean }[];
 }
 
+/** ★ v11.0.0: Goal replay - lightweight snapshot of a single frame */
+export interface GoalReplayFrame {
+  /** Player positions and team info */
+  players: { x: number; y: number; team: number; num: number; isGK: boolean; face: V; act: string }[];
+  /** Ball position */
+  ball: { x: number; y: number; z: number; free: boolean; owner: number | null };
+  /** Ball trail dots */
+  trail: BallTrailDot[];
+  /** Match clock at this frame */
+  matchClock: number;
+  /** Score at this frame */
+  scoreBlue: number;
+  scoreRed: number;
+}
+
+/** ★ v11.0.0: Stored goal replay clip */
+export interface GoalReplay {
+  /** Goal number (1st, 2nd, ...) */
+  goalIndex: number;
+  /** Scorer name */
+  scorerName: string;
+  /** Scorer team */
+  scorerTeam: number;
+  /** Match clock when goal scored */
+  matchClock: number;
+  /** Score after this goal */
+  scoreBlue: number;
+  scoreRed: number;
+  /** Frames before and after goal (5s before, 1s after at 30fps = ~180 frames) */
+  frames: GoalReplayFrame[];
+  /** Frame index where goal occurred */
+  goalFrameIdx: number;
+}
+
 export interface State {
   pl: Player[];
   ball: Ball;
@@ -316,6 +350,10 @@ export interface State {
   // ★ v10.3.0: Per-player heatmap data collected during match
   heatmaps: PlayerHeatmap[];
   heatmapSampleCounter: number;  // Frame counter for sampling interval
+  // ★ v11.0.0: Goal replay system
+  goalReplays: GoalReplay[];        // Stored goal replay clips
+  replayBuffer: GoalReplayFrame[];  // Rolling 5-second frame buffer (capped at ~150 frames)
+  replayFrameCounter: number;       // Counter to limit buffer capture rate (every 2 frames)
   // ★ v9.11.0: Screen effects for dramatic moments (dribble breakthrough, goals)
   screenEffect: {
     type: "none" | "dribbleSuccess" | "goal" | "save";
