@@ -1,24 +1,29 @@
-# ガチャ→試合連携 TODO
+# v10.2.0 改善TODO
 
-## Phase 1: コレクション永続化
-- [ ] LocalStorageベースのコレクション管理フック(useCollection)を作成
-- [ ] GachaPageでuseCollectionフックを使用するように変更
-- [ ] コレクションデータの保存・読み込み・クリア機能
+## 1. 選手能力値のエンジン深反映
+- [ ] speed → moveSpeed, dribbleSpeed に反映
+- [ ] shoot → shotAccuracy, shotSpeed に反映
+- [ ] pass → passAccuracy, passSpeed に反映
+- [ ] dribble → dribbleControl に反映
+- [ ] defense → interceptRadius, tackleSuccess に反映
+- [ ] physical → staminaShort回復, burstCD に反映
 
-## Phase 2: チーム編成画面
-- [ ] TeamBuilderPage.tsx を作成（/team-builder ルート）
-- [ ] フォーメーション選択 + 各ポジションへの選手配置UI
-- [ ] 選手カードをポジションにタップ選択でポジションに配置
-- [ ] ポジション適性の表示（FW/MF/DF/GK）
-- [ ] 2チーム分の編成（Blue/Red）
-- [ ] 編成完了→試合開始ボタン
+## 2. 試合ログに選手名表示
+- [ ] actionLog生成時にcardNameがあれば選手名を使用
+- [ ] ゴール/パス/シュート/タックル等のログに名前表示
 
-## Phase 3: エンジン連携
-- [ ] mkPlayersを拡張してPlayerCardの能力値を反映
-- [ ] PlayerCardのstats → エンジンパラメータへのマッピング
-- [ ] 選手名・背番号の表示をカードデータから取得
+## 3. 試合結果画面強化
+- [ ] 試合終了後にスタッツ詳細画面を表示
+- [ ] ポゼッション率、シュート数、パス成功率等
+- [ ] MVP選手の選出ロジック・表示UI
 
-## Phase 4: ナビゲーション更新
-- [ ] TopPageに「チーム編成」ボタン追加
-- [ ] 試合開始フローの変更: TopPage → チーム編成 → 試合
-- [ ] 従来の「クイックマッチ」も残す（ランダム選手）
+## 4. コイン/ポイント経済システム
+- [ ] LocalStorageでコイン残高管理
+- [ ] 試合勝利/引分/敗北でコイン獲得
+- [ ] ガチャパック購入にコイン消費
+- [ ] コイン残高表示UI
+
+## 5. iPhone縦長レスポンシブ修正
+- [ ] ガチャ画面のスクロール問題修正
+- [ ] 編成画面のスクロール問題修正
+- [ ] 見切れ防止

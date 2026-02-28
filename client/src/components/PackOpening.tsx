@@ -21,13 +21,14 @@ const CHEST_IMAGE_URL = 'https://private-us-east-1.manuscdn.com/sessionFile/bApK
 // レアリティの強さ順
 const RARITY_ORDER: string[] = ['N', 'R', 'SR', 'UR', 'HERO', 'ICON'];
 
-interface PackOpeningProps {
+export interface PackOpeningProps {
   onPackOpened?: (cards: PlayerCard[]) => void;
   totalOpened: number;
   packType: PackType;
+  onTryOpen?: () => boolean;  // ★ v10.2.0: Returns false if cannot open (e.g. insufficient coins)
 }
 
-export default function PackOpening({ onPackOpened, totalOpened, packType }: PackOpeningProps) {
+export default function PackOpening({ onPackOpened, totalOpened, packType, onTryOpen }: PackOpeningProps) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [cards, setCards] = useState<PlayerCard[]>([]);
   const [bestRarity, setBestRarity] = useState<string>('N');
@@ -85,6 +86,9 @@ export default function PackOpening({ onPackOpened, totalOpened, packType }: Pac
 
   const openPack = useCallback(() => {
     if (phase !== 'idle' && phase !== 'done') return;
+
+    // ★ v10.2.0: Check coins before opening
+    if (onTryOpen && !onTryOpen()) return;
 
     const drawnCards = drawByPackType(packType);
     setCards(drawnCards);

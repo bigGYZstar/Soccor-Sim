@@ -6,6 +6,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation } from 'wouter';
+import { useCollection } from '@/hooks/useCollection';
 
 // ============================================================
 // SFC-style retro pixel font helper
@@ -367,6 +368,7 @@ function TeamBuildIcon({ size = 48 }: { size?: number }) {
 export default function TopPage() {
   const [, setLocation] = useLocation();
   const [titleVisible, setTitleVisible] = useState(false);
+  const { coins, collection } = useCollection();
 
   useEffect(() => {
     const timer = setTimeout(() => setTitleVisible(true), 200);
@@ -439,6 +441,41 @@ export default function TopPage() {
           background: `linear-gradient(90deg, transparent, ${RETRO_GOLD}88, transparent)`,
           margin: 'clamp(8px, 1.5vh, 16px) auto 0',
         }} />
+
+        {/* ★ v10.2.0: Coin & Collection status bar */}
+        <div style={{
+          display: 'flex',
+          justifyContent: 'center',
+          gap: 'clamp(12px, 3vw, 24px)',
+          marginTop: 'clamp(6px, 1vh, 12px)',
+          fontFamily: "'Press Start 2P', monospace",
+          fontSize: 'clamp(7px, 1.2vw, 10px)',
+        }}>
+          <div style={{
+            color: RETRO_GOLD,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            background: 'rgba(0,10,40,0.7)',
+            border: '2px solid #B8860B',
+            padding: '4px 10px',
+          }}>
+            <span>🪙</span>
+            <span>{coins.toLocaleString()}</span>
+          </div>
+          <div style={{
+            color: '#8B9DC3',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+            background: 'rgba(0,10,40,0.7)',
+            border: '2px solid #4a6fa5',
+            padding: '4px 10px',
+          }}>
+            <span>🃏</span>
+            <span>{collection.length}枚</span>
+          </div>
+        </div>
       </div>
 
       {/* Mode selection cards */}

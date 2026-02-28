@@ -1069,6 +1069,7 @@ export interface PackConfig {
   nameEn: string;
   description: string;
   cardCount: number;
+  cost: number;  // ★ v10.2.0: Coin cost for pack
   color: string;
   borderColor: string;
   glowColor: string;
@@ -1085,6 +1086,7 @@ export const PACK_CONFIGS: Record<PackType, PackConfig> = {
     nameEn: 'NORMAL PACK',
     description: '1枚引き。N/R中心の日常パック。',
     cardCount: 1,
+    cost: 50,
     color: '#8B9DC3',
     borderColor: '#4a6fa5',
     glowColor: 'rgba(139,157,195,0.4)',
@@ -1099,6 +1101,7 @@ export const PACK_CONFIGS: Record<PackType, PackConfig> = {
     nameEn: 'STANDARD PACK',
     description: '5枚引き。R以上1枚保証。',
     cardCount: 5,
+    cost: 200,
     color: '#29B6F6',
     borderColor: '#29B6F6',
     glowColor: 'rgba(41,182,246,0.4)',
@@ -1113,6 +1116,7 @@ export const PACK_CONFIGS: Record<PackType, PackConfig> = {
     nameEn: '10-PULL GACHA',
     description: '10枚引き。SR以上1枚確定保証！',
     cardCount: 10,
+    cost: 350,
     color: '#FFD700',
     borderColor: '#FFD700',
     glowColor: 'rgba(255,215,0,0.5)',
@@ -1127,6 +1131,7 @@ export const PACK_CONFIGS: Record<PackType, PackConfig> = {
     nameEn: 'LEGEND PACK',
     description: '5枚引き。SR以上確定。ICON/HERO高確率！',
     cardCount: 5,
+    cost: 500,
     color: '#FF4444',
     borderColor: '#FF4444',
     glowColor: 'rgba(255,68,68,0.6)',
@@ -1141,6 +1146,7 @@ export const PACK_CONFIGS: Record<PackType, PackConfig> = {
     nameEn: 'J.LEAGUE PACK',
     description: '5枚引き。Jリーグ・日本人選手のみ排出！',
     cardCount: 5,
+    cost: 250,
     color: '#00FFCC',
     borderColor: '#00FFCC',
     glowColor: 'rgba(0,255,204,0.4)',

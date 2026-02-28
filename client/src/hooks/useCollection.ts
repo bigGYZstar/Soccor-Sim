@@ -16,6 +16,7 @@ const STORAGE_KEY_COLLECTION = 'soccer-sim-collection';
 const STORAGE_KEY_OPENED = 'soccer-sim-total-opened';
 const STORAGE_KEY_BLUE_TEAM = 'soccer-sim-blue-team';
 const STORAGE_KEY_RED_TEAM = 'soccer-sim-red-team';
+const STORAGE_KEY_COINS = 'soccer-sim-coins';
 
 /** コレクション内の選手カード（取得時刻付き） */
 export interface CollectedCard {
@@ -65,6 +66,9 @@ export function useCollection() {
   const [redTeam, setRedTeam] = useState<TeamLineup>(() =>
     loadFromStorage<TeamLineup>(STORAGE_KEY_RED_TEAM, { formationId: '4-4-2', slots: Array(11).fill(null) })
   );
+  const [coins, setCoins] = useState<number>(() =>
+    loadFromStorage<number>(STORAGE_KEY_COINS, 500) // Start with 500 coins
+  );
 
   // Persist collection changes
   useEffect(() => {
@@ -82,6 +86,10 @@ export function useCollection() {
   useEffect(() => {
     saveToStorage(STORAGE_KEY_RED_TEAM, redTeam);
   }, [redTeam]);
+
+  useEffect(() => {
+    saveToStorage(STORAGE_KEY_COINS, coins);
+  }, [coins]);
 
   /** Add cards from a pack opening */
   const addCards = useCallback((cards: Player[]) => {
@@ -105,7 +113,20 @@ export function useCollection() {
     setTotalOpened(0);
     setBlueTeam({ formationId: '4-4-2', slots: Array(11).fill(null) });
     setRedTeam({ formationId: '4-4-2', slots: Array(11).fill(null) });
+    setCoins(500);
   }, []);
+
+  /** Add coins */
+  const addCoins = useCallback((amount: number) => {
+    setCoins(prev => prev + amount);
+  }, []);
+
+  /** Spend coins (returns false if insufficient) */
+  const spendCoins = useCallback((amount: number): boolean => {
+    if (coins < amount) return false;
+    setCoins(prev => prev - amount);
+    return true;
+  }, [coins]);
 
   /** Get unique players (deduplicated by id, keeping highest overall) */
   const uniquePlayers = useCallback((): CollectedCard[] => {
@@ -169,6 +190,7 @@ export function useCollection() {
   return {
     collection,
     totalOpened,
+    coins,
     blueTeam,
     redTeam,
     addCards,
@@ -180,5 +202,7 @@ export function useCollection() {
     setFormation,
     isCardAssigned,
     filledSlots,
+    addCoins,
+    spendCoins,
   };
 }

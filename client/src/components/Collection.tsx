@@ -55,13 +55,16 @@ function PlayerDetailModal({ card, onClose }: { card: PlayerCard; onClose: () =>
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+      className="fixed inset-0 z-[60] flex items-center justify-center p-3"
       style={{ backgroundColor: 'rgba(0,0,0,0.85)' }}
       onClick={onClose}
     >
       <div
         className="relative w-full max-w-sm"
         style={{
+          maxHeight: 'calc(100dvh - 24px)',
+          overflowY: 'auto' as const,
+          WebkitOverflowScrolling: 'touch' as any,
           background: getBackGradient(card.rarity),
           border: `3px solid ${config.borderColor}`,
           boxShadow: `0 0 30px ${config.glowColor}, 0 0 60px ${config.glowColor}40`,
@@ -325,8 +328,8 @@ export default function Collection({ cards, isOpen, onClose }: CollectionProps) 
 
   return (
     <>
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.8)' }}>
-        <div className="rpg-window w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-3" style={{ backgroundColor: 'rgba(0,0,0,0.8)' }}>
+        <div className="rpg-window w-full max-w-2xl overflow-hidden flex flex-col" style={{ maxHeight: 'calc(100dvh - 24px)' }}>
           {/* Header */}
           <div className="flex justify-between items-center mb-3 pb-2" style={{ borderBottom: '2px solid rgba(255,215,0,0.3)' }}>
             <h2

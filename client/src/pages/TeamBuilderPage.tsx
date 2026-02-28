@@ -85,7 +85,7 @@ function FormationPitch({
     <div style={{
       position: 'relative',
       width: '100%',
-      maxWidth: '360px',
+      maxWidth: 'min(360px, 85vw)',
       aspectRatio: '1.2 / 1',
       background: 'linear-gradient(180deg, #145e30 0%, #0d4a24 100%)',
       border: `3px solid ${teamColor}`,
@@ -312,8 +312,9 @@ function PlayerList({
 
       {/* Player list */}
       <div style={{
-        maxHeight: '300px',
+        maxHeight: 'clamp(180px, 35vh, 300px)',
         overflowY: 'auto',
+        WebkitOverflowScrolling: 'touch' as any,
         display: 'flex',
         flexDirection: 'column',
         gap: '3px',
@@ -557,6 +558,9 @@ export default function TeamBuilderPage() {
       color: '#eaeaea',
       display: 'flex',
       flexDirection: 'column',
+      overflow: 'auto',
+      WebkitOverflowScrolling: 'touch' as any,
+      paddingBottom: 'env(safe-area-inset-bottom)',
     }}>
       {/* Header */}
       <header style={{
@@ -643,9 +647,10 @@ export default function TeamBuilderPage() {
         flex: 1,
         display: 'flex',
         flexDirection: 'column',
-        padding: '12px',
-        gap: '12px',
+        padding: '10px',
+        gap: '10px',
         overflowY: 'auto',
+        WebkitOverflowScrolling: 'touch' as any,
       }}>
         {/* Formation selector + pitch */}
         <div style={{

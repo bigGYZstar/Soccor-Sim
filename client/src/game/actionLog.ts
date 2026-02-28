@@ -24,7 +24,16 @@ function posName(p: Player): string {
 }
 
 function playerLabel(p: Player): string {
+  // ★ v10.2.0: Show player name when available from gacha card
+  if (p.cardName) {
+    return `${p.cardName}(${posName(p)})`;
+  }
   return `#${p.num}(${posName(p)})`;
+}
+
+// ★ v10.2.0: Short label for target references (just name or number)
+function playerRef(p: Player): string {
+  return p.cardName || `#${p.num}`;
 }
 
 export function emitLog(st: State, entry: Omit<ActionLogEntry, "ttl">) {
@@ -55,11 +64,14 @@ export function logPass(st: State, passer: Player, targetNum: number, dist: numb
   const distLabel = dist < 8 ? "ショート" : dist < 18 ? "ミドル" : "ロング";
   const typeLabel = isLong ? "ロングパス" : "パス";
   const footLabel = usedFoot ? (usedFoot === "R" ? "右足" : "左足") : "";
+  // ★ v10.2.0: Find target player to show name
+  const targetPlayer = st.pl.find(p => p.num === targetNum && p.team === passer.team);
+  const targetRef = targetPlayer ? playerRef(targetPlayer) : `#${targetNum}`;
 
   const texts = [
-    `${playerLabel(passer)} ${footLabel}${distLabel}${typeLabel}！ → #${targetNum}へ`,
-    `${playerLabel(passer)} ${footLabel}でボールを展開！ #${targetNum}へ${typeLabel}`,
-    `${playerLabel(passer)} ${typeLabel}を選択 → #${targetNum} ${footLabel ? `(${footLabel})` : ""}`,
+    `${playerLabel(passer)} ${footLabel}${distLabel}${typeLabel}！ → ${targetRef}へ`,
+    `${playerLabel(passer)} ${footLabel}でボールを展開！ ${targetRef}へ${typeLabel}`,
+    `${playerLabel(passer)} ${typeLabel}を選択 → ${targetRef} ${footLabel ? `(${footLabel})` : ""}`,
   ];
 
   emitLog(st, {
@@ -147,10 +159,12 @@ export function logDribbleSuccess(st: State, dribbler: Player) {
 }
 
 export function logDribbleFail(st: State, dribbler: Player, tacklerNum: number) {
+  const tackler = st.pl.find(p => p.num === tacklerNum && p.team !== dribbler.team);
+  const tacklerRef = tackler ? playerRef(tackler) : `#${tacklerNum}`;
   const texts = [
-    `${playerLabel(dribbler)} ボールを失う！ #${tacklerNum}のタックル！`,
-    `${playerLabel(dribbler)} 突破失敗… #${tacklerNum}に止められた`,
-    `#${tacklerNum}が${playerLabel(dribbler)}のドリブルを阻止！`,
+    `${playerLabel(dribbler)} ボールを失う！ ${tacklerRef}のタックル！`,
+    `${playerLabel(dribbler)} 突破失敗… ${tacklerRef}に止められた`,
+    `${tacklerRef}が${playerLabel(dribbler)}のドリブルを阻止！`,
   ];
 
   emitLog(st, {
@@ -168,10 +182,12 @@ export function logDribbleFail(st: State, dribbler: Player, tacklerNum: number) 
 
 export function logTackle(st: State, tackler: Player, targetNum: number, success: boolean) {
   if (success) {
+    const targetPlayer = st.pl.find(p => p.num === targetNum && p.team !== tackler.team);
+    const targetRef = targetPlayer ? playerRef(targetPlayer) : `#${targetNum}`;
     const texts = [
       `${playerLabel(tackler)} ナイスタックル！ ボール奪取！`,
       `${playerLabel(tackler)} 見事なタックルでボールを奪う！`,
-      `${playerLabel(tackler)} タックル成功！ #${targetNum}からボールを奪った！`,
+      `${playerLabel(tackler)} タックル成功！ ${targetRef}からボールを奪った！`,
     ];
     emitLog(st, {
       time: st.time,

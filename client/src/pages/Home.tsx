@@ -8,6 +8,7 @@ import { v, vadd, vscl } from '../game/math';
 import { mkState, mkCustomState, doKickOff, update } from '../game/engine';
 import type { CardPlayerData } from '../game/engine';
 import { useCollection } from '@/hooks/useCollection';
+import MatchResultScreen from '@/components/MatchResultScreen';
 
 // ============================================================
 // SFC-style retro pixel font helper
@@ -985,12 +986,13 @@ function SpeedToggle({ speed, onToggle }: { speed: SpeedMode; onToggle: () => vo
 // ============================================================
 // Game Screen (canvas-based simulation) - fully responsive
 // ============================================================
-function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards }: {
+function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, onCoinsEarned }: {
   blueFormation: FormationId;
   redFormation: FormationId;
   onBack: () => void;
   blueCards?: (CardPlayerData | null)[];
   redCards?: (CardPlayerData | null)[];
+  onCoinsEarned?: (coins: number) => void;
 }) {
   const cvsRef = useRef<HTMLCanvasElement>(null);
   const stRef = useRef<State>(
@@ -1001,6 +1003,8 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards }
   const reqRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
   const [speed, setSpeed] = useState<SpeedMode>("MID");
+  const [showResult, setShowResult] = useState(false);
+  const resultShownRef = useRef(false);
 
   // Sync speed to state ref
   useEffect(() => {
@@ -1050,6 +1054,14 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards }
       if (dt > 0.001) {
         update(stRef.current, dt);
         render(ctx, canvas, stRef.current);
+        // ★ v10.2.0: Detect fulltime and show result screen after overlay fades
+        if (stRef.current.matchPhase === "fulltime" && !resultShownRef.current) {
+          if (stRef.current.screenEffect && stRef.current.screenEffect.timer <= 0) {
+            resultShownRef.current = true;
+            // Small delay to let the final frame render
+            setTimeout(() => setShowResult(true), 800);
+          }
+        }
       }
       reqRef.current = requestAnimationFrame(loop);
     };
@@ -1117,6 +1129,14 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards }
           <SpeedToggle speed={speed} onToggle={toggleSpeed} />
         </div>
       </div>
+      {/* ★ v10.2.0: Match Result Screen */}
+      {showResult && (
+        <MatchResultScreen
+          state={stRef.current}
+          onClose={onBack}
+          onCoinsEarned={onCoinsEarned}
+        />
+      )}
     </div>
   );
 }
@@ -1132,7 +1152,11 @@ export default function Home() {
   const [customBlueCards, setCustomBlueCards] = useState<(CardPlayerData | null)[] | undefined>(undefined);
   const [customRedCards, setCustomRedCards] = useState<(CardPlayerData | null)[] | undefined>(undefined);
 
-  const { blueTeam, redTeam } = useCollection();
+  const { blueTeam, redTeam, addCoins } = useCollection();
+
+  const handleCoinsEarned = useCallback((coins: number) => {
+    addCoins(coins);
+  }, [addCoins]);
 
   // Check for custom match mode from URL
   useEffect(() => {
@@ -1200,5 +1224,6 @@ export default function Home() {
     onBack={handleBack}
     blueCards={customBlueCards}
     redCards={customRedCards}
+    onCoinsEarned={handleCoinsEarned}
   />;
 }

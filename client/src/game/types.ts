@@ -86,6 +86,23 @@ export type MatchStats = {
   gkSaves: { blue: number; red: number };  // Successful saves by GK
   
   possessionFrames: { blue: number; red: number };  // Frames with ball possession
+  
+  // ★ v10.2.0: Per-player stats for MVP calculation
+  playerStats: {
+    goals: number;
+    assists: number;
+    shots: number;
+    shotsOnTarget: number;
+    passes: number;
+    passSuccess: number;
+    dribbles: number;
+    dribbleSuccess: number;
+    tackles: number;
+    tackleSuccess: number;
+    interceptions: number;
+    saves: number;
+    playerIdx: number;
+  }[];
 };
 
 export type SetPieceKind = "THROWIN" | "CORNER" | "GOALKICK";
@@ -139,6 +156,19 @@ export interface Player {
   cardNameEn?: string;     // English name (e.g. "L. Messi")
   cardOverall?: number;    // Overall rating from card (50-99)
   cardRarity?: string;     // Rarity (ICON, HERO, UR, SR, R, N)
+  // ★ v10.2.0: Per-player stat modifiers from gacha card (multipliers, 1.0 = default)
+  cardMods?: {
+    moveSpeed: number;       // Multiplier for movement speed (0.8-1.3)
+    dribbleSpeed: number;    // Multiplier for dribble speed
+    passAccuracy: number;    // Multiplier for pass accuracy
+    shotAccuracy: number;    // Multiplier for shot accuracy
+    shotSpeed: number;       // Multiplier for shot power
+    passSpeed: number;       // Multiplier for pass speed
+    interceptRadius: number; // Multiplier for intercept radius
+    gkSaveBase: number;      // Multiplier for GK save chance
+    staminaDrain: number;    // Multiplier for stamina drain (lower = better)
+    burstCooldown: number;   // Multiplier for burst cooldown (lower = better)
+  };
   jumpY: number;
   turnDebt: number;  // 0-1, turning inertia penalty
   staminaShort: number;  // 0-1, short-term stamina

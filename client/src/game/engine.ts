@@ -332,6 +332,7 @@ export function mkCustomPlayers(
   const redPositions = formationToVecs(redFormation, 1);
 
   // Helper: map card stats to engine parameters
+  // ★ v10.2.0: Deep stat reflection - card stats affect all engine parameters
   function applyCardStats(p: Player, card: CardPlayerData) {
     p.cardName = card.name;
     p.cardNameEn = card.nameEn;
@@ -351,6 +352,28 @@ export function mkCustomPlayers(
 
     // Ball control from dribble stat (1-10 scale, base 5)
     p.footParams.ballControl = Math.round(card.stats.dribble / 10);
+
+    // ★ v10.2.0: Compute per-player stat modifiers
+    // Stats are 1-99 scale. We map to multipliers around 1.0.
+    // Base reference: stat=75 → multiplier=1.0
+    // stat=50 → ~0.85, stat=99 → ~1.20
+    const norm = (stat: number, low = 0.80, high = 1.25) => {
+      const t = Math.max(0, Math.min(1, (stat - 40) / 60)); // 40-100 → 0-1
+      return low + t * (high - low);
+    };
+    const s = card.stats;
+    p.cardMods = {
+      moveSpeed: norm(s.speed, 0.82, 1.22),
+      dribbleSpeed: norm((s.speed + s.dribble) / 2, 0.82, 1.20),
+      passAccuracy: norm(s.pass, 0.85, 1.12),
+      shotAccuracy: norm(s.shoot, 0.80, 1.30),
+      shotSpeed: norm((s.shoot + s.physical) / 2, 0.85, 1.20),
+      passSpeed: norm(s.pass, 0.90, 1.15),
+      interceptRadius: norm(s.defense, 0.80, 1.30),
+      gkSaveBase: p.isGK ? norm((s.defense + s.physical) / 2, 0.85, 1.25) : 1.0,
+      staminaDrain: norm(s.physical, 1.25, 0.75), // Higher physical = less drain (inverted)
+      burstCooldown: norm(s.speed, 1.20, 0.70),   // Higher speed = shorter cooldown (inverted)
+    };
   }
 
   for (let i = 0; i < 11; i++) {
@@ -465,7 +488,13 @@ export function mkState(blueFormation: FormationId = "4-4-2", redFormation: Form
       tackleSuccess: { blue: 0, red: 0 },
       gkSaveAttempts: { blue: 0, red: 0 },
       gkSaves: { blue: 0, red: 0 },
-      possessionFrames: { blue: 0, red: 0 }
+      possessionFrames: { blue: 0, red: 0 },
+      // ★ v10.2.0: Per-player stats
+      playerStats: Array.from({ length: 22 }, (_, i) => ({
+        playerIdx: i, goals: 0, assists: 0, shots: 0, shotsOnTarget: 0,
+        passes: 0, passSuccess: 0, dribbles: 0, dribbleSuccess: 0,
+        tackles: 0, tackleSuccess: 0, interceptions: 0, saves: 0,
+      })),
     },
     atkLevelBlue: 5,
     atkLevelRed: 5,
@@ -528,6 +557,10 @@ export function give(ball: Ball, idx: number, pl: Player[], st: State, reason: "
       if (ball.kickKind === "PASS") {
         if (sameTeam) {
           st.stats.passSuccess[team]++;
+          // ★ v10.2.0: Per-player pass success
+          if (ball.lastKickerIdx >= 0 && st.stats.playerStats[ball.lastKickerIdx]) {
+            st.stats.playerStats[ball.lastKickerIdx].passSuccess++;
+          }
           if (toIntended) {
             st.stats.passToIntended[team]++;
           } else {
@@ -551,6 +584,8 @@ export function give(ball: Ball, idx: number, pl: Player[], st: State, reason: "
     const newTeam = newOwnerTeam === -1 ? 'blue' : 'red';
     st.stats.interceptions[newTeam]++;
     st.stats.tackleSuccess[newTeam]++;
+    // ★ v10.2.0: Per-player intercept tracking
+    if (st.stats.playerStats[idx]) st.stats.playerStats[idx].interceptions++;
     // ★ v9.9.0: Log intercept
     logIntercept(st, pl[idx]);
   }
@@ -602,10 +637,14 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   // ★ v7.2: Unified error handling with GK-specific safety
   // v8.9.0: Error range is scaled by foot accuracy (worse foot = more error)
   let finalTarget = { ...tgt };
+  // ★ v10.2.0: Apply per-player accuracy modifiers
+  const pShotAcc = PExt.shotAccuracy * (kicker.cardMods?.shotAccuracy ?? 1.0);
+  const pPassAcc = PExt.passAccuracy * (kicker.cardMods?.passAccuracy ?? 1.0);
+  const pLongAcc = PExt.longPassAccuracy * (kicker.cardMods?.passAccuracy ?? 1.0);
   let baseErrRange = customErr !== undefined ? customErr : 
-                 (shot ? (1 - PExt.shotAccuracy) * 8.0 :  // v9.2.0: Increased from 3.0 for realistic on-target rate
-                  isLong ? (1 - PExt.longPassAccuracy) * 1.5 : 
-                  (1 - PExt.passAccuracy) * 1.5);
+                 (shot ? (1 - Math.min(pShotAcc, 0.95)) * 8.0 :
+                  isLong ? (1 - Math.min(pLongAcc, 0.95)) * 1.5 : 
+                  (1 - Math.min(pPassAcc, 0.99)) * 1.5);
   // Apply foot accuracy: footMod=1.0 means no extra error, footMod=0.5 means 2x error
   let errRange = baseErrRange / Math.max(0.1, footMod);
   
@@ -678,7 +717,9 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   b.lastKickerIdx = kickerIdx;
   
   b.owner = null; b.free = true; b.shot = shot;
-  b.vel = vscl(dir, spd); b.dead = 0;
+  // ★ v10.2.0: Apply per-player speed modifiers
+  const spdMod = shot ? (kicker.cardMods?.shotSpeed ?? 1.0) : (kicker.cardMods?.passSpeed ?? 1.0);
+  b.vel = vscl(dir, spd * spdMod); b.dead = 0;
   b.lob = isLong ? 1.0 : 0;
   // v9.2.0: Add cooldown after kick to prevent kicker from immediately re-intercepting
   b.cooldown = 0.15;  // 150ms cooldown before anyone can pick up the ball
@@ -736,6 +777,8 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   if (shot) {
     const team = kicker.team === -1 ? 'blue' : 'red';
     st.stats.shotsTotal[team]++;
+    // ★ v10.2.0: Per-player shot tracking
+    if (st.stats.playerStats[kicker.idx]) st.stats.playerStats[kicker.idx].shots++;
     // ★ v9.9.0: Log shot
     const shotDist = vdist(kicker.pos, v(-kicker.team * PExt.pitchHalfW, 0));
     logShot(st, kicker, shotDist);
@@ -758,6 +801,8 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
         // On target if intersection is within goal posts
         if (Math.abs(y_at_goalline) <= PExt.goalHalfH) {
           st.stats.shotsOnTarget[team]++;
+          // ★ v10.2.0: Per-player on-target shot
+          if (st.stats.playerStats[kicker.idx]) st.stats.playerStats[kicker.idx].shotsOnTarget++;
         }
       }
     }
@@ -1338,7 +1383,9 @@ export function doPassTo(st: State, idx: number, targetIdx: number) {
     tp = vadd(tp, vscl(lead, leadDist));
   }
   
-  let baseErr = (1 - PExt.passAccuracy) * 1.5;
+  // ★ v10.2.0: Per-player pass accuracy
+  const pPassAcc2 = PExt.passAccuracy * (me.cardMods?.passAccuracy ?? 1.0);
+  let baseErr = (1 - Math.min(pPassAcc2, 0.99)) * 1.5;
   if (passDist < 4.0) baseErr *= 0.5;
   else if (passDist < 7.0) baseErr *= 0.7;
   const inOwnHalf = me.team * me.pos.x > 0;
@@ -1456,6 +1503,8 @@ export function doPassTo(st: State, idx: number, targetIdx: number) {
   // v8.8.2: Track pass attempt
   const team = me.team === -1 ? 'blue' : 'red';
   st.stats.passAttempts[team]++;
+  // ★ v10.2.0: Per-player pass tracking
+  if (st.stats.playerStats[me.idx]) st.stats.playerStats[me.idx].passes++;
   
   // ★ v9.15.0: Action log with foot info
   logPass(st, me, tm.num, passDist, false, usedFoot);
@@ -1492,7 +1541,9 @@ export function doLongPassTo(st: State, idx: number, targetIdx: number) {
   
   // ★ v9.15.0: Error increases with distance AND foot accuracy
   // Base error from accuracy stat, amplified by distance and foot quality
-  const baseErr = (1 - PExt.longPassAccuracy) * 2.0;
+  // ★ v10.2.0: Per-player long pass accuracy
+  const pLongAcc2 = PExt.longPassAccuracy * (me.cardMods?.passAccuracy ?? 1.0);
+  const baseErr = (1 - Math.min(pLongAcc2, 0.95)) * 2.0;
   const distErr = Math.max(0, (lpDist - 15.0) * 0.03); // Extra error for very long passes
   const footErr = (1.0 - footMod) * 0.5; // Weak foot adds error
   const totalErr = baseErr + distErr + footErr;
@@ -1521,13 +1572,17 @@ export function doDribble(st: State, idx: number) {
   
   // v8.8.2: Track dribble attempt
   st.stats.dribbleAttempts[team]++;
+  // ★ v10.2.0: Per-player dribble tracking
+  if (st.stats.playerStats[me.idx]) st.stats.playerStats[me.idx].dribbles++;
   
   // ★ v8.9.0: Foot affects dribble control
   // Choose foot for dribble (ball is at player's feet)
   const usedFoot = chooseFootForAction(me, st.ball.pos);
   const footMod = footAccuracyModifier(me, usedFoot, st.ball.pos);
   // Dribble control adjusted by foot accuracy
-  const effectiveControl = PExt.dribbleControl * footMod;
+  // ★ v10.2.0: Per-player dribble modifier from card stats
+  const dribbleMod = me.cardMods?.dribbleSpeed ?? 1.0; // reuse dribbleSpeed as general dribble skill
+  const effectiveControl = Math.min(PExt.dribbleControl * footMod * dribbleMod, 0.95);
   
   if (Math.random() > effectiveControl) {
     const fd = vnorm(v(rng(-1, 1), rng(-1, 1)));
@@ -1542,15 +1597,18 @@ export function doDribble(st: State, idx: number) {
   
   // v8.8.2: Dribble success (not lost immediately)
   st.stats.dribbleSuccess[team]++;
+  // ★ v10.2.0: Per-player dribble success
+  if (st.stats.playerStats[me.idx]) st.stats.playerStats[me.idx].dribbleSuccess++;
   // ★ v9.9.0: Log dribble attempt (success path)
   logDribbleAttempt(st, me);
   
   // ★ v9.11.0: Screen effect for dribble breakthrough
+  const pName = me.cardName || `#${me.num}`;
   const dribbleTexts = [
-    `★ #${me.num} 突破！！`,
-    `#${me.num} ドリブル成功！`,
-    `★ #${me.num} 抜いた！！`,
-    `#${me.num} 美技！！`,
+    `★ ${pName} 突破！！`,
+    `${pName} ドリブル成功！`,
+    `★ ${pName} 抜いた！！`,
+    `${pName} 美技！！`,
   ];
   st.screenEffect = {
     type: "dribbleSuccess",
@@ -1875,8 +1933,8 @@ export function decideHasBall(st: State, idx: number) {
       const toGoal = vsub(gc, me.pos);
       const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
       if (angle < 60) {
-        const err = (1 - PExt.shotAccuracy) * 2.5;
-        const t = v(gc.x, gc.y + rng(-err, err));
+        const pSA = (1 - PExt.shotAccuracy * (me.cardMods?.shotAccuracy ?? 1.0)) * 2.5;
+        const t = v(gc.x, gc.y + rng(-pSA, pSA));
         kick(st, idx, PExt.shotSpeed, true, t);
         if (me.team === -1) st.stats.forcedShotsFromBlocked.blue++;
         else st.stats.forcedShotsFromBlocked.red++;
@@ -1898,8 +1956,8 @@ export function decideHasBall(st: State, idx: number) {
       else allowedAngle = 30;
       
       if (angle < allowedAngle) {
-        const err = (1 - PExt.shotAccuracy) * 2.5;
-        const t = v(gc.x, gc.y + rng(-err, err));
+        const pSA2 = (1 - PExt.shotAccuracy * (me.cardMods?.shotAccuracy ?? 1.0)) * 2.5;
+        const t = v(gc.x, gc.y + rng(-pSA2, pSA2));
         kick(st, idx, PExt.shotSpeed, true, t);
         st.ball.phaseBBlockedPassStreak = 0;
         if (me.team === -1) st.stats.phaseBShots.blue++;
@@ -2106,8 +2164,8 @@ export function decideHasBall(st: State, idx: number) {
     const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
     let allowedAngle = distToGoal <= 8.0 ? 60 : 35;
     if (angle < allowedAngle) {
-      const err = (1 - PExt.shotAccuracy) * 2.5;
-      const t = v(gc.x, gc.y + rng(-err, err));
+      const pSA3 = (1 - PExt.shotAccuracy * (me.cardMods?.shotAccuracy ?? 1.0)) * 2.5;
+      const t = v(gc.x, gc.y + rng(-pSA3, pSA3));
       kick(st, idx, PExt.shotSpeed, true, t);
       st.ball.phaseBBlockedPassStreak = 0;
       return;
@@ -2364,7 +2422,7 @@ export function decideNoBall(st: State, idx: number) {
           // Sprint burst for forward runs
           if (useForwardRun && me.burstT <= 0 && me.burstCD <= 0 && me.staminaShort > 0.3) {
             me.burstT = 1.5;
-            me.burstCD = 3.0;
+            me.burstCD = 3.0 * (me.cardMods?.burstCooldown ?? 1.0);
           }
         }
       } else if (isCAM) {
@@ -3091,7 +3149,19 @@ export function startThrowIn(st: State, throwerIdx: number, targetPos: V) {
 }
 
 export function update(st: State, dt: number) {
-  if (st.over) return;
+  if (st.over) {
+    // ★ v10.2.0: Even after game over, keep counting down timers
+    // so the result screen can detect when the FULL TIME overlay fades
+    const speedMul = st.speed === "LOW" ? 0.5 : st.speed === "FAST" ? 2.0 : 1.0;
+    const adt = dt * speedMul;
+    if (st.screenEffect.timer > 0) {
+      st.screenEffect.timer -= adt;
+    }
+    if (st.flash > 0) {
+      st.flash = Math.max(0, st.flash - adt * 2);
+    }
+    return;
+  }
   
   // Speed multiplier (applied to dt for all game logic)
   const speedMul = st.speed === "LOW" ? 0.5 : st.speed === "FAST" ? 2.0 : 1.0;
@@ -3446,10 +3516,12 @@ export function update(st: State, dt: number) {
     const canIntercept = b.z < 1.5; // Ball must be below head height
     if (b.cooldown <= 0 && canIntercept) {
       let closestIdx = -1;
-      let minD = PExt.interceptRadius;
+      let minD = Infinity;
       
       for (let i = 0; i < st.pl.length; i++) {
         const p = st.pl[i];
+        // ★ v10.2.0: Per-player intercept radius
+        const pInterceptR = PExt.interceptRadius * (p.cardMods?.interceptRadius ?? 1.0);
         // v8.9.0: Check distance to nearest foot, not just body center
         const dBody = vdist(p.pos, b.pos);
         // v8.9.0: Use foot distance if available, fallback to body distance
@@ -3457,8 +3529,8 @@ export function update(st: State, dt: number) {
         const dRightFoot = p.rightFoot ? vdist(p.rightFoot.pos, b.pos) : dBody;
         const d = Math.min(dBody, dLeftFoot, dRightFoot);
         
-        // Update if this player is closer
-        if (d < minD) {
+        // Update if this player is within their intercept radius and closer than current best
+        if (d < pInterceptR && d < minD) {
           minD = d;
           closestIdx = i;
         }
@@ -3594,7 +3666,9 @@ export function update(st: State, dt: number) {
           const toBall = vsub(b.pos, gk.pos);
           const angle = vang(toGoal, toBall);
           const angleBonus = (1 - angle / 180) * PExt.gkSaveAngleBonus;
-          const saveChance = PExt.gkSaveBase + angleBonus;
+          // ★ v10.2.0: Per-player GK save modifier
+          const gkSaveMod = gk.cardMods?.gkSaveBase ?? 1.0;
+          const saveChance = (PExt.gkSaveBase * gkSaveMod) + angleBonus;
           
           // v8.8.2: Track save attempt
           const gkTeam = defTeam === -1 ? 'blue' : 'red';
@@ -3603,6 +3677,8 @@ export function update(st: State, dt: number) {
           if (Math.random() < saveChance) {
             // v8.8.2: Track successful save
             st.stats.gkSaves[gkTeam]++;
+            // ★ v10.2.0: Per-player save tracking
+            if (st.stats.playerStats[gk.idx]) st.stats.playerStats[gk.idx].saves++;
             // ★ v9.9.0: Log save
             logSave(st, gk);
             
@@ -3696,11 +3772,21 @@ export function update(st: State, dt: number) {
       if (b.lastKickerIdx >= 0 && b.lastKickerIdx < st.pl.length) {
         const scorer = st.pl[b.lastKickerIdx];
         logGoal(st, scorer);
-        // ★ v9.11.0: Goal screen effect
+        // ★ v10.2.0: Track per-player goal
+        if (st.stats.playerStats[scorer.idx]) st.stats.playerStats[scorer.idx].goals++;
+        // ★ v10.2.0: Track assist (last passer before goal)
+        if (b.lastPasserIdx >= 0 && b.lastPasserIdx < st.pl.length && b.lastPasserIdx !== b.lastKickerIdx) {
+          const assister = st.pl[b.lastPasserIdx];
+          if (assister.team === scorer.team && st.stats.playerStats[assister.idx]) {
+            st.stats.playerStats[assister.idx].assists++;
+          }
+        }
+        // ★ v9.11.0: Goal screen effect (v10.2.0: show player name)
+        const scorerName = scorer.cardName || `#${scorer.num}`;
         st.screenEffect = {
           type: "goal",
           timer: 2.5,
-          text: `⚽ GOAL!! #${scorer.num}`,
+          text: `⚽ GOAL!! ${scorerName}`,
           playerNum: scorer.num,
           team: scorer.team,
         };
@@ -3792,7 +3878,18 @@ export function update(st: State, dt: number) {
         st.flashTxt = "GOAL!";
         // ★ v9.9.0: Log goal (dribble goal)
         if (b.owner !== null) {
-          logGoal(st, st.pl[b.owner]);
+          const dribScorer = st.pl[b.owner];
+          logGoal(st, dribScorer);
+          // ★ v10.2.0: Track per-player goal for dribble goals
+          if (st.stats.playerStats[dribScorer.idx]) st.stats.playerStats[dribScorer.idx].goals++;
+          const dribScorerName = dribScorer.cardName || `#${dribScorer.num}`;
+          st.screenEffect = {
+            type: "goal",
+            timer: 2.5,
+            text: `⚽ GOAL!! ${dribScorerName}`,
+            playerNum: dribScorer.num,
+            team: dribScorer.team,
+          };
         }
         st.koSide = g;
         doKickOff(st);
@@ -3830,17 +3927,22 @@ export function update(st: State, dt: number) {
     const desired = vsub(p.tgt, p.pos);
     const dist = vlen(desired);
     
-    let maxSpeed = P.moveSpeed;
-    if (p.act === "dribble") maxSpeed = P.dribbleSpeed;
-    if (p.act === "carry") maxSpeed = P.dribbleSpeed * 1.2;
+    // ★ v10.2.0: Per-player movement speed modifiers
+    const moveMod = p.cardMods?.moveSpeed ?? 1.0;
+    const dribMod = p.cardMods?.dribbleSpeed ?? 1.0;
+    let maxSpeed = P.moveSpeed * moveMod;
+    if (p.act === "dribble") maxSpeed = P.dribbleSpeed * dribMod;
+    if (p.act === "carry") maxSpeed = P.dribbleSpeed * dribMod * 1.2;
     
     // 1) Short-term stamina update
     const sprintThreshold = maxSpeed * 0.85;
     const curSpeed = vlen(p.vel);
     const isSprinting = curSpeed > sprintThreshold;
     
-    const shortDrain = 0.35;
-    const shortRecover = 0.55;
+    // ★ v10.2.0: Per-player stamina modifiers
+    const staminaMod = p.cardMods?.staminaDrain ?? 1.0;
+    const shortDrain = 0.35 * staminaMod;
+    const shortRecover = 0.55 / staminaMod; // Better physical = faster recovery
     p.staminaShort = clamp01(p.staminaShort + (isSprinting ? -shortDrain : shortRecover) * dt);
     
     // 2) Stamina effects

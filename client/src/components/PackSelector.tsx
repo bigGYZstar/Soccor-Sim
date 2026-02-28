@@ -11,11 +11,12 @@ import { PACK_CONFIGS } from '@/lib/cardData';
 interface PackSelectorProps {
   onSelect: (packType: PackType) => void;
   selectedPack: PackType;
+  coins?: number;  // ★ v10.2.0: Current coin balance
 }
 
 const PACK_ORDER: PackType[] = ['normal', 'standard', 'ten', 'legend', 'jleague'];
 
-export default function PackSelector({ onSelect, selectedPack }: PackSelectorProps) {
+export default function PackSelector({ onSelect, selectedPack, coins }: PackSelectorProps) {
   const [hoveredPack, setHoveredPack] = useState<PackType | null>(null);
   const previewPack = hoveredPack ?? selectedPack;
   const preview = PACK_CONFIGS[previewPack];
@@ -40,7 +41,7 @@ export default function PackSelector({ onSelect, selectedPack }: PackSelectorPro
       </div>
 
       {/* Pack Grid */}
-      <div className="grid grid-cols-5 gap-2 mb-4">
+      <div className="grid gap-2 mb-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(60px, 1fr))' }}>
         {PACK_ORDER.map((packId) => {
           const cfg = PACK_CONFIGS[packId];
           const isSelected = selectedPack === packId;
@@ -59,7 +60,7 @@ export default function PackSelector({ onSelect, selectedPack }: PackSelectorPro
                   : 'rgba(0,10,40,0.7)',
                 border: `2px solid ${isActive ? cfg.borderColor : 'rgba(74,111,165,0.4)'}`,
                 borderRadius: '0',
-                padding: '10px 6px',
+                padding: 'clamp(6px, 1.5vw, 10px) clamp(4px, 1vw, 6px)',
                 cursor: 'pointer',
                 transition: 'all 0.15s ease',
                 boxShadow: isActive
@@ -119,6 +120,17 @@ export default function PackSelector({ onSelect, selectedPack }: PackSelectorPro
                 }}
               >
                 {cfg.badgeText}
+              </span>
+              {/* ★ v10.2.0: Cost display */}
+              <span
+                style={{
+                  fontSize: '7px',
+                  color: coins !== undefined && coins < cfg.cost ? '#FF4444' : '#FFD700',
+                  fontFamily: "'Press Start 2P', monospace",
+                  marginTop: '2px',
+                }}
+              >
+                🪙{cfg.cost}
               </span>
             </button>
           );

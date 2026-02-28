@@ -2,12 +2,13 @@
  * GachaPage - サッカーカードパック開封シミュレーター メインページ
  * Design: SFC RPG風 16bitドット絵スタイル
  * パック選択 → 開封演出 → コレクション確認
- * useCollectionフックでLocalStorageに永続化
+ * ★ v10.2.0: コイン経済システム統合
  */
 
 import { useState, useCallback } from 'react';
 import { useLocation } from 'wouter';
 import type { PlayerCard, PackType } from '@/lib/cardData';
+import { PACK_CONFIGS } from '@/lib/cardData';
 import PackOpening from '@/components/PackOpening';
 import PackSelector from '@/components/PackSelector';
 import Collection from '@/components/Collection';
@@ -19,19 +20,35 @@ const STADIUM_URL = 'https://private-us-east-1.manuscdn.com/sessionFile/bApKv3n2
 
 export default function GachaPage() {
   const [, setLocation] = useLocation();
-  const { collection, totalOpened, addCards } = useCollection();
+  const { collection, totalOpened, coins, addCards, spendCoins } = useCollection();
   const [showCollection, setShowCollection] = useState(false);
   const [selectedPack, setSelectedPack] = useState<PackType>('standard');
+  const [insufficientCoins, setInsufficientCoins] = useState(false);
+
+  const packCost = PACK_CONFIGS[selectedPack].cost;
+  const canAfford = coins >= packCost;
 
   const handlePackOpened = useCallback((cards: PlayerCard[]) => {
     addCards(cards);
   }, [addCards]);
 
+  // ★ v10.2.0: Check coins before opening pack
+  const handleTryOpen = useCallback((): boolean => {
+    const cost = PACK_CONFIGS[selectedPack].cost;
+    if (coins < cost) {
+      setInsufficientCoins(true);
+      setTimeout(() => setInsufficientCoins(false), 2000);
+      return false;
+    }
+    spendCoins(cost);
+    return true;
+  }, [selectedPack, coins, spendCoins]);
+
   // Flatten collection to PlayerCard[] for the Collection component
   const collectionCards = collection.map(c => c.card);
 
   return (
-    <div className="min-h-screen flex flex-col relative scanlines overflow-hidden">
+    <div className="flex flex-col relative scanlines" style={{ minHeight: '100dvh', overflow: 'auto', WebkitOverflowScrolling: 'touch' as any, paddingBottom: 'env(safe-area-inset-bottom)' }}>
       {/* Background */}
       <div
         className="fixed inset-0 z-0"
@@ -57,19 +74,20 @@ export default function GachaPage() {
       />
 
       {/* Header */}
-      <header className="relative z-10 py-4 px-4">
+      <header className="relative z-10 py-3 px-3" style={{ flexShrink: 0 }}>
         <div className="max-w-4xl mx-auto">
-          <div className="rpg-window">
-            <div className="flex items-center justify-between">
-              <div>
+          <div className="rpg-window" style={{ padding: '8px 12px' }}>
+            <div className="flex items-center justify-between gap-2" style={{ flexWrap: 'wrap' }}>
+              <div style={{ minWidth: 0 }}>
                 <h1
                   style={{
                     fontFamily: "'Press Start 2P', monospace",
-                    fontSize: '12px',
+                    fontSize: 'clamp(8px, 2vw, 12px)',
                     color: '#FFD700',
                     textShadow: '0 0 10px rgba(255,215,0,0.5), 2px 2px 0 rgba(0,0,0,0.8)',
                     lineHeight: '1.8',
                     letterSpacing: '0.05em',
+                    whiteSpace: 'nowrap',
                   }}
                 >
                   SOCCER CARD PACK
@@ -77,7 +95,7 @@ export default function GachaPage() {
                 <p
                   style={{
                     fontFamily: "'DotGothic16', monospace",
-                    fontSize: '12px',
+                    fontSize: 'clamp(9px, 1.5vw, 12px)',
                     color: '#8B9DC3',
                     marginTop: '2px',
                   }}
@@ -85,28 +103,47 @@ export default function GachaPage() {
                   サッカーカードパック開封シミュレーター
                 </p>
               </div>
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0 }}>
+                {/* ★ v10.2.0: Coin display */}
+                <div
+                  style={{
+                    fontFamily: "'Press Start 2P', monospace",
+                    fontSize: 'clamp(8px, 1.5vw, 11px)',
+                    color: '#FFD700',
+                    background: 'rgba(0,10,40,0.9)',
+                    border: '2px solid #B8860B',
+                    padding: '4px 8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  <span>🪙</span>
+                  <span>{coins.toLocaleString()}</span>
+                </div>
                 <button
                   onClick={() => setLocation('/')}
                   style={{
                     fontFamily: "'Press Start 2P', monospace",
-                    fontSize: '9px',
-                    padding: '6px 12px',
+                    fontSize: 'clamp(7px, 1.2vw, 9px)',
+                    padding: '4px 8px',
                     background: 'rgba(0,10,40,0.8)',
                     border: '2px solid #4488ff',
                     color: '#88aacc',
                     cursor: 'pointer',
                     letterSpacing: '1px',
+                    whiteSpace: 'nowrap',
                   }}
                 >
-                  ◀ もどる
+                  ◀ TOP
                 </button>
                 <button
                   className="pixel-btn"
                   onClick={() => setShowCollection(true)}
-                  style={{ fontSize: '12px', padding: '0.5rem 1rem' }}
+                  style={{ fontSize: 'clamp(9px, 1.5vw, 12px)', padding: '0.4rem 0.6rem', whiteSpace: 'nowrap' }}
                 >
-                  コレクション ({collectionCards.length})
+                  図鑑 ({collectionCards.length})
                 </button>
               </div>
             </div>
@@ -114,25 +151,73 @@ export default function GachaPage() {
         </div>
       </header>
 
+      {/* Insufficient coins warning */}
+      {insufficientCoins && (
+        <div
+          style={{
+            position: 'fixed',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            zIndex: 100,
+            background: 'rgba(139, 0, 0, 0.95)',
+            border: '3px solid #FF4444',
+            padding: '16px 24px',
+            fontFamily: "'Press Start 2P', monospace",
+            fontSize: 'clamp(8px, 1.5vw, 12px)',
+            color: '#FF8888',
+            textAlign: 'center',
+            boxShadow: '0 0 30px rgba(255,68,68,0.5)',
+            animation: 'pixel-cursor-blink 0.3s step-end 3',
+          }}
+        >
+          コインが足りません！<br />
+          <span style={{ fontSize: 'clamp(6px, 1vw, 9px)', color: '#999', marginTop: '4px', display: 'block' }}>
+            試合で勝利してコインを稼ごう！
+          </span>
+        </div>
+      )}
+
       {/* Main Content */}
-      <main className="relative z-10 flex-1 flex flex-col items-center justify-start py-4 px-4 gap-4">
-        {/* Pack Selector */}
+      <main className="relative z-10 flex-1 flex flex-col items-center justify-start py-3 px-3 gap-3" style={{ minHeight: 0 }}>
+        {/* Pack Selector with cost display */}
         <PackSelector
           selectedPack={selectedPack}
           onSelect={setSelectedPack}
+          coins={coins}
         />
+
+        {/* Cost indicator */}
+        <div
+          style={{
+            fontFamily: "'Press Start 2P', monospace",
+            fontSize: 'clamp(7px, 1.2vw, 10px)',
+            color: canAfford ? '#FFD700' : '#FF4444',
+            textAlign: 'center',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+          }}
+        >
+          <span>🪙</span>
+          <span>{packCost}</span>
+          <span style={{ color: '#666', fontSize: 'clamp(6px, 1vw, 8px)' }}>
+            {canAfford ? '/ 購入可能' : '/ コイン不足'}
+          </span>
+        </div>
 
         {/* Pack Opening */}
         <PackOpening
           onPackOpened={handlePackOpened}
           totalOpened={totalOpened}
           packType={selectedPack}
+          onTryOpen={handleTryOpen}
         />
       </main>
 
       {/* Footer with Stadium */}
-      <footer className="relative z-10 mt-auto">
-        <div className="relative h-24 overflow-hidden">
+      <footer className="relative z-10" style={{ flexShrink: 0, marginTop: 'auto' }}>
+        <div className="relative h-20 overflow-hidden">
           <img
             src={STADIUM_URL}
             alt="Stadium"
@@ -140,11 +225,11 @@ export default function GachaPage() {
             style={{ imageRendering: 'auto' }}
           />
           <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent" />
-          <div className="absolute bottom-3 left-0 right-0 text-center">
+          <div className="absolute bottom-2 left-0 right-0 text-center">
             <p
               style={{
                 fontFamily: "'DotGothic16', monospace",
-                fontSize: '11px',
+                fontSize: 'clamp(8px, 1.3vw, 11px)',
                 color: '#5a6f8a',
               }}
             >

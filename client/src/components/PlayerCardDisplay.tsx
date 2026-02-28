@@ -133,8 +133,8 @@ export default function PlayerCardDisplay({ card, revealed, index, onReveal }: P
       className="relative cursor-pointer select-none"
       style={{
         perspective: '1000px',
-        width: '160px',
-        height: '240px',
+        width: 'clamp(100px, 28vw, 160px)',
+        height: 'clamp(150px, 42vw, 240px)',
       }}
       onClick={handleClick}
     >
