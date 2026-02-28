@@ -76,9 +76,12 @@ function FormationPitch({
 }) {
   const formation = FORMATIONS[formationId];
   // Normalize positions to 0-100 range for display
+  // ★ v10.7.0: Invert Y to match match canvas (w2s uses y: oy - p.y*sc)
+  // In match: positive y = screen UP, negative y = screen DOWN
+  // So in TeamBuilder: negate y so LB (y=-24) → bottom, RB (y=+24) → top
   const positions = formation.positions.map(p => ({
     x: ((p.x + 52.5) / 105) * 100,  // 0 = left goal, 100 = right goal
-    y: ((p.y + 34) / 68) * 100,      // 0 = top, 100 = bottom
+    y: ((-p.y + 34) / 68) * 100,     // 0 = top, 100 = bottom (Y inverted to match canvas)
   }));
 
   return (

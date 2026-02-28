@@ -58,7 +58,7 @@ export const P = {
   restartPause: 1.0,
   throwInInset: 0.35,
   cornerInset: 0.25,
-  goalKickX: 10.5 - 0.92 + 0.2,
+  goalKickX: 47.0,  // v10.7.0: Goal kick from within goal area (pitchHalfW - goalAreaW = 52.5 - 5.5)
 
   // GK saves
   gkSaveEnabled: true,

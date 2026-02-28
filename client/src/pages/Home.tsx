@@ -47,8 +47,9 @@ function FormationPreview({ formationId, teamColor, mirror }: { formationId: For
       {/* Players */}
       {def.positions.map((pos, i) => {
         // Normalize positions to fit mini pitch
+        // ★ v10.7.0: Invert Y to match match canvas
         const nx = (pos.x + 52.5) / 105; // 0..1
-        const ny = (pos.y + 34) / 68;    // 0..1
+        const ny = (-pos.y + 34) / 68;   // 0..1 (Y inverted to match canvas)
         const px = mirror ? mx + pw - nx * pw : mx + nx * pw;
         const py = my + ny * ph;
         const jerseyNum = def.jerseyNumbers[i];
@@ -741,15 +742,16 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
   // ★ v9.9.0: SFC-style Action Log overlay (bottom-left)
   if (st.actionLog && st.actionLog.length > 0) {
     ctx.save();
-    const logFontSize = Math.max(7, Math.min(11, w * 0.011));
-    const logLineH = logFontSize * 1.6;
-    const logPadX = 8;
-    const logPadY = 4;
-    const maxVisible = Math.min(6, st.actionLog.length);
+    // ★ v10.7.0: Enlarged log box for better readability
+    const logFontSize = Math.max(9, Math.min(14, w * 0.014));
+    const logLineH = logFontSize * 1.7;
+    const logPadX = 10;
+    const logPadY = 6;
+    const maxVisible = Math.min(8, st.actionLog.length);
     const visibleLogs = st.actionLog.slice(-maxVisible);
     
-    // Log panel position: bottom-left, above the control bar
-    const logPanelW = Math.min(w * 0.45, 380);
+    // Log panel position: bottom-left, above the control bar - wider and taller
+    const logPanelW = Math.min(w * 0.55, 500);
     const logPanelH = maxVisible * logLineH + logPadY * 2;
     const logX = 8;
     const logY = h - logPanelH - 50; // Above control bar

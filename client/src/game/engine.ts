@@ -660,8 +660,17 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   const pShotAcc = PExt.shotAccuracy * (kicker.cardMods?.shotAccuracy ?? 1.0);
   const pPassAcc = PExt.passAccuracy * (kicker.cardMods?.passAccuracy ?? 1.0);
   const pLongAcc = PExt.longPassAccuracy * (kicker.cardMods?.passAccuracy ?? 1.0);
+  // ★ v10.7.0: Distance-based shot accuracy decay for long-range shots
+  let shotDistPenalty = 0;
+  if (shot) {
+    const distToGoal = vdist(kicker.pos, v(-kicker.team * PExt.pitchHalfW, 0));
+    // Beyond 20m, accuracy degrades progressively
+    if (distToGoal > 20) {
+      shotDistPenalty = (distToGoal - 20) * 0.15; // Extra error per meter beyond 20m
+    }
+  }
   let baseErrRange = customErr !== undefined ? customErr : 
-                 (shot ? (1 - Math.min(pShotAcc, 0.95)) * 8.0 :
+                 (shot ? (1 - Math.min(pShotAcc, 0.95)) * 8.0 + shotDistPenalty :
                   isLong ? (1 - Math.min(pLongAcc, 0.95)) * 1.5 : 
                   (1 - Math.min(pPassAcc, 0.99)) * 1.5);
   // Apply foot accuracy: footMod=1.0 means no extra error, footMod=0.5 means 2x error
@@ -738,7 +747,20 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   b.owner = null; b.free = true; b.shot = shot;
   // ★ v10.2.0: Apply per-player speed modifiers
   const spdMod = shot ? (kicker.cardMods?.shotSpeed ?? 1.0) : (kicker.cardMods?.passSpeed ?? 1.0);
-  b.vel = vscl(dir, spd * spdMod); b.dead = 0;
+  // ★ v10.7.0: Distance-based shot speed scaling - ensure shots reach the goal
+  let finalSpd = spd * spdMod;
+  if (shot) {
+    const distToGoal = vdist(kicker.pos, v(-kicker.team * PExt.pitchHalfW, 0));
+    // For long-range shots (>20m), boost speed so ball reaches goal
+    // Physics: with friction 0.985^(60*t), ball travels ~15m at speed 14m/s
+    // We need speed proportional to distance to ensure arrival
+    // Minimum speed to reach goal: approx dist * 1.2 (accounting for friction)
+    const minSpeedToReach = distToGoal * 0.9;
+    if (finalSpd < minSpeedToReach) {
+      finalSpd = Math.min(minSpeedToReach, 35.0); // Cap at 35 m/s (powerful shot)
+    }
+  }
+  b.vel = vscl(dir, finalSpd); b.dead = 0;
   b.lob = isLong ? 1.0 : 0;
   // v9.2.0: Add cooldown after kick to prevent kicker from immediately re-intercepting
   b.cooldown = 0.15;  // 150ms cooldown before anyone can pick up the ball
@@ -2337,13 +2359,15 @@ export function decideNoBall(st: State, idx: number) {
     let baseTgt = v(me.home.x, me.home.y);
 
     // ① GK's +1 buildup participation
+    // ★ v10.7.0: GK stays closer to goal to be ready for counter-attacks
     if (me.isGK) {
       if (isOwnHalf) {
         // During own-half buildup, position in penalty area between CBs as "back +1"
-        baseTgt = v(me.team * (PExt.pitchHalfW - 3.5), carrier.pos.y * 0.3);
+        // But don't go too far from goal
+        baseTgt = v(me.team * (PExt.pitchHalfW - 4.0), carrier.pos.y * 0.2);
       } else {
-        // When pushed into opponent half, maintain high line (sweeper keeper)
-        baseTgt = v(me.team * (PExt.pitchHalfW - 6.0), 0);
+        // When pushed into opponent half, maintain high line but not too far
+        baseTgt = v(me.team * (PExt.pitchHalfW - 8.0), 0);
       }
     }
     // ② FWD role division - ★ v9.17.0: Aggressive forward positioning based on opponent lines
@@ -2900,8 +2924,31 @@ export function decideNoBall(st: State, idx: number) {
     const ballPos = b.free ? b.pos : (ballOwner ? ballOwner.pos : b.pos);
     const distToBall = vdist(me.pos, ballPos);
     
-    // GK: Stay home
+    // ★ v10.7.0: GK actively chases loose balls in their area (especially dropped shots)
     if (me.isGK) {
+      const distGKToBall = vdist(me.pos, ballPos);
+      const myGoalX = me.team * PExt.pitchHalfW;
+      const ballDistFromGoal = Math.abs(ballPos.x - myGoalX);
+      // GK should chase loose balls that are:
+      // 1. Within penalty area distance (~16.5m from goal line)
+      // 2. Free (no one owns them)
+      // 3. Especially if it's a shot that's slowing down
+      const inGKZone = ballDistFromGoal < 20.0; // Slightly wider than penalty area
+      const ballSpeed = vlen(b.vel);
+      const isSlowBall = ballSpeed < 8.0;
+      const isShotDrop = b.shot && isSlowBall;
+      
+      if (b.free && inGKZone && (distGKToBall < 12.0 || isShotDrop)) {
+        // Actively go collect the ball
+        me.act = "move";
+        // Predict where ball will be
+        const predictT = Math.min(distGKToBall / Math.max(PExt.moveSpeed, 1), 1.0);
+        const predictedBallPos = vadd(ballPos, vscl(b.vel, predictT * 0.5));
+        me.tgt = pitchClamp(predictedBallPos);
+        me.face = vnorm(vsub(ballPos, me.pos));
+        return;
+      }
+      // Default: stay home
       me.act = "move";
       me.tgt = { ...me.home };
       return;
@@ -3760,6 +3807,7 @@ export function update(st: State, dt: number) {
     }
     
     // v8.8.3: GK save with line-segment detection
+    // ★ v10.7.0: Also check proximity-based save for slow/dropping shots
     if (PExt.gkSaveEnabled && b.shot) {
       const defTeam = b.lastTouchTeam === -1 ? 1 : -1;
       const gkIdx = findGK(st, defTeam);
@@ -3767,7 +3815,15 @@ export function update(st: State, dt: number) {
         const gk = st.pl[gkIdx];
         // Check if shot trajectory (prevPos -> pos) crosses GK radius
         const distToGK = distSegmentToPoint(b.prevPos, b.pos, gk.pos);
-        if (distToGK < PExt.gkSaveRadius) {
+        // ★ v10.7.0: Also check direct distance for slow shots (dropped middle shots)
+        const directDist = vdist(b.pos, gk.pos);
+        const ballSpd = vlen(b.vel);
+        // For slow shots (<10 m/s), use wider save radius (GK can reach further)
+        const effectiveSaveRadius = ballSpd < 10.0 ? PExt.gkSaveRadius * 2.5 :
+                                     ballSpd < 15.0 ? PExt.gkSaveRadius * 1.8 :
+                                     PExt.gkSaveRadius;
+        const canSave = distToGK < effectiveSaveRadius || (directDist < effectiveSaveRadius && ballSpd < 12.0);
+        if (canSave) {
           const gc = v(defTeam * PExt.pitchHalfW, 0);
           const toGoal = vsub(gc, b.pos);
           const toBall = vsub(b.pos, gk.pos);
