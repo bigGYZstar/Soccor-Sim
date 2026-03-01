@@ -374,6 +374,9 @@ export function mkCustomPlayers(
       gkSaveBase: p.isGK ? norm((s.defense + s.physical) / 2, 0.85, 1.25) : 1.0,
       staminaDrain: norm(s.physical, 1.25, 0.75), // Higher physical = less drain (inverted)
       burstCooldown: norm(s.speed, 1.20, 0.70),   // Higher speed = shorter cooldown (inverted)
+      // ★ v11.4.0: Curve parameters - based on pass/shoot stats
+      curvePower: norm((s.pass + s.shoot) / 2, 0.65, 1.45),    // How much spin is applied
+      curveAccuracy: norm(s.pass, 0.70, 1.30),                   // How controlled the curve is
     };
   }
 
@@ -782,26 +785,38 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
     b.kickStyle = Math.random() < 0.85 ? "inside" : "outside";
   }
   
-  // Calculate side spin based on foot and kick style
+  // ★ v11.4.0: Calculate side spin based on foot, kick style, and player curve ability
   // Right foot inside kick: ball curves left (spinX < 0)
   // Right foot outside kick: ball curves right (spinX > 0)
   // Left foot inside kick: ball curves right (spinX > 0)
   // Left foot outside kick: ball curves left (spinX < 0)
   const footSign = usedFoot === "R" ? 1 : -1;
   const styleSign = b.kickStyle === "inside" ? -1 : b.kickStyle === "outside" ? 1 : 0;
-  const spinIntensity = shot ? 2.5 : isLong ? 1.8 : 1.0;
-  // Subtle spin: 0.3-1.5 rad/s depending on kick type
-  b.spinX = footSign * styleSign * spinIntensity * (0.3 + Math.random() * 0.5);
+  // ★ v11.4.0: Per-player curve power multiplier
+  const pCurvePower = kicker.cardMods?.curvePower ?? 1.0;
+  const pCurveAccuracy = kicker.cardMods?.curveAccuracy ?? 1.0;
+  // Base spin intensity: shots and long passes get more spin
+  // Increased from previous values for more visible curve effect
+  const spinIntensity = shot ? 3.5 : isLong ? 3.0 : 1.2;
+  // Apply curve power: higher stat = more spin
+  // Random component: curveAccuracy controls how consistent the spin is
+  const spinRandRange = isLong ? 1.2 : 0.8;
+  const spinBase = spinIntensity * pCurvePower;
+  b.spinX = footSign * styleSign * spinBase * (0.5 + Math.random() * spinRandRange);
+  // curveAccuracy: high accuracy = spin stays close to intended, low = wild variation
+  const accuracyNoise = (1.0 - pCurveAccuracy) * spinBase * rng(-0.5, 0.5);
+  b.spinX += accuracyNoise;
   
   // Backspin/topspin: lofted passes get backspin, ground passes get slight topspin
   if (isLong) {
-    b.spinY = -(1.0 + Math.random() * 1.0); // Backspin on lofted balls
+    b.spinY = -(1.5 + Math.random() * 1.5); // Backspin on lofted balls (stronger)
   } else if (shot) {
-    b.spinY = 0.5 + Math.random() * 1.0; // Slight topspin on shots (dips)
+    b.spinY = 0.5 + Math.random() * 1.5; // Topspin on shots (dips more)
   } else {
-    b.spinY = Math.random() * 0.3; // Minimal spin on ground passes
+    b.spinY = Math.random() * 0.4; // Minimal spin on ground passes
   }
-  b.spinDecay = 3.0;
+  // ★ v11.4.0: Spin decay - slower decay for more visible curve effect
+  b.spinDecay = isLong ? 1.5 : shot ? 2.0 : 3.0;
   
   // Z-axis: lob/long passes go up, ground passes stay low
   if (isLong) {
@@ -3387,7 +3402,7 @@ function runSetPiece(st: State) {
       }
     }
     
-    // Long kick forward
+    // ★ v11.4.0: Long kick forward with natural curve
     const targetX = -sp.team * (PExt.pitchHalfW * 0.3 + rng(0, PExt.pitchHalfW * 0.3));
     const targetY = rng(-PExt.pitchHalfH * 0.5, PExt.pitchHalfH * 0.5);
     const target = v(targetX, targetY);
@@ -3397,6 +3412,11 @@ function runSetPiece(st: State) {
     st.ball.z = 0.5;
     st.ball.vz = Math.min(8.0, dist * 0.1 + 2.0);
     st.ball.cooldown = PExt.restartNoIntercept;
+    // ★ v11.4.0: GK long kick has natural side spin (instep kick)
+    // Instep kick: styleSign=0, but GKs tend to kick with slight inside of foot
+    const gkCurvePower = gk.cardMods?.curvePower ?? 1.0;
+    st.ball.spinX = (Math.random() < 0.5 ? 1 : -1) * gkCurvePower * 2.0 * (0.5 + Math.random() * 0.8);
+    st.ball.spinDecay = 1.8; // Moderate decay for long kick
     // Log
     emitLog(st, {
       time: st.time,
@@ -3446,15 +3466,29 @@ function runSetPiece(st: State) {
       crossTarget = v(goalX - goalSide * PExt.penSpotDist, rng(-PExt.goalHalfH, PExt.goalHalfH));
     }
     
-    // Kick the cross
+    // ★ v11.4.0: Kick the cross with intentional curve (inswing or outswing)
     const crossDist = vdist(kicker.pos, crossTarget);
     const crossSpeed = Math.max(14.0, Math.min(22.0, crossDist * 0.55));
     st.ball.intendedReceiverIdx = null;
-    kick(st, taker, crossSpeed, false, crossTarget, true, 0.12);
+    kick(st, taker, crossSpeed, false, crossTarget, true, 0.10);
     st.ball.lob = 1.0;
     st.ball.z = 0.5;
     st.ball.vz = Math.min(7.0, crossDist * 0.1 + 2.5);
     st.ball.cooldown = PExt.restartNoIntercept;
+    
+    // ★ v11.4.0: Force strong inswing curve on corner kicks
+    // Inswing: ball curves INTO the goal (toward center)
+    // cornerSide > 0 (right side): right foot inside kick curves left = spinX < 0 = inswing
+    // cornerSide < 0 (left side): left foot inside kick curves right = spinX > 0 = inswing
+    const pCurvePower = kicker.cardMods?.curvePower ?? 1.0;
+    const inswingIntensity = 4.5 * pCurvePower; // Strong inswing for corner kicks
+    const isInswing = Math.random() < 0.70; // 70% inswing, 30% outswing
+    // Inswing curves toward goal center (away from corner side)
+    st.ball.spinX = isInswing 
+      ? -cornerSide * inswingIntensity * (0.7 + Math.random() * 0.6)
+      : cornerSide * inswingIntensity * 0.5 * (0.5 + Math.random() * 0.5);
+    st.ball.spinDecay = 1.2; // Slow decay for full-flight curve
+    st.ball.kickStyle = isInswing ? "inside" : "outside";
     
     // Find nearest attacker to cross target for intended receiver
     let bestReceiver = -1;
@@ -3889,16 +3923,19 @@ export function update(st: State, dt: number) {
     // Free ball movement
     b.pos = vadd(b.pos, vscl(b.vel, dt));
     
-    // ★ v9.4.0: Apply spin curve to ball trajectory
-    // Side spin causes lateral deflection (Magnus effect)
+    // ★ v11.4.0: Apply spin curve to ball trajectory (Magnus effect)
+    // Side spin causes lateral deflection - stronger effect for more visible curves
     if (Math.abs(b.spinX) > 0.05) {
-      // Perpendicular to velocity direction
+      // Perpendicular to velocity direction (right-hand rule)
       const speed = vlen(b.vel);
       if (speed > 0.5) {
         const perpX = -b.vel.y / speed;
         const perpY = b.vel.x / speed;
-        // Curve force proportional to spin and speed
-        const curveMag = b.spinX * speed * 0.008 * dt; // Subtle curve
+        // ★ v11.4.0: Increased curve force for visible effect
+        // Magnus force = C * spin * speed (C=0.025 for realistic football curve)
+        // Airborne balls curve more (less ground friction dampening)
+        const magnusFactor = b.z > 0.3 ? 0.030 : 0.018; // More curve in air
+        const curveMag = b.spinX * speed * magnusFactor * dt;
         b.vel.x += perpX * curveMag;
         b.vel.y += perpY * curveMag;
       }

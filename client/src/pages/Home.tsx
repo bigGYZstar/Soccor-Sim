@@ -328,10 +328,20 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
   const w = cvs.clientWidth;
   const h = cvs.clientHeight;
   
-  const padW = 2.5; const padH = 3.5;
-  const sc = Math.min(w / (P.pitchHalfW * 2 + padW), h / (P.pitchHalfH * 2 + padH));
+  // ★ v11.4.0: Responsive layout - adapt padding based on orientation and screen size
+  const isPortrait = h > w;
+  // Portrait (mobile vertical): pitch is wider than tall relative to screen
+  // Landscape (iPad/iPhone horizontal): standard layout
+  const hudReserve = Math.max(60, h * 0.10); // Reserve space for HUD at top
+  const logReserve = Math.max(50, h * 0.12); // Reserve space for log at bottom
+  const padW = isPortrait ? 1.0 : 2.5;
+  const padH = isPortrait ? 1.0 : 2.5;
+  const availH = h - hudReserve - logReserve;
+  const availW = w;
+  const sc = Math.min(availW / (P.pitchHalfW * 2 + padW), availH / (P.pitchHalfH * 2 + padH));
   const ox = w / 2;
-  const oy = h / 2 + 0.75 * sc;
+  // Center vertically in available area (between HUD and log)
+  const oy = hudReserve + availH / 2;
 
   const w2s = (p: V) => ({ x: ox + p.x * sc, y: oy - p.y * sc });
   const sval = (val: number) => val * sc;
@@ -683,14 +693,14 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
     ctx.fillText(st.flashTxt, ox, oy);
   }
 
-  // 9. SFC-style HUD (responsive) - v11.2.0: Completely redesigned to avoid overlap
+  // 9. SFC-style HUD (responsive) - v11.4.0: Responsive for portrait/landscape
   // Layout: [BLU label | BLU score | dash | RED score | RED label] top row
   //         [MM:SS  |  1ST/2ND] bottom tab
-  const hudW = Math.min(w * 0.72, sval(26));
-  const hudRowH = Math.max(28, h * 0.048);  // Top row height
-  const tabH = Math.max(20, h * 0.032);     // Bottom tab height
+  const hudW = Math.min(w * 0.80, Math.max(180, sval(26)));
+  const hudRowH = Math.max(24, Math.min(h * 0.06, 40));  // Top row height
+  const tabH = Math.max(18, Math.min(h * 0.04, 28));     // Bottom tab height
   const hx = (w - hudW) / 2;
-  const hy = 6;
+  const hy = Math.max(4, (hudReserve - hudRowH - tabH) / 2);
 
   // Top row background
   ctx.fillStyle = RETRO_DARK;
@@ -774,11 +784,13 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
     const maxVisible = Math.min(8, st.actionLog.length);
     const visibleLogs = st.actionLog.slice(-maxVisible);
     
-    // Log panel position: bottom, above the control bar - v11.2.0: full-width横長
+    // ★ v11.4.0: Log panel - responsive, anchored to bottom of pitch area
     const logPanelW = w - 16;  // 画面ほぼ全幅（左右8pxマージン）
     const logPanelH = maxVisible * logLineH + logPadY * 2;
     const logX = 8;
-    const logY = h - logPanelH - 50; // Above control bar
+    // Position log just below pitch area (within logReserve zone)
+    const pitchBottom = oy + sval(P.pitchHalfH);
+    const logY = Math.max(pitchBottom + 4, h - logPanelH - 44); // Below pitch or above control bar
     
     // Semi-transparent background with retro border
     ctx.fillStyle = "rgba(10, 10, 20, 0.82)";
@@ -1057,13 +1069,16 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
       const vh = window.innerHeight;
       const dpr = window.devicePixelRatio || 1;
       
-      canvas.width = vw * dpr;
-      canvas.height = vh * dpr;
+      // ★ v11.4.0: Fix DPR accumulation bug - reset canvas size before scaling
+      canvas.width = Math.round(vw * dpr);
+      canvas.height = Math.round(vh * dpr);
       canvas.style.width = vw + "px";
       canvas.style.height = vh + "px";
       
+      // ★ v11.4.0: Get fresh context reference and reset transform before scaling
       const ctx2 = canvas.getContext('2d');
       if (ctx2) {
+        ctx2.setTransform(1, 0, 0, 1, 0, 0); // Reset transform
         ctx2.scale(dpr, dpr);
       }
     };
