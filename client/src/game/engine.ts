@@ -3571,9 +3571,10 @@ export function update(st: State, dt: number) {
   // physDt = raw wall-clock time (for visual-only timers: pause, flash, log TTL)
   // dt = physDt * speedMul (for ALL physics, AI, and match clock)
   const speedMul = SPEED_MULTIPLIERS[st.speed] ?? (240 / 450);
-  const physDt = dt;              // Raw wall-clock time (visual timers only)
-  dt = physDt * speedMul;        // ALL physics + match clock scale together
-  const simDt = dt;              // simDt == dt (kept for clarity)
+  const physDt = dt;                    // Raw wall-clock time (visual timers only)
+  const PHYS_SCALE = 3.0;              // ★ v11.12.0: Physics 3x faster than clock
+  dt = physDt * speedMul * PHYS_SCALE; // Physics dt: speedMul + 3x boost
+  const simDt = physDt * speedMul;     // Match clock dt: speedMul only (no 3x)
   
   // ★ v9.22.0: HALFTIME SCREEN - pause game during halftime show
   if (st.halftimeShow) {
