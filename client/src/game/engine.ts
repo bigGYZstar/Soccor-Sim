@@ -273,6 +273,9 @@ export function mkPlayers(blueFormation: FormationId = "4-4-2", redFormation: Fo
       wantsBall: false,
       committedRunTarget: null,
       committedRunTimer: 0,
+      gkAnimState: "none",
+      gkAnimTimer: 0,
+      gkPunchDir: null,
     });
   }
   for (let i = 0; i < 11; i++) {
@@ -299,6 +302,9 @@ export function mkPlayers(blueFormation: FormationId = "4-4-2", redFormation: Fo
       wantsBall: false,
       committedRunTarget: null,
       committedRunTimer: 0,
+      gkAnimState: "none",
+      gkAnimTimer: 0,
+      gkPunchDir: null,
     });
   }
   // v9.5.0: Configure #10 players as ambidextrous (both feet equally skilled)
@@ -409,6 +415,9 @@ export function mkCustomPlayers(
       wantsBall: false,
       committedRunTarget: null,
       committedRunTimer: 0,
+      gkAnimState: "none",
+      gkAnimTimer: 0,
+      gkPunchDir: null,
     };
     if (blueCards[i]) applyCardStats(p, blueCards[i]!);
     pl.push(p);
@@ -437,6 +446,9 @@ export function mkCustomPlayers(
       wantsBall: false,
       committedRunTarget: null,
       committedRunTimer: 0,
+      gkAnimState: "none",
+      gkAnimTimer: 0,
+      gkPunchDir: null,
     };
     if (redCards[i]) applyCardStats(p, redCards[i]!);
     pl.push(p);
@@ -1764,12 +1776,91 @@ export function decideHasBall(st: State, idx: number) {
   //   }
   // }
   
-  // ★ v9.11.0: GK buildup - carry forward slightly then distribute to CB
+  // ★ v11.20.0: GK catch/hold - look for free teammate, then pass or throw
   if (me.isGK && me.act === "carry") {
     const carryTime = st.ball.holdT;
+    
+    // During catch animation (first 0.5s): hold ball, stand still
+    if (me.gkAnimState === "catch" && me.gkAnimTimer > 0) {
+      me.act = "carry";
+      me.tgt = { ...me.pos };  // Stay put during catch animation
+      return;
+    }
+    
+    // After catch animation: transition to "hold" state to look for pass
+    if (me.gkAnimState === "catch" && me.gkAnimTimer <= 0) {
+      me.gkAnimState = "hold";
+      me.gkAnimTimer = 2.5;  // Hold for up to 2.5s looking for free teammate
+    }
+    
+    // Hold state: scan for free teammate
+    if (me.gkAnimState === "hold" && me.gkAnimTimer > 0) {
+      // Find the most free teammate (least marked)
+      let bestFreeIdx = -1;
+      let bestFreeScore = -Infinity;
+      for (let i = 0; i < st.pl.length; i++) {
+        const p = st.pl[i];
+        if (p.team !== me.team || p.isGK) continue;
+        // Score: distance from nearest opponent (higher = more free)
+        let minOppDist = Infinity;
+        for (const opp of st.pl) {
+          if (opp.team === me.team) continue;
+          const d = vdist(p.pos, opp.pos);
+          if (d < minOppDist) minOppDist = d;
+        }
+        // Prefer nearby teammates for short pass, but also consider free space
+        const distToGK = vdist(me.pos, p.pos);
+        const reachable = distToGK < 40.0;  // Within throw/kick range
+        if (!reachable) continue;
+        const score = minOppDist * 2.0 - distToGK * 0.1;  // Free space is most important
+        if (score > bestFreeScore) { bestFreeScore = score; bestFreeIdx = i; }
+      }
+      
+      // If found a free teammate (minOppDist > 3m), pass to them
+      if (bestFreeIdx !== -1 && bestFreeScore > 6.0) {
+        const target = st.pl[bestFreeIdx];
+        const dist = vdist(me.pos, target.pos);
+        me.gkAnimState = "none";
+        me.gkAnimTimer = 0;
+        if (dist < 15.0) {
+          // Short throw: place ball on ground and short pass
+          // First put ball down (simulate placing)
+          doPassTo(st, idx, bestFreeIdx);
+          const gkName = me.cardName || `GK#${me.num}`;
+          const tgtName = target.cardName || `#${target.num}`;
+          emitLog(st, {
+            time: st.time, team: me.team, playerNum: me.num, playerRole: "GK",
+            action: "pass",
+            detail: `${gkName} ボールを置いて ${tgtName}(フリー)へショートパス`,
+            success: true, excitement: 0,
+          });
+        } else {
+          // Long throw or kick: distribute to free player
+          doLongPassTo(st, idx, bestFreeIdx);
+          const gkName = me.cardName || `GK#${me.num}`;
+          const tgtName = target.cardName || `#${target.num}`;
+          emitLog(st, {
+            time: st.time, team: me.team, playerNum: me.num, playerRole: "GK",
+            action: "longPass",
+            detail: `${gkName} ${tgtName}へロングスロー！`,
+            success: true, excitement: 1,
+          });
+        }
+        return;
+      }
+      
+      // No free teammate found yet - keep holding
+      me.act = "carry";
+      me.tgt = { ...me.pos };
+      return;
+    }
+    
+    // Fallback (hold timer expired or no anim state): normal GK carry logic
+    me.gkAnimState = "none";
+    me.gkAnimTimer = 0;
+    
     // GK carries forward for 0.3-0.6s to draw press, then distributes
     if (carryTime < 0.4) {
-      // Step forward slightly to draw opponents
       const fwd = v(-me.team * 3.0, 0);
       me.tgt = pitchClamp(vadd(me.home, fwd));
       me.act = "carry";
@@ -1781,13 +1872,11 @@ export function decideHasBall(st: State, idx: number) {
       doPassTo(st, idx, passTgt);
       return;
     }
-    // Fallback: long pass to MF
     const longTgt = bestLongPass(st, idx);
     if (longTgt !== null) {
       doLongPassTo(st, idx, longTgt);
       return;
     }
-    // Last resort: kick forward
     kick(st, idx, 12, false, v(-me.team, 0), false);
     return;
   }
@@ -3406,10 +3495,15 @@ function positionForCorner(st: State, sp: { kind: string; team: number; pos: V }
 function positionForGoalKick(st: State, sp: { kind: string; team: number; pos: V }) {
   const kickTeam = sp.team;
   const goalSide = kickTeam;  // Goal kick is from own goal
-  // ★ v11.17.0: Correct goal kick positioning per rules
-  // - Kicking team: GK at ball, outfield players spread to receive
+  const attackDir = -kickTeam;  // Direction toward opponent goal
+  // ★ v11.20.0: Correct goal kick positioning per rules
+  // - GK at ball position (goal area)
+  // - DEF: spread just outside penalty area as short option
+  // - MID: spread in midfield
+  // - FWD: push DEEP into opponent half to receive long feed
   // - Opposing team: MUST be outside penalty area until ball is in play
   const penAreaEdgeX = goalSide * (PExt.pitchHalfW - PExt.penAreaW);  // edge of penalty area
+  const oppHalfDeepX = attackDir * (PExt.pitchHalfW * 0.55);  // ~55% into opponent half
   
   for (const p of st.pl) {
     if (p.team === kickTeam) {
@@ -3421,11 +3515,16 @@ function positionForGoalKick(st: State, sp: { kind: string; team: number; pos: V
         const yOffset = p.home.y >= 0 ? PExt.penAreaH * 0.9 : -PExt.penAreaH * 0.9;
         p.tgt = pitchClamp(v(goalSide * (PExt.pitchHalfW - PExt.penAreaW - 2.0), yOffset));
       } else if (p.role === "MID") {
-        // MID spread in midfield to receive
-        p.tgt = pitchClamp(v(p.home.x * 0.5, p.home.y * 0.8));
+        // MID spread in midfield to receive and link play
+        const midX = attackDir * (PExt.pitchHalfW * 0.15 + Math.random() * 10);
+        p.tgt = pitchClamp(v(midX, p.home.y * 0.9));
       } else {
-        // FWD push forward to receive long kick
-        p.tgt = pitchClamp(v(p.home.x * 0.6, p.home.y * 0.7));
+        // ★ v11.20.0: FWD push DEEP into opponent half to receive long feed
+        // Wide FWDs go to wide positions, central FWDs go central
+        const isWide = Math.abs(p.home.y) > 10.0;
+        const deepX = oppHalfDeepX + attackDir * (Math.random() * 10.0);
+        const spreadY = isWide ? (p.home.y > 0 ? 1 : -1) * (PExt.pitchHalfH * 0.55 + Math.random() * 5) : p.home.y * 0.3;
+        p.tgt = pitchClamp(v(deepX, spreadY));
       }
     } else {
       // ★ v11.17.0: Opposing team MUST stay OUTSIDE penalty area (rule)
@@ -3434,7 +3533,6 @@ function positionForGoalKick(st: State, sp: { kind: string; team: number; pos: V
         p.tgt = pitchClamp(v(p.home.x, p.home.y));
       } else {
         // All outfield opponents wait just outside penalty area
-        // penAreaEdgeX is the inner edge of the penalty area from kicking team's goal
         const safeX = penAreaEdgeX - goalSide * 2.0;  // 2m outside penalty area
         const spreadY = p.home.y * 0.8;
         p.tgt = pitchClamp(v(safeX, spreadY));
@@ -3495,17 +3593,39 @@ function runSetPiece(st: State) {
   }
   
   if (sp.kind === "GOALKICK") {
-    // ★ v11.17.0: Goal kick - GK kicks directly from inside goal area (no dribble allowed)
-    // Use takerIdx from animation phase (already set to GK)
+    // ★ v11.20.0: Goal kick - GK waits for FWD to reach deep position, then long feeds
     const gkIdx = sp.takerIdx >= 0 ? sp.takerIdx : findGK(st, sp.team);
     if (gkIdx === -1) return;
     const gk = st.pl[gkIdx];
+    const attackDir = -sp.team;
+    
+    // ★ v11.20.0: Check if FWDs have reached deep position in opponent half
+    // FWD is considered "ready" if they are past the center line (>5m into opponent half)
+    const fwds = st.pl.filter(p => p.team === sp.team && p.role === "FWD");
+    const mids = st.pl.filter(p => p.team === sp.team && p.role === "MID");
+    const fwdReady = fwds.length === 0 || fwds.some(p => p.pos.x * attackDir > 5.0);
+    const midReady = mids.length === 0 || mids.some(p => p.pos.x * attackDir > -10.0);
+    
+    if (!fwdReady || !midReady) {
+      // FWDs not yet in position - GK waits (keep ball frozen)
+      // Keep GK at ball position, face forward
+      gk.pos = pitchClamp(sp.pos);
+      gk.tgt = { ...gk.pos };
+      gk.act = "idle";
+      gk.face = v(attackDir, 0);
+      st.ball.pos = { ...gk.pos };
+      st.ball.free = false;
+      st.ball.owner = null;
+      st.ball.vel = v(0, 0);
+      // Continue the set piece animation (stay in kick phase)
+      return;
+    }
     
     // Snap GK to ball position (inside goal area)
     gk.pos = pitchClamp(sp.pos);
     gk.tgt = { ...gk.pos };
     gk.act = "idle";  // idle = no dribble
-    gk.face = v(-sp.team, 0);  // Face toward field
+    gk.face = v(attackDir, 0);  // Face toward field
     
     // Place ball at GK's feet (goal area position)
     st.ball.pos = { ...gk.pos };
@@ -3515,11 +3635,11 @@ function runSetPiece(st: State) {
     st.ball.z = 0;
     st.ball.vz = 0;
     
-    // ★ v11.3.0: GK decides: long kick (70%) or short pass to CB (30%)
-    const doShortPass = Math.random() < 0.30;
+    // ★ v11.20.0: GK decides: long feed to FWD (75%) or short pass to CB (25%)
+    const doShortPass = Math.random() < 0.25;
     
     if (doShortPass) {
-      // ★ v11.17.0: Short pass to nearest DEF/CB (GK kicks directly, no dribble)
+      // Short pass to nearest DEF/CB (GK kicks directly, no dribble)
       let bestCB = -1;
       let bestDist = Infinity;
       for (let i = 0; i < st.pl.length; i++) {
@@ -3532,7 +3652,6 @@ function runSetPiece(st: State) {
       if (bestCB !== -1) {
         const cb = st.pl[bestCB];
         const tp = { ...cb.pos };
-        // GK kicks directly from goal area (no give/dribble)
         st.ball.lastPasserIdx = gkIdx;
         st.ball.intendedReceiverIdx = bestCB;
         st.ball.lastTouchTeam = gk.team;
@@ -3540,73 +3659,69 @@ function runSetPiece(st: State) {
         st.ball.lastKickType = "PASS";
         kick(st, gkIdx, Math.max(6.0, bestDist * 0.8), false, tp, false, 0.05);
         st.ball.cooldown = PExt.restartNoIntercept;
-        // Log
         const gkName = gk.cardName || `GK#${gk.num}`;
         emitLog(st, {
-          time: st.time,
-          team: gk.team,
-          playerNum: gk.num,
-          playerRole: "GK",
-          action: "pass",
+          time: st.time, team: gk.team, playerNum: gk.num, playerRole: "GK", action: "pass",
           detail: `${gkName} ゴールキック → ${cb.cardName || '#' + cb.num}(${cb.posLabel || 'CB'})へショートパス`,
-          success: true,
-          excitement: 0,
+          success: true, excitement: 0,
         });
         return;
       }
     }
     
-    // ★ v11.15.0: Long kick forward - target FW position in opponent half
-    // Find nearest FW to aim at
+    // ★ v11.20.0: Long feed to FWD in deep position
+    // Find the FWD furthest into opponent half (best target for long feed)
     let fwTarget: V | null = null;
-    let fwBestDist = Infinity;
+    let fwBestScore = -Infinity;
     for (const p of st.pl) {
       if (p.team !== sp.team || p.isGK) continue;
       if (p.role === "FWD" || p.role === "MID") {
-        const d = Math.abs(p.pos.x - (-sp.team * PExt.pitchHalfW)); // distance from opp goal
-        if (d < fwBestDist) { fwBestDist = d; fwTarget = { ...p.pos }; }
+        // Score: prefer FWDs deep in opponent half, and with space around them
+        const depthScore = p.pos.x * attackDir;  // Higher = deeper in opponent half
+        let spaceScore = 0;
+        for (const opp of st.pl) {
+          if (opp.team === sp.team) continue;
+          const d = vdist(p.pos, opp.pos);
+          if (d < 5.0) spaceScore -= (5.0 - d);  // Penalize if tightly marked
+        }
+        const totalScore = depthScore * 2.0 + spaceScore;
+        if (totalScore > fwBestScore) { fwBestScore = totalScore; fwTarget = { ...p.pos }; }
       }
     }
-    // Target: FW position or default to deep opponent half
-    const defaultTargetX = -sp.team * (PExt.pitchHalfW * 0.55 + rng(0, PExt.pitchHalfW * 0.2));
+    // Target: best FWD position or default to deep opponent half
+    const defaultTargetX = attackDir * (PExt.pitchHalfW * 0.55 + rng(0, PExt.pitchHalfW * 0.2));
     const defaultTargetY = rng(-PExt.pitchHalfH * 0.4, PExt.pitchHalfH * 0.4);
     const rawTarget = fwTarget ?? v(defaultTargetX, defaultTargetY);
-    // Add slight inaccuracy around target
-    const targetX = rawTarget.x + rng(-5.0, 5.0);
-    const targetY = rawTarget.y + rng(-4.0, 4.0);
+    // Add slight inaccuracy based on GK skill
+    const gkAccuracy = gk.cardMods?.passAccuracy ?? 1.0;
+    const inaccuracy = Math.max(1.0, 5.0 / gkAccuracy);
+    const targetX = rawTarget.x + rng(-inaccuracy, inaccuracy);
+    const targetY = rawTarget.y + rng(-inaccuracy * 0.8, inaccuracy * 0.8);
     const target = v(targetX, targetY);
     const dist = vdist(gk.pos, target);
-    // Speed: ensure ball reaches FW (dist * 0.75 minimum, cap at 35 m/s)
-    const gkKickSpd = Math.min(35.0, Math.max(20.0, dist * 0.75));
-    // ★ v11.17.0: GK kicks directly from goal area (no give/dribble)
+    const gkKickSpd = Math.min(35.0, Math.max(22.0, dist * 0.75));
     st.ball.lastTouchTeam = gk.team;
     st.ball.lastKickTeam = gk.team;
     st.ball.lastKickType = "LONG";
     kick(st, gkIdx, gkKickSpd, false, target, true, 0.12);
     st.ball.lob = 1.0;
     st.ball.z = 0.3;
-    // Higher vz for longer kicks (peak height ~8-12m for 50m kick)
     st.ball.vz = Math.min(12.0, dist * 0.14 + 3.0);
     st.ball.cooldown = PExt.restartNoIntercept;
-    // ★ v11.15.0: GK instep kick: backspin (ball floats/extends) + side spin
     const gkCurvePower = gk.cardMods?.curvePower ?? 1.0;
-    // Backspin: makes ball float and extend (Magnus lift effect)
-    st.ball.spinY = -(1.5 + Math.random() * 2.0) * gkCurvePower; // Strong backspin
-    // Side spin: curves left or right based on GK's kicking foot
-    const gkFoot = gk.footParams?.dominantFoot === "L" ? -1 : 1; // +1=right foot, -1=left foot
+    st.ball.spinY = -(1.5 + Math.random() * 2.0) * gkCurvePower;
+    const gkFoot = gk.footParams?.dominantFoot === "L" ? -1 : 1;
     st.ball.spinX = gkFoot * gkCurvePower * 2.5 * (0.5 + Math.random() * 0.8);
-    st.ball.spinDecay = 1.5; // Moderate decay for long kick
-    // Log
+    st.ball.spinDecay = 1.5;
+    // Find target player name for log
     const gkNameLong = gk.cardName || `GK#${gk.num}`;
+    const targetFwd = fwTarget ? st.pl.find(p => p.team === sp.team && !p.isGK &&
+      Math.abs(p.pos.x - fwTarget!.x) < 2.0 && Math.abs(p.pos.y - fwTarget!.y) < 2.0) : null;
+    const fwdName = targetFwd ? (targetFwd.cardName || `#${targetFwd.num}`) : "前線";
     emitLog(st, {
-      time: st.time,
-      team: gk.team,
-      playerNum: gk.num,
-      playerRole: "GK",
-      action: "pass",
-      detail: `${gkNameLong} ゴールエリアからロングキック！ 前方へ大きく蹴り出す！`,
-      success: true,
-      excitement: 1,
+      time: st.time, team: gk.team, playerNum: gk.num, playerRole: "GK", action: "pass",
+      detail: `${gkNameLong} ゴールキック！ ${fwdName}へロングフィード！`,
+      success: true, excitement: 1,
     });
     return;
   }
@@ -4229,6 +4344,14 @@ export function update(st: State, dt: number) {
     [evalOrder[i], evalOrder[j]] = [evalOrder[j], evalOrder[i]];
   }
   
+  // ★ v11.20.0: Update GK animation timers (dt-based, speed-scaled)
+  for (const p of st.pl) {
+    if (p.isGK && p.gkAnimTimer > 0) {
+      p.gkAnimTimer -= dt;
+      if (p.gkAnimTimer < 0) p.gkAnimTimer = 0;
+    }
+  }
+  
   for (const i of evalOrder) {
     const p = st.pl[i];
     p.dt -= dt;
@@ -4501,7 +4624,7 @@ export function update(st: State, dt: number) {
     }
     
     // v8.8.3: GK save with line-segment detection
-    // ★ v10.7.0: Also check proximity-based save for slow/dropping shots
+    // ★ v11.20.0: Catch vs Punch logic based on ball speed and reach difficulty
     if (PExt.gkSaveEnabled && b.shot) {
       const defTeam = b.lastTouchTeam === -1 ? 1 : -1;
       const gkIdx = findGK(st, defTeam);
@@ -4509,7 +4632,6 @@ export function update(st: State, dt: number) {
         const gk = st.pl[gkIdx];
         // Check if shot trajectory (prevPos -> pos) crosses GK radius
         const distToGK = distSegmentToPoint(b.prevPos, b.pos, gk.pos);
-        // ★ v10.7.0: Also check direct distance for slow shots (dropped middle shots)
         const directDist = vdist(b.pos, gk.pos);
         const ballSpd = vlen(b.vel);
         // For slow shots (<10 m/s), use wider save radius (GK can reach further)
@@ -4523,35 +4645,78 @@ export function update(st: State, dt: number) {
           const toBall = vsub(b.pos, gk.pos);
           const angle = vang(toGoal, toBall);
           const angleBonus = (1 - angle / 180) * PExt.gkSaveAngleBonus;
-          // ★ v10.2.0: Per-player GK save modifier
           const gkSaveMod = gk.cardMods?.gkSaveBase ?? 1.0;
           const saveChance = (PExt.gkSaveBase * gkSaveMod) + angleBonus;
           
-          // v8.8.2: Track save attempt
           const gkTeam = defTeam === -1 ? 'blue' : 'red';
           st.stats.gkSaveAttempts[gkTeam]++;
           
           if (Math.random() < saveChance) {
-            // v8.8.2: Track successful save
             st.stats.gkSaves[gkTeam]++;
-            // ★ v10.2.0: Per-player save tracking
             if (st.stats.playerStats[gk.idx]) st.stats.playerStats[gk.idx].saves++;
-            // ★ v9.9.0: Log save
             logSave(st, gk);
             
-            if (Math.random() < PExt.gkParryChance) {
-              // Parry
-              const parryDir = vnorm(vsub(b.pos, gk.pos));
-              b.vel = vscl(parryDir, PExt.shotSpeed * 0.4);
+            // ★ v11.20.0: Determine catch vs punch based on ball speed and reach difficulty
+            // Catchable: ball speed < 18 m/s AND ball is within comfortable reach (not stretched)
+            const isCatchable = ballSpd < 18.0 && directDist < PExt.gkSaveRadius * 1.5;
+            // Difficult reach: ball is at the edge of reach (stretched save)
+            const isDifficultReach = directDist > PExt.gkSaveRadius * 0.9;
+            // High speed shot: always punch
+            const isHighSpeed = ballSpd >= 22.0;
+            
+            const doPunch = isHighSpeed || isDifficultReach || (!isCatchable && Math.random() < PExt.gkParryChance);
+            
+            if (doPunch) {
+              // ★ v11.20.0: Punching - GK punches ball away
+              // Direction: try to punch wide/safe, away from goal center
+              const goalCenter = v(defTeam * PExt.pitchHalfW, 0);
+              const toBallDir = vnorm(vsub(b.pos, gk.pos));
+              // Punch direction: deflect away from goal (toward sides)
+              const gkSaveSkill = gk.cardMods?.gkSaveBase ?? 1.0;
+              // Good GK: punch wide to safety; poor GK: random direction (may stay close)
+              const punchAccuracy = gkSaveSkill * (0.6 + Math.random() * 0.4);
+              const safeDir = Math.abs(b.pos.y) > 5.0 ? Math.sign(b.pos.y) : (Math.random() < 0.5 ? 1 : -1);
+              const punchDir = punchAccuracy > 0.8
+                ? vnorm(v(toBallDir.x * 0.3 + (Math.random() - 0.5) * 0.4, safeDir * 0.8 + (Math.random() - 0.5) * 0.4))
+                : vnorm(v(toBallDir.x + rng(-0.8, 0.8), toBallDir.y + rng(-0.8, 0.8)));
+              // Punch speed: strong GK punches far, weak GK may punch weakly (loose ball)
+              const punchSpd = punchAccuracy > 0.7
+                ? PExt.shotSpeed * (0.35 + Math.random() * 0.25)  // 35-60% of shot speed = far punch
+                : PExt.shotSpeed * (0.1 + Math.random() * 0.25);  // 10-35% = weak punch (may be loose)
+              b.vel = vscl(punchDir, punchSpd);
               b.shot = false;
-              b.cooldown = PExt.gkHoldCooldown;
-              // ★ v11.3.0: GKが弾いた = GKのチームが最後に触った
-              // これによりゴールラインを割った場合にコーナーキックが正しく判定される
+              b.cooldown = PExt.gkHoldCooldown * 0.5;
               b.lastTouchTeam = gk.team;
+              // Set GK punch animation
+              gk.gkAnimState = "punch";
+              gk.gkAnimTimer = 0.4;
+              gk.gkPunchDir = { ...punchDir };
+              // Log punch
+              const gkNameP = gk.cardName || `GK#${gk.num}`;
+              emitLog(st, {
+                time: st.time, team: gk.team, playerNum: gk.num, playerRole: "GK",
+                action: "save",
+                detail: punchSpd > PExt.shotSpeed * 0.3
+                  ? `${gkNameP} パンチングで弾き返す！`
+                  : `${gkNameP} パンチング…ルーズボールになるか？`,
+                success: true, excitement: punchSpd > PExt.shotSpeed * 0.3 ? 2 : 1,
+              });
             } else {
-              // Catch
+              // ★ v11.20.0: Catch - GK holds the ball
               give(b, gkIdx, st.pl, st, "gkCatch");
               b.cooldown = PExt.gkHoldCooldown;
+              // Set GK catch animation
+              gk.gkAnimState = "catch";
+              gk.gkAnimTimer = 0.5;
+              gk.gkPunchDir = null;
+              // After catch, GK will hold and look for pass (handled in decideHasBall)
+              const gkNameC = gk.cardName || `GK#${gk.num}`;
+              emitLog(st, {
+                time: st.time, team: gk.team, playerNum: gk.num, playerRole: "GK",
+                action: "save",
+                detail: `${gkNameC} キャッチ！ 落ち着いてパスを探す`,
+                success: true, excitement: 1,
+              });
             }
           }
         }

@@ -242,6 +242,10 @@ export interface Player {
   // ★ v9.20.0: Committed run system - once a forward run is decided, lock the target
   committedRunTarget: V | null; // Locked target position for committed run (null = no active run)
   committedRunTimer: number;    // Time remaining for committed run (0 = expired)
+  // ★ v11.20.0: GK animation state for catch/punch/hold visuals
+  gkAnimState: "none" | "catch" | "punch" | "hold";  // Current GK action animation
+  gkAnimTimer: number;   // Remaining time for current GK animation
+  gkPunchDir: V | null;  // Direction of punch (for arm extension drawing)
 }
 
 export interface Ball {

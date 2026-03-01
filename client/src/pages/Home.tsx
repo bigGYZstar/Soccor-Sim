@@ -765,9 +765,110 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
         ctx.fillText(phaseLabel, pos.x, pos.y - unit * 5.5);
         ctx.restore();
       }
+     }
+    
+    // ★ v11.20.0: GK catch/punch animation overlay
+    if (p.isGK && p.gkAnimState !== "none" && p.gkAnimTimer > 0) {
+      const animProgress = 1.0 - (p.gkAnimState === "catch" ? p.gkAnimTimer / 0.5 : p.gkAnimTimer / 0.4);
+      const alpha = p.gkAnimState === "hold" ? 0.7 : Math.min(1.0, animProgress * 2.0);
+      
+      if (p.gkAnimState === "catch" || p.gkAnimState === "hold") {
+        // CATCH: both arms spread wide then close in front
+        const catchOpen = p.gkAnimState === "hold" ? 0.3 : Math.max(0, 1.0 - animProgress * 2.0);
+        const armY = pos.y - unit * 1.2;
+        const armSpread = unit * (2.5 + catchOpen * 2.0);
+        ctx.save();
+        ctx.strokeStyle = skinColor;
+        ctx.lineWidth = Math.max(2, unit * 1.4);
+        ctx.lineCap = "round";
+        ctx.globalAlpha = alpha;
+        // Left arm
+        ctx.beginPath();
+        ctx.moveTo(pos.x - unit * 1.5, armY);
+        ctx.lineTo(pos.x - armSpread, armY + unit * 0.5);
+        ctx.stroke();
+        // Right arm
+        ctx.beginPath();
+        ctx.moveTo(pos.x + unit * 1.5, armY);
+        ctx.lineTo(pos.x + armSpread, armY + unit * 0.5);
+        ctx.stroke();
+        // Gloves (circles at hand positions)
+        ctx.fillStyle = "#ffdd44";
+        ctx.beginPath();
+        ctx.arc(pos.x - armSpread, armY + unit * 0.5, Math.max(2, unit * 1.0), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(pos.x + armSpread, armY + unit * 0.5, Math.max(2, unit * 1.0), 0, Math.PI * 2);
+        ctx.fill();
+        // HOLD state: show ball being held
+        if (p.gkAnimState === "hold") {
+          const holdBallR = Math.max(3, unit * 1.8);
+          ctx.fillStyle = "#f8f8f8";
+          ctx.beginPath();
+          ctx.arc(pos.x, armY - unit * 1.0, holdBallR, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = "#303030";
+          ctx.lineWidth = Math.max(1, holdBallR * 0.15);
+          ctx.stroke();
+          // "HOLD" label
+          ctx.fillStyle = `rgba(255,220,50,${alpha})`;
+          ctx.font = `bold ${Math.max(5, unit * 1.6)}px monospace`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "bottom";
+          ctx.fillText("HOLD", pos.x, pos.y - unit * 6.0);
+        } else {
+          // CATCH flash
+          ctx.fillStyle = `rgba(100,255,180,${alpha * 0.5})`;
+          ctx.beginPath();
+          ctx.arc(pos.x, armY, unit * 3.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = `rgba(100,255,180,${alpha})`;
+          ctx.font = `bold ${Math.max(5, unit * 1.8)}px monospace`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "bottom";
+          ctx.fillText("キャッチ！", pos.x, pos.y - unit * 5.5);
+        }
+        ctx.restore();
+      } else if (p.gkAnimState === "punch") {
+        // PUNCH: one arm extends in punch direction
+        const punchDir = p.gkPunchDir || { x: 0, y: -1 };
+        const punchReach = unit * (2.0 + animProgress * 3.0);
+        const armY = pos.y - unit * 1.2;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = skinColor;
+        ctx.lineWidth = Math.max(2, unit * 1.4);
+        ctx.lineCap = "round";
+        // Punching arm
+        const punchEndX = pos.x + punchDir.x * punchReach;
+        const punchEndY = armY + punchDir.y * punchReach;
+        ctx.beginPath();
+        ctx.moveTo(pos.x + unit * 1.0, armY);
+        ctx.lineTo(punchEndX, punchEndY);
+        ctx.stroke();
+        // Glove at punch end
+        ctx.fillStyle = "#ffdd44";
+        ctx.beginPath();
+        ctx.arc(punchEndX, punchEndY, Math.max(2, unit * 1.2), 0, Math.PI * 2);
+        ctx.fill();
+        // Impact flash
+        if (animProgress > 0.5) {
+          const flashAlpha = (1.0 - animProgress) * 2.0 * alpha;
+          ctx.fillStyle = `rgba(255,200,50,${flashAlpha * 0.6})`;
+          ctx.beginPath();
+          ctx.arc(punchEndX, punchEndY, unit * 2.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        // "PUNCH" label
+        ctx.fillStyle = `rgba(255,150,50,${alpha})`;
+        ctx.font = `bold ${Math.max(5, unit * 1.8)}px monospace`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("パンチ！", pos.x, pos.y - unit * 5.5);
+        ctx.restore();
+      }
     }
   });
-
   // 7. ボール (SFC-style with Z-axis height visualization)
   const bp = w2s(st.ball.pos);
   const br = sval(P.ballRadius);
