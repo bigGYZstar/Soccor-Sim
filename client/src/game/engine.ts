@@ -3242,24 +3242,112 @@ export function doKickOff(st: State, side?: number) {
   st.matchPhase = "kickoff";
 }
 
+// ★ v11.16.0: Position players for throw-in
+function positionForThrowIn(st: State, sp: { kind: string; team: number; pos: V }, takerIdx: number) {
+  for (const p of st.pl) {
+    if (p.idx === takerIdx) {
+      // Taker goes to throw-in position
+      p.tgt = pitchClamp(sp.pos);
+    } else if (p.team === sp.team) {
+      // Teammates spread out to receive
+      const spreadX = sp.pos.x + (-sp.team) * rng(3, 12);
+      const spreadY = sp.pos.y * 0.5 + rng(-8, 8);
+      p.tgt = pitchClamp(v(spreadX, spreadY));
+    } else {
+      // Opponents maintain distance (2m rule)
+      const awayDir = vnorm(vsub(p.pos, sp.pos));
+      if (vdist(p.pos, sp.pos) < 2.0) {
+        p.tgt = pitchClamp(vadd(sp.pos, vscl(awayDir, 2.5)));
+      }
+    }
+    p.act = "move";
+  }
+}
+
 function stopForSetPiece(st: State, kind: "THROWIN" | "CORNER" | "GOALKICK", team: number, pos: V) {
-  // Debug logging for statistics verification
-  // Debug log removed
+  // ★ v11.16.0: Animated set piece system
+  // Phase: walk -> setup -> windup -> kick -> done
+  // All timers advance with dt (speedMul-scaled), so V.FAST = fast animations
   
-  st.paused = true;
-  // ★ v11.3.0: Longer pause for goal kicks and corners to set up positions
-  st.pauseT = kind === "GOALKICK" ? 2.0 : kind === "CORNER" ? 2.5 : PExt.restartPause;
-  st.setPieceRestart = { kind, team, pos, phase: "setup", timer: 0, takerIdx: -1, targetPos: v(0, 0), positioned: false };
+  // Determine taker immediately so we can start the walk animation
+  let takerIdx = -1;
+  if (kind === "GOALKICK") {
+    takerIdx = findGK(st, team);
+  } else {
+    takerIdx = nearestOutfield(st, pos, team);
+  }
+  
+  // Position all players toward set piece positions
+  if (kind === "CORNER") {
+    positionForCorner(st, { kind, team, pos });
+    // Override: kicker goes to corner spot
+    if (takerIdx >= 0) st.pl[takerIdx].tgt = pitchClamp(pos);
+  } else if (kind === "GOALKICK") {
+    positionForGoalKick(st, { kind, team, pos });
+  } else if (kind === "THROWIN") {
+    positionForThrowIn(st, { kind, team, pos }, takerIdx);
+  }
+  
+  // Set up the set piece state - start in "walk" phase
+  st.setPieceRestart = {
+    kind, team, pos,
+    phase: "walk",
+    timer: 0,
+    takerIdx,
+    targetPos: v(0, 0),
+    positioned: true,
+    throwArmAngle: 0,
+    kickRunProgress: 0,
+    logEmitted: false,
+  };
+  
+  // Emit initial log immediately
+  const teamLabel = team === -1 ? "BLU" : "RED";
+  if (kind === "THROWIN") {
+    const taker = takerIdx >= 0 ? st.pl[takerIdx] : null;
+    const takerName = taker ? (taker.cardName || `#${taker.num}`) : "";
+    emitLog(st, {
+      time: st.time, team,
+      playerNum: taker?.num ?? 0,
+      playerRole: taker?.posLabel ?? "",
+      action: "pass",
+      detail: `${takerName} スローイン！ ボールを拾いに行く`,
+      success: true, excitement: 0,
+    });
+  } else if (kind === "CORNER") {
+    const taker = takerIdx >= 0 ? st.pl[takerIdx] : null;
+    const takerName = taker ? (taker.cardName || `#${taker.num}`) : "";
+    emitLog(st, {
+      time: st.time, team,
+      playerNum: taker?.num ?? 0,
+      playerRole: taker?.posLabel ?? "",
+      action: "pass",
+      detail: `${teamLabel} コーナーキック！ ${takerName} がコーナーへ走る`,
+      success: true, excitement: 2,
+    });
+  } else if (kind === "GOALKICK") {
+    const gk = takerIdx >= 0 ? st.pl[takerIdx] : null;
+    const gkName = gk ? (gk.cardName || `GK#${gk.num}`) : "GK";
+    emitLog(st, {
+      time: st.time, team,
+      playerNum: gk?.num ?? 1,
+      playerRole: "GK",
+      action: "pass",
+      detail: `${teamLabel} ゴールキック！ ${gkName} がボールをセットする`,
+      success: true, excitement: 0,
+    });
+  }
+  
   st.ball.free = false;
   st.ball.vel = v(0, 0);
   st.ball.owner = null;
   st.ball.cooldown = PExt.restartNoIntercept;
-  // ★ v11.3.0: Place ball at restart position immediately
   st.ball.pos = { ...pos };
   st.ball.z = 0;
   st.ball.vz = 0;
   st.ball.lob = 0;
   st.ball.shot = false;
+  // No st.paused = true! The set piece runs through its own phase system
 }
 
 // ★ v11.3.0: Position players for corner kick (both teams shift toward goal)
@@ -3345,15 +3433,49 @@ function runSetPiece(st: State) {
   const sp = st.setPieceRestart!;
   
   if (sp.kind === "THROWIN") {
-    // Throw-in: simple - nearest outfield player takes it
-    const taker = nearestOutfield(st, sp.pos, sp.team);
-    if (taker === -1) return;
-    st.pl[taker].pos = pitchClamp(sp.pos);
-    st.pl[taker].tgt = { ...st.pl[taker].pos };
-    st.pl[taker].act = "idle";
-    st.pl[taker].face = v(-sp.team, 0);
-    give(st.ball, taker, st.pl, st);
-    st.ball.cooldown = PExt.restartNoIntercept;
+    // ★ v11.16.0: Use pre-determined takerIdx from animation phase
+    const takerIdx = sp.takerIdx >= 0 ? sp.takerIdx : nearestOutfield(st, sp.pos, sp.team);
+    if (takerIdx === -1) return;
+    const taker = st.pl[takerIdx];
+    taker.pos = pitchClamp(sp.pos);
+    taker.tgt = { ...taker.pos };
+    taker.act = "idle";
+    taker.face = v(-sp.team, 0);
+    
+    // Decide throw target: nearest teammate in field
+    let bestTarget: V | null = null;
+    let bestScore = -Infinity;
+    for (const p of st.pl) {
+      if (p.team !== sp.team || p.idx === takerIdx) continue;
+      const d = vdist(sp.pos, p.pos);
+      if (d > PExt.throwInMaxDist) continue;
+      // Prefer forward teammates
+      const forwardBonus = (p.pos.x - sp.pos.x) * (-sp.team) * 0.5;
+      const score = -d + forwardBonus;
+      if (score > bestScore) { bestScore = score; bestTarget = { ...p.pos }; }
+    }
+    
+    if (bestTarget) {
+      // Throw to teammate
+      give(st.ball, takerIdx, st.pl, st);
+      const throwDist = vdist(sp.pos, bestTarget);
+      const throwSpd = Math.min(15.0, Math.max(6.0, throwDist * 0.7));
+      kick(st, takerIdx, throwSpd, false, bestTarget, false, 0.08);
+      st.ball.cooldown = PExt.restartNoIntercept;
+      // Log the throw
+      const takerName = taker.cardName || `#${taker.num}`;
+      emitLog(st, {
+        time: st.time, team: sp.team,
+        playerNum: taker.num, playerRole: taker.posLabel ?? "",
+        action: "pass",
+        detail: `${takerName} スローイン！ フィールドへ投げる！`,
+        success: true, excitement: 0,
+      });
+    } else {
+      // No target found, just give ball
+      give(st.ball, takerIdx, st.pl, st);
+      st.ball.cooldown = PExt.restartNoIntercept;
+    }
     return;
   }
   
@@ -3459,9 +3581,10 @@ function runSetPiece(st: State) {
   }
   
   if (sp.kind === "CORNER") {
-    // ★ v11.3.0: Corner kick with full positioning and cross
-    const taker = nearestOutfield(st, sp.pos, sp.team);
-    if (taker === -1) return;
+    // ★ v11.16.0: Use pre-determined takerIdx from animation phase
+    const takerCorner = sp.takerIdx >= 0 ? sp.takerIdx : nearestOutfield(st, sp.pos, sp.team);
+    if (takerCorner === -1) return;
+    const taker = takerCorner;
     const kicker = st.pl[taker];
     
     // Place kicker at corner
@@ -3712,72 +3835,181 @@ export function update(st: State, dt: number) {
     }
   }
   
-  // Pause - visual pause, always real-time
-  if (st.paused) {
-    st.pauseT -= physDt;
+  // ★ v11.16.0: Set piece animation system (replaces static pause)
+  // Phases: walk -> setup -> windup -> kick -> done
+  // All timers use dt (speedMul-scaled), so V.FAST = fast animations
+  if (st.setPieceRestart) {
+    const sp = st.setPieceRestart;
+    sp.timer += dt;
     
-    // ★ v11.3.0: During pause, move players to set piece positions
-    if (st.setPieceRestart && !st.setPieceRestart.positioned) {
-      if (st.setPieceRestart.kind === "CORNER") {
-        positionForCorner(st, st.setPieceRestart);
-      } else if (st.setPieceRestart.kind === "GOALKICK") {
-        positionForGoalKick(st, st.setPieceRestart);
-      }
-      st.setPieceRestart.positioned = true;
-      
-      // Log the set piece
-      if (st.setPieceRestart.kind === "CORNER") {
-        emitLog(st, {
-          time: st.time,
-          team: st.setPieceRestart.team,
-          playerNum: 0,
-          playerRole: "",
-          action: "pass",
-          detail: st.setPieceRestart.team === -1 ? "BLU コーナーキック！ チャンス！" : "RED コーナーキック！ チャンス！",
-          success: true,
-          excitement: 2,
-        });
-      } else if (st.setPieceRestart.kind === "GOALKICK") {
-        emitLog(st, {
-          time: st.time,
-          team: st.setPieceRestart.team,
-          playerNum: 0,
-          playerRole: "GK",
-          action: "pass",
-          detail: st.setPieceRestart.team === -1 ? "BLU ゴールキック" : "RED ゴールキック",
-          success: true,
-          excitement: 0,
-        });
+    // Phase durations (in simulation seconds, scaled by speedMul)
+    const WALK_DUR   = 0.60;  // Taker runs to ball position
+    const SETUP_DUR  = 0.20;  // Taker places ball (brief pause)
+    const WINDUP_DUR = 0.35;  // Throw windup / kick run-up
+    const KICK_DUR   = 0.05;  // Actual kick/throw moment
+    
+    const taker = sp.takerIdx >= 0 ? st.pl[sp.takerIdx] : null;
+    
+    // Move ALL players toward their targets during set piece
+    for (const p of st.pl) {
+      const desired = vsub(p.tgt, p.pos);
+      const dist = vlen(desired);
+      if (dist > 0.2) {
+        const moveSpd = P.moveSpeed * (p.idx === sp.takerIdx ? 1.0 : 0.85);
+        const step = Math.min(dist, moveSpd * dt);
+        p.pos = vadd(p.pos, vscl(vnorm(desired), step));
+        p.face = vnorm(desired);
+        updatePlayerFeet(p, dt);
       }
     }
+    // Keep ball at restart position until kick phase
+    if (sp.phase !== "kick") {
+      st.ball.pos = { ...sp.pos };
+    }
     
-    // ★ v11.3.0: During set piece pause, still move players toward their targets
-    if (st.setPieceRestart && (st.setPieceRestart.kind === "CORNER" || st.setPieceRestart.kind === "GOALKICK")) {
-      for (const p of st.pl) {
-        const desired = vsub(p.tgt, p.pos);
-        const dist = vlen(desired);
-        if (dist > 0.3) {
-          const moveSpd = P.moveSpeed * 0.8; // Slightly slower during setup
-          const step = Math.min(dist, moveSpd * dt);
-          p.pos = vadd(p.pos, vscl(vnorm(desired), step));
-          p.face = vnorm(desired);
-          // Update feet
-          updatePlayerFeet(p, dt);
+    // Phase transitions
+    if (sp.phase === "walk") {
+      // Taker walks/runs to ball position
+      if (taker) {
+        const distToBall = vdist(taker.pos, sp.pos);
+        // Advance when taker reaches ball OR timer expires
+        if (distToBall < 1.5 || sp.timer >= WALK_DUR) {
+          sp.phase = "setup";
+          sp.timer = 0;
+          // Snap taker to ball position
+          if (taker) {
+            taker.pos = pitchClamp(sp.pos);
+            taker.tgt = { ...taker.pos };
+            taker.act = "idle";
+            // Face toward field
+            if (sp.kind === "THROWIN") {
+              taker.face = v(-sp.team, 0);
+            } else if (sp.kind === "CORNER") {
+              const goalX = -sp.team * PExt.pitchHalfW;
+              taker.face = vnorm(vsub(v(goalX, 0), taker.pos));
+            } else {
+              taker.face = v(-sp.team, 0);
+            }
+          }
+          // Log: player has arrived at ball
+          if (!sp.logEmitted) {
+            sp.logEmitted = true;
+            const takerName = taker ? (taker.cardName || `#${taker.num}`) : "";
+            if (sp.kind === "THROWIN") {
+              emitLog(st, {
+                time: st.time, team: sp.team,
+                playerNum: taker?.num ?? 0, playerRole: taker?.posLabel ?? "",
+                action: "pass",
+                detail: `${takerName} ボールを拾った！ スローインの構え`,
+                success: true, excitement: 0,
+              });
+            } else if (sp.kind === "GOALKICK") {
+              emitLog(st, {
+                time: st.time, team: sp.team,
+                playerNum: taker?.num ?? 1, playerRole: "GK",
+                action: "pass",
+                detail: `${takerName} ゴールエリアにボールをセット！`,
+                success: true, excitement: 0,
+              });
+            }
+          }
+        }
+      } else {
+        // No taker found, skip to setup
+        sp.phase = "setup";
+        sp.timer = 0;
+      }
+    } else if (sp.phase === "setup") {
+      // Brief pause - taker places ball
+      if (sp.timer >= SETUP_DUR) {
+        sp.phase = "windup";
+        sp.timer = 0;
+        sp.throwArmAngle = 0;
+        sp.kickRunProgress = 0;
+      }
+    } else if (sp.phase === "windup") {
+      // Windup animation
+      const progress = Math.min(1.0, sp.timer / WINDUP_DUR);
+      if (sp.kind === "THROWIN") {
+        // Arms raise above head
+        sp.throwArmAngle = progress;
+      } else {
+        // Kick run-up
+        sp.kickRunProgress = progress;
+        // Taker takes a step back/aside for run-up
+        if (taker && progress < 0.5) {
+          const runupOffset = vscl(taker.face, -1.5 * (0.5 - progress) * 2);
+          taker.pos = pitchClamp(vadd(sp.pos, runupOffset));
         }
       }
-      // Keep ball at restart position
-      st.ball.pos = { ...st.setPieceRestart.pos };
-    }
-    
-    if (st.pauseT <= 0) {
-      st.paused = false;
-
-      if (st.setPieceRestart) {
+      if (sp.timer >= WINDUP_DUR) {
+        sp.phase = "kick";
+        sp.timer = 0;
+        // Log windup complete
+        if (taker) {
+          const takerName = taker.cardName || `#${taker.num}`;
+          if (sp.kind === "THROWIN") {
+            emitLog(st, {
+              time: st.time, team: sp.team,
+              playerNum: taker.num, playerRole: taker.posLabel ?? "",
+              action: "pass",
+              detail: `${takerName} 両手を上げてスローイン！`,
+              success: true, excitement: 0,
+            });
+          } else if (sp.kind === "GOALKICK") {
+            emitLog(st, {
+              time: st.time, team: sp.team,
+              playerNum: taker.num, playerRole: "GK",
+              action: "pass",
+              detail: `${takerName} 助走をつけてキックの構え！`,
+              success: true, excitement: 0,
+            });
+          } else if (sp.kind === "CORNER") {
+            emitLog(st, {
+              time: st.time, team: sp.team,
+              playerNum: taker.num, playerRole: taker.posLabel ?? "MF",
+              action: "pass",
+              detail: `${takerName} コーナーにボールをセット！ クロスの構え`,
+              success: true, excitement: 1,
+            });
+          }
+        }
+      }
+    } else if (sp.phase === "kick") {
+      // Actual kick/throw - execute the set piece
+      if (sp.timer >= KICK_DUR) {
+        // Snap taker to ball
+        if (taker) {
+          taker.pos = pitchClamp(sp.pos);
+          taker.tgt = { ...taker.pos };
+          taker.act = "idle";
+        }
         runSetPiece(st);
         st.setPieceRestart = null;
-      } else {
-        doKickOff(st);
+        return;
       }
+    }
+    
+    // Update action log TTL
+    updateLogTTL(st, physDt);
+    // Update screen effect
+    if (st.screenEffect.timer > 0) {
+      st.screenEffect.timer -= physDt;
+      if (st.screenEffect.timer <= 0) {
+        st.screenEffect = { type: "none", timer: 0, text: "", playerNum: 0, team: 0 };
+      }
+    }
+    // Update flash
+    if (st.flash > 0) st.flash = Math.max(0, st.flash - physDt * 2);
+    return;
+  }
+  
+  // Legacy pause (for fouls, goals, etc.)
+  if (st.paused) {
+    st.pauseT -= physDt;
+    if (st.pauseT <= 0) {
+      st.paused = false;
+      doKickOff(st);
     }
     return;
   }

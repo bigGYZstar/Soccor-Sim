@@ -670,6 +670,102 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
       const displayName = p.cardName!.length > maxChars ? p.cardName!.slice(0, maxChars) : p.cardName!;
       ctx.fillText(displayName, pos.x, pos.y + unit * 3.5);
     }
+    
+    // ★ v11.16.0: Set piece motion overlays (throw-in arms / kick windup)
+    const sp = st.setPieceRestart;
+    if (sp && sp.takerIdx >= 0 && st.pl[sp.takerIdx].idx === p.idx) {
+      // This player is the set piece taker
+      if (sp.kind === "THROWIN" && (sp.phase === "windup" || sp.phase === "kick")) {
+        // Throw-in: draw raised arms above head
+        const armRaise = sp.throwArmAngle; // 0=down, 1=fully raised
+        const armW = Math.max(2, unit * 1.2);
+        const armH = Math.max(3, unit * 2.5);
+        const armY = pos.y - unit * 1.5; // Start at shoulder height
+        // Left arm (raised diagonally)
+        const leftArmEndX = pos.x - unit * 2.0 * (1 - armRaise * 0.5);
+        const leftArmEndY = armY - armH * armRaise;
+        ctx.save();
+        ctx.strokeStyle = skinColor;
+        ctx.lineWidth = Math.max(2, unit * 1.4);
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(pos.x - unit * 1.5, armY);
+        ctx.lineTo(leftArmEndX, leftArmEndY);
+        ctx.stroke();
+        // Right arm
+        const rightArmEndX = pos.x + unit * 2.0 * (1 - armRaise * 0.5);
+        const rightArmEndY = armY - armH * armRaise;
+        ctx.beginPath();
+        ctx.moveTo(pos.x + unit * 1.5, armY);
+        ctx.lineTo(rightArmEndX, rightArmEndY);
+        ctx.stroke();
+        // Hands at top (small circles)
+        if (armRaise > 0.5) {
+          ctx.fillStyle = skinColor;
+          ctx.beginPath();
+          ctx.arc(leftArmEndX, leftArmEndY, Math.max(2, unit * 0.8), 0, Math.PI * 2);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(rightArmEndX, rightArmEndY, Math.max(2, unit * 0.8), 0, Math.PI * 2);
+          ctx.fill();
+          // Ball held above head
+          const ballAboveY = leftArmEndY - unit * 1.5;
+          const ballAboveX = (leftArmEndX + rightArmEndX) / 2;
+          const ballAboveR = Math.max(3, unit * 1.5);
+          ctx.fillStyle = "#f8f8f8";
+          ctx.beginPath();
+          ctx.arc(ballAboveX, ballAboveY, ballAboveR, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = "#303030";
+          ctx.lineWidth = Math.max(1, ballAboveR * 0.2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      } else if ((sp.kind === "GOALKICK" || sp.kind === "CORNER") && (sp.phase === "windup" || sp.phase === "kick")) {
+        // Kick windup: draw kicking leg raised back
+        const kickProgress = sp.kickRunProgress; // 0=start, 1=kick
+        const legSwing = Math.sin(kickProgress * Math.PI); // 0->1->0 swing
+        const legW = Math.max(2, unit * 1.4);
+        const legH = Math.max(4, unit * 2.8);
+        const legY = pos.y + unit * 1.5; // Hip height
+        // Kicking leg swings back then forward
+        const kickLegX = pos.x + (p.isBlue ? -1 : 1) * unit * 1.5;
+        const kickLegEndX = kickLegX + legSwing * unit * 2.5 * (p.isBlue ? -1 : 1);
+        const kickLegEndY = legY + legH * (1 - legSwing * 0.5);
+        ctx.save();
+        ctx.strokeStyle = shortsColor;
+        ctx.lineWidth = legW;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(kickLegX, legY);
+        ctx.lineTo(kickLegEndX, kickLegEndY);
+        ctx.stroke();
+        // Boot at end of kicking leg
+        ctx.fillStyle = bootColor;
+        ctx.fillRect(kickLegEndX - unit, kickLegEndY - unit * 0.5, unit * 2.5, unit * 1.2);
+        // Glow on kicking foot
+        if (sp.phase === "kick") {
+          ctx.fillStyle = "rgba(255,255,100,0.6)";
+          ctx.beginPath();
+          ctx.arc(kickLegEndX, kickLegEndY, unit * 2.0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+      
+      // Phase label above taker
+      if (sp.phase === "walk" || sp.phase === "setup") {
+        const labelFontSize = Math.max(5, unit * 1.8);
+        ctx.save();
+        ctx.font = `bold ${labelFontSize}px monospace`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        const phaseLabel = sp.phase === "walk" ? "..." : "●";
+        ctx.fillStyle = isBlue ? "rgba(100,200,255,0.9)" : "rgba(255,150,100,0.9)";
+        ctx.fillText(phaseLabel, pos.x, pos.y - unit * 5.5);
+        ctx.restore();
+      }
+    }
   });
 
   // 7. ボール (SFC-style with Z-axis height visualization)

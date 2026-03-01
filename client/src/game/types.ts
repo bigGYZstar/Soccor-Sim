@@ -144,12 +144,23 @@ export interface SetPieceRestart {
   kind: SetPieceKind;
   team: number;  // Restarting team (-1 or +1)
   pos: V;  // Restart position (on line)
-  // ★ v11.3.0: Set piece animation phases
-  phase: "setup" | "approach" | "kick" | "done";  // Current animation phase
-  timer: number;  // Timer for current phase
+  // ★ v11.16.0: Set piece animation phases (fully animated)
+  // walk: taker runs to ball position
+  // setup: taker places ball (brief pause)
+  // windup: throw windup or kick run-up
+  // kick: actual throw/kick moment
+  // done: finished
+  phase: "walk" | "setup" | "windup" | "kick" | "done";  // Current animation phase
+  timer: number;  // Timer for current phase (counts up)
   takerIdx: number;  // Player index taking the set piece
   targetPos: V;  // Where the ball will be kicked to
   positioned: boolean;  // Whether players have been positioned
+  // ★ v11.16.0: Throw-in arm raise animation
+  throwArmAngle: number;  // 0=down, 1=fully raised (for throw-in windup)
+  // ★ v11.16.0: Kick run-up animation
+  kickRunProgress: number;  // 0..1 approach run progress
+  // ★ v11.16.0: Log emitted flags
+  logEmitted: boolean;  // Whether the main action log has been emitted
 }
 
 export interface Trail {
