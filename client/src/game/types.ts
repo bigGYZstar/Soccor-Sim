@@ -407,6 +407,9 @@ export interface State {
   replayFrameCounter: number;       // Counter to limit buffer capture rate (every 2 frames)
   // ★ v11.7.0: Wall-clock time accumulator for replay capture (speed-mode independent)
   replayWallTimeAccum: number;      // Accumulated real seconds since last replay frame capture
+  // ★ v11.19.0: AI decision dt - physics dt at time of last AI decision call
+  // Used by decideHasBall/decideNoBall to decrement timers correctly
+  aiDecisionDt: number;
   // ★ v9.11.0: Screen effects for dramatic moments (dribble breakthrough, goals)
   screenEffect: {
     type: "none" | "dribbleSuccess" | "goal" | "save";

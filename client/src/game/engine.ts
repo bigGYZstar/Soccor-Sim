@@ -533,6 +533,7 @@ export function mkState(blueFormation: FormationId = "4-4-2", redFormation: Form
     replayBuffer: [],
     replayFrameCounter: 0,
     replayWallTimeAccum: 0,  // ★ v11.7.0: Wall-clock accumulator for speed-independent capture
+    aiDecisionDt: 0,  // ★ v11.19.0: Physics dt at time of AI decision call
   };
 }
 
@@ -2346,7 +2347,7 @@ export function decideNoBall(st: State, idx: number) {
   
   // ★ v9.9.0: Pass-and-move execution - player who just passed runs forward
   if (me.passAndMoveTimer > 0 && myTeamHasBall) {
-    me.passAndMoveTimer -= P.decisionInterval;
+    me.passAndMoveTimer -= st.aiDecisionDt;  // ★ v11.19.0: Use actual dt (was P.decisionInterval fixed 0.25s)
     me.tgt = pitchClamp(me.passAndMoveTarget);
     me.act = "move";
     me.face = vnorm(vsub(me.passAndMoveTarget, me.pos));
@@ -2711,11 +2712,11 @@ export function decideNoBall(st: State, idx: number) {
     //   3. CM stays in midfield zone, doesn't push into FWD territory
     //   4. Once a run is committed, player doesn't re-evaluate until target reached or expired
     if (!me.isGK && (me.role === "MID" || me.role === "FWD")) {
-      me.burstCD = Math.max(0, (me.burstCD ?? 0) - P.decisionInterval);
+      me.burstCD = Math.max(0, (me.burstCD ?? 0) - st.aiDecisionDt);  // ★ v11.19.0: Use actual dt
       
       // ★ v9.20.0: Committed run system - if we have an active committed run, follow it
       if (me.committedRunTarget && me.committedRunTimer > 0) {
-        me.committedRunTimer -= P.decisionInterval;
+        me.committedRunTimer -= st.aiDecisionDt;  // ★ v11.19.0: Use actual dt
         const distToTarget = vdist(me.pos, me.committedRunTarget);
         
         // Check if run should be cancelled:
@@ -2997,7 +2998,7 @@ export function decideNoBall(st: State, idx: number) {
       if (me.role === "FWD" || me.role === "MID") {
         // ★ v9.20.0: If player has a committed run, CONTINUE it during free ball
         if (me.committedRunTarget && me.committedRunTimer > 0) {
-          me.committedRunTimer -= P.decisionInterval;
+          me.committedRunTimer -= st.aiDecisionDt;  // ★ v11.19.0: Use actual dt
           const distToTarget = vdist(me.pos, me.committedRunTarget);
           if (distToTarget < 2.0 || me.committedRunTimer <= 0) {
             me.committedRunTarget = null;
@@ -4232,7 +4233,9 @@ export function update(st: State, dt: number) {
     const p = st.pl[i];
     p.dt -= dt;
     if (p.dt <= 0) {
-      p.dt = PExt.decisionInterval;
+      // ★ v11.19.0: Store actual elapsed dt for timer decrements inside decide functions
+      st.aiDecisionDt = dt + (p.dt < 0 ? -p.dt : 0);
+      p.dt = PExt.decisionInterval;  // Fixed physics-time interval (0.25s)
       if (b.owner === i) {
         decideHasBall(st, i);
       } else {
