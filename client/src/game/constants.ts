@@ -23,12 +23,12 @@ export const P = {
   penSpotDist: 11.0, // Penalty spot 11m from goal
   cornerArcR: 1.0,
 
-  // Adjusted speeds for soccer (larger pitch)
-  moveSpeed: 7.5,  // v9.2.0: Slightly increased for larger pitch
-  dribbleSpeed: 6.0,  // v9.2.0: Slightly increased
-  passSpeed: 20,  // v9.3.0: Increased from 18 for faster pass delivery
-  shotSpeed: 25,
-  longPassSpeed: 15,
+  // ★ v11.18.0: Physical speeds scaled x1.2 (base speed boost per user request)
+  moveSpeed: 9.0,        // 7.5 * 1.2 = 9.0
+  dribbleSpeed: 7.2,     // 6.0 * 1.2 = 7.2
+  passSpeed: 24,         // 20  * 1.2 = 24
+  shotSpeed: 30,         // 25  * 1.2 = 30
+  longPassSpeed: 18,     // 15  * 1.2 = 18
   passAccuracy: 0.94,  // v9.3.0: Increased from 0.92 for better pass completion
   shotAccuracy: 0.40,  // v9.2.0: Reduced from 0.60 for more realistic on-target rate
   longPassAccuracy: 0.70,  // v9.2.0: Slightly increased

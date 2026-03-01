@@ -1132,10 +1132,11 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
 // ============================================================
 // Speed Toggle Button (SFC retro style)
 // ============================================================
-// ★ v11.6.0: 5-stage speed modes
-const SPEED_MODES: SpeedMode[] = ["REAL", "LOW", "MID", "FAST", "VFAST"];
+// ★ v11.18.0: 6-stage speed modes (added VSLOW)
+const SPEED_MODES: SpeedMode[] = ["REAL", "VSLOW", "LOW", "MID", "FAST", "VFAST"];
 const SPEED_LABELS: Record<SpeedMode, string> = {
   REAL:  "REAL",
+  VSLOW: "V.SLOW",   // ★ v11.18.0: Very slow x0.10
   LOW:   "SLOW",
   MID:   "NORMAL",
   FAST:  "FAST",
@@ -1143,6 +1144,7 @@ const SPEED_LABELS: Record<SpeedMode, string> = {
 };
 const SPEED_COLORS: Record<SpeedMode, string> = {
   REAL:  "#a78bfa",  // Soft purple for real-time
+  VSLOW: "#38bdf8",  // ★ v11.18.0: Light blue for very slow
   LOW:   "#60a5fa",  // Blue for slow
   MID:   RETRO_GREEN, // Green for normal
   FAST:  RETRO_ACCENT, // Orange for fast

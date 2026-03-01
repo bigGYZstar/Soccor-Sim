@@ -62,15 +62,15 @@ export interface FootParams {
 //
 // All physics (ball speed, player speed, AI decisions) scale uniformly,
 // so simulation results are IDENTICAL across all speed modes.
-export type SpeedMode = "REAL" | "LOW" | "MID" | "FAST" | "VFAST";
-
+export type SpeedMode = "REAL" | "VSLOW" | "LOW" | "MID" | "FAST" | "VFAST";
 /** Speed multipliers for each mode (applied to dt in engine update) */
 export const SPEED_MULTIPLIERS: Record<SpeedMode, number> = {
-  REAL:  240 / 5400,  // 0.0444: 90 real minutes (true real-time)
-  LOW:   240 / 1200,  // 0.2:    20 real minutes (slow)
-  MID:   240 / 450,   // 0.533:  7.5 real minutes (normal)
-  FAST:  240 / 240,   // 1.0:    4 real minutes (fast)
-  VFAST: 240 / 120,   // 2.0:    2 real minutes (very fast)
+  REAL:  240 / 5400,  // 0.0444: ~90 real minutes (true real-time)
+  VSLOW: 0.10,        // ★ v11.18.0: Very slow (x0.10) - detail observation
+  LOW:   0.15,        // ★ v11.18.0: Slow (x0.15) - slow motion
+  MID:   0.40,        // ★ v11.18.0: Normal (x0.40) - comfortable pace
+  FAST:  1.0,         // Fast (x1.0)  - 4 real minutes
+  VFAST: 2.0,         // Very fast (x2.0) - 2 real minutes
 };
 
 export type SetPieceType = "throw-in" | "corner" | "free-kick" | null;
