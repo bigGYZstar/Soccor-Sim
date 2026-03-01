@@ -3572,7 +3572,7 @@ export function update(st: State, dt: number) {
   // dt = physDt * speedMul (for ALL physics, AI, and match clock)
   const speedMul = SPEED_MULTIPLIERS[st.speed] ?? (240 / 450);
   const physDt = dt;                    // Raw wall-clock time (visual timers only)
-  const PHYS_SCALE = 9.0;              // ★ v11.13.0: Physics 9x faster than clock (3x * 3x)
+  const PHYS_SCALE = 27.0;             // ★ v11.14.0: Physics 27x faster than clock (3x * 3x * 3x)
   dt = physDt * speedMul * PHYS_SCALE; // Physics dt: speedMul + 3x boost
   const simDt = physDt * speedMul;     // Match clock dt: speedMul only (no 3x)
   
