@@ -1036,33 +1036,53 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
 // ============================================================
 // Speed Toggle Button (SFC retro style)
 // ============================================================
-const SPEED_MODES: SpeedMode[] = ["LOW", "MID", "FAST"];
+// ★ v11.6.0: 5-stage speed modes
+const SPEED_MODES: SpeedMode[] = ["REAL", "LOW", "MID", "FAST", "VFAST"];
+const SPEED_LABELS: Record<SpeedMode, string> = {
+  REAL:  "REAL",
+  LOW:   "SLOW",
+  MID:   "NORMAL",
+  FAST:  "FAST",
+  VFAST: "V.FAST",
+};
 const SPEED_COLORS: Record<SpeedMode, string> = {
-  LOW: "#60a5fa",
-  MID: RETRO_GREEN,
-  FAST: RETRO_ACCENT,
+  REAL:  "#a78bfa",  // Soft purple for real-time
+  LOW:   "#60a5fa",  // Blue for slow
+  MID:   RETRO_GREEN, // Green for normal
+  FAST:  RETRO_ACCENT, // Orange for fast
+  VFAST: "#f87171",  // Red for very fast
 };
 
-function SpeedToggle({ speed, onToggle }: { speed: SpeedMode; onToggle: () => void }) {
+function SpeedToggle({ speed, onToggle, onSetMode }: { speed: SpeedMode; onToggle: () => void; onSetMode: (m: SpeedMode) => void }) {
   return (
-    <button
-      onClick={onToggle}
-      style={{
-        background: RETRO_DARK,
-        border: `2px solid ${SPEED_COLORS[speed]}`,
-        color: SPEED_COLORS[speed],
-        fontFamily: RETRO_FONT,
-        fontSize: "clamp(5px, 1vw, 9px)",
-        padding: "clamp(3px, 0.6vh, 6px) clamp(6px, 1.5vw, 12px)",
-        cursor: "pointer",
-        letterSpacing: "1px",
-        transition: "border-color 0.2s, color 0.2s",
-        whiteSpace: "nowrap",
-        lineHeight: 1.2,
-      }}
-    >
-      SPD:{speed}
-    </button>
+    <div style={{ display: "flex", gap: "2px", alignItems: "center" }}>
+      {SPEED_MODES.map(mode => {
+        const isActive = speed === mode;
+        return (
+          <button
+            key={mode}
+            onClick={() => onSetMode(mode)}
+            style={{
+              background: isActive ? SPEED_COLORS[mode] : RETRO_DARK,
+              border: `1.5px solid ${SPEED_COLORS[mode]}`,
+              color: isActive ? "#000" : SPEED_COLORS[mode],
+              fontFamily: RETRO_FONT,
+              fontSize: "clamp(4px, 0.85vw, 8px)",
+              padding: "clamp(2px, 0.5vh, 5px) clamp(3px, 0.8vw, 7px)",
+              cursor: "pointer",
+              letterSpacing: "0.5px",
+              transition: "background 0.15s, color 0.15s",
+              whiteSpace: "nowrap",
+              lineHeight: 1.2,
+              opacity: isActive ? 1.0 : 0.55,
+              fontWeight: isActive ? "bold" : "normal",
+            }}
+          >
+            {SPEED_LABELS[mode]}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -1094,11 +1114,17 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
     stRef.current.speed = speed;
   }, [speed]);
 
+  // ★ v11.6.0: Each button directly sets the speed mode
   const toggleSpeed = useCallback(() => {
+    // Cycle through modes (for single-button fallback)
     setSpeed(prev => {
       const idx = SPEED_MODES.indexOf(prev);
       return SPEED_MODES[(idx + 1) % SPEED_MODES.length];
     });
+  }, []);
+  
+  const setSpeedMode = useCallback((mode: SpeedMode) => {
+    setSpeed(mode);
   }, []);
 
   useEffect(() => {
@@ -1135,6 +1161,9 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
       const elapsed = (t - lastTimeRef.current) / 1000;
       lastTimeRef.current = t;
       
+      // ★ v11.6.0: dt cap - 0.05s (20fps minimum) for all speed modes
+      // REAL mode: speedMul=1.0, so dt*1.0 = real elapsed time (true 1:1 simulation)
+      // VFAST mode: speedMul=45, so dt*45 = 45x compressed time per frame
       const dt = Math.min(0.05, elapsed); 
 
       if (dt > 0.001) {
@@ -1212,7 +1241,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
 
         {/* Speed toggle */}
         <div style={{ pointerEvents: "auto" }}>
-          <SpeedToggle speed={speed} onToggle={toggleSpeed} />
+          <SpeedToggle speed={speed} onToggle={toggleSpeed} onSetMode={setSpeedMode} />
         </div>
       </div>
       {/* ★ v10.2.0: Match Result Screen */}

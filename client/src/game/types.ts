@@ -45,7 +45,22 @@ export interface FootParams {
   ballControl: number;      // 0-10: ball control during dribble (5 = average)
 }
 
-export type SpeedMode = "LOW" | "MID" | "FAST";
+// ★ v11.6.0: 5-stage speed modes
+// REAL = 1.0× (real football pace, ~90min real time)
+// SLOW = ~4.5× (~20min real time)
+// NORMAL = ~12× (~7-8min real time)
+// FAST = ~22× (~4min real time)
+// VFAST = ~45× (~2min real time)
+export type SpeedMode = "REAL" | "LOW" | "MID" | "FAST" | "VFAST";
+
+/** Speed multipliers for each mode */
+export const SPEED_MULTIPLIERS: Record<SpeedMode, number> = {
+  REAL:  1.0,   // Real-time football (90min = 90min)
+  LOW:   4.5,   // Slow (~20min for 90min match)
+  MID:   12.0,  // Normal (~7-8min for 90min match)
+  FAST:  22.0,  // Fast (~4min for 90min match)
+  VFAST: 45.0,  // Very Fast (~2min for 90min match)
+};
 
 export type SetPieceType = "throw-in" | "corner" | "free-kick" | null;
 

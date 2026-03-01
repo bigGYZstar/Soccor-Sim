@@ -1,7 +1,7 @@
 // Game engine - all logic extracted from Home.tsx
 // UI-independent, testable simulation core
 
-import { State, Player, Ball, Role, V, Trail, Foot, FootSide, FootParams } from './types';
+import { State, Player, Ball, Role, V, Trail, Foot, FootSide, FootParams, SPEED_MULTIPLIERS } from './types';
 import { P, FORMATIONS, FormationId } from './constants';
 import {
   v, vadd, vsub, vscl, vlen, vnorm, vdist, vdot, vlerp, vang,
@@ -461,7 +461,7 @@ export function mkState(blueFormation: FormationId = "4-4-2", redFormation: Form
     over: false, paused: false, pauseT: 0, koSide: Math.random() < 0.5 ? -1 : 1,  // Randomize initial kickoff
     kickoffReady: true, kickoffCountdown: 1.5,  // 1.5s countdown before kickoff is taken
     trail: null, flash: 0, flashTxt: "", restartT: 0,
-    speed: "MID",
+    speed: "MID",  // ★ v11.6.0: Default = NORMAL (12× speed, ~7-8min for 90min match)
     setPiece: null,
     setPieceRestart: null,
     stats: { 
@@ -3544,7 +3544,8 @@ export function update(st: State, dt: number) {
   if (st.over) {
     // ★ v10.2.0: Even after game over, keep counting down timers
     // so the result screen can detect when the FULL TIME overlay fades
-    const speedMul = st.speed === "LOW" ? 0.5 : st.speed === "FAST" ? 2.0 : 1.0;
+    // ★ v11.6.0: Use SPEED_MULTIPLIERS table
+    const speedMul = SPEED_MULTIPLIERS[st.speed] ?? 12.0;
     const adt = dt * speedMul;
     if (st.screenEffect.timer > 0) {
       st.screenEffect.timer -= adt;
@@ -3555,8 +3556,10 @@ export function update(st: State, dt: number) {
     return;
   }
   
-  // Speed multiplier (applied to dt for all game logic)
-  const speedMul = st.speed === "LOW" ? 0.5 : st.speed === "FAST" ? 2.0 : 1.0;
+  // ★ v11.6.0: Speed multiplier - applied to dt for all game logic
+  // This scales ALL physics/timers uniformly so simulation results are identical
+  // Only the wall-clock time to complete the match changes
+  const speedMul = SPEED_MULTIPLIERS[st.speed] ?? 12.0;
   dt *= speedMul;
   
   // ★ v9.22.0: HALFTIME SCREEN - pause game during halftime show
