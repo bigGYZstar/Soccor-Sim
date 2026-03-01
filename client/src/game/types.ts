@@ -246,6 +246,9 @@ export interface Ball {
 export interface BallTrailDot {
   pos: V;
   t: number;  // Remaining lifetime
+  // ★ v11.5.0: Spin and height info for curve visualization
+  spinX?: number;  // Side spin at this point (for color coding)
+  z?: number;      // Height at this point (for size scaling)
 }
 
 // ★ v9.9.0: Action log entry for SFC-style real-time commentary

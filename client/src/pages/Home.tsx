@@ -394,17 +394,54 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
   };
   drawGoal(1); drawGoal(-1);
 
-  // 5. ★ v9.7.0: Enhanced trail rendering with ball trail dots
-  // Ball trail dots (fading dots showing ball path)
+  // 5. ★ v11.5.0: Enhanced trail rendering with curve visualization
+  // Ball trail dots: color encodes spin direction, size encodes height
   if (st.ballTrail && st.ballTrail.length > 0) {
-    for (const dot of st.ballTrail) {
+    const n = st.ballTrail.length;
+    for (let i = 0; i < n; i++) {
+      const dot = st.ballTrail[i];
       const dp = w2s(dot.pos);
-      const alpha = Math.min(0.7, dot.t * 1.2);
-      const r = Math.max(1.5, sval(0.12) * (0.5 + dot.t * 0.8));
+      const alpha = Math.min(0.75, dot.t * 1.3);
+      // ★ v11.5.0: Size grows with height (airborne = larger dot)
+      const heightBonus = Math.min(1.5, (dot.z ?? 0) * 0.15);
+      const r = Math.max(1.5, sval(0.13) * (0.4 + dot.t * 0.9 + heightBonus));
+      // ★ v11.5.0: Color encodes spin direction
+      // Strong right spin (spinX > 1.5): warm orange/red
+      // Strong left spin (spinX < -1.5): cool cyan/blue
+      // Neutral / no spin: white/yellow
+      const spin = dot.spinX ?? 0;
+      const spinStrength = Math.min(1.0, Math.abs(spin) / 4.0); // 0-1 normalized
+      let r255: number, g255: number, b255: number;
+      if (spin > 0.5) {
+        // Right curve: yellow → orange → red
+        r255 = 255;
+        g255 = Math.round(255 - spinStrength * 180);
+        b255 = Math.round(100 - spinStrength * 100);
+      } else if (spin < -0.5) {
+        // Left curve: yellow → cyan → blue
+        r255 = Math.round(100 - spinStrength * 80);
+        g255 = Math.round(200 + spinStrength * 55);
+        b255 = 255;
+      } else {
+        // Neutral: white/pale yellow
+        r255 = 255; g255 = 255; b255 = 200;
+      }
       ctx.beginPath();
       ctx.arc(dp.x, dp.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(255,255,200,${alpha})`;
+      ctx.fillStyle = `rgba(${r255},${g255},${b255},${alpha})`;
       ctx.fill();
+      // ★ v11.5.0: Connect consecutive dots with a line for smoother curve visualization
+      if (i > 0 && dot.t > 0.15) {
+        const prev = st.ballTrail[i - 1];
+        const pp = w2s(prev.pos);
+        const lineAlpha = alpha * 0.45;
+        ctx.beginPath();
+        ctx.moveTo(pp.x, pp.y);
+        ctx.lineTo(dp.x, dp.y);
+        ctx.strokeStyle = `rgba(${r255},${g255},${b255},${lineAlpha})`;
+        ctx.lineWidth = Math.max(1, r * 0.7);
+        ctx.stroke();
+      }
     }
   }
   
@@ -610,19 +647,27 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
     drawPixelRect(pos.x + headW/2 - unit*0.8, pos.y - unit*3.0, unit*0.8, unit*1.5, skinShadow);
     
     // === JERSEY NUMBER (on shirt) ===
-    ctx.fillStyle = isBlue ? "#ffffff" : "#ffffff";
-    const fontSize = Math.max(6, unit * 2.2);
+    // ★ v11.5.0: Responsive font sizes - portrait mode uses larger relative sizes
+    ctx.fillStyle = "#ffffff";
+    // Portrait: unit is smaller, so boost font size for readability
+    const numFontScale = isPortrait ? 2.6 : 2.2;
+    const fontSize = Math.max(isPortrait ? 5 : 6, unit * numFontScale);
     ctx.font = `bold ${fontSize}px ${RETRO_FONT}, monospace`;
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(p.num.toString(), pos.x, pos.y + unit*0.2);
 
     // ★ v10.1.0: Show player name from gacha card below the sprite
-    if (p.cardName) {
-      const nameFontSize = Math.max(5, unit * 1.4);
+    // ★ v11.5.0: Portrait mode - show name only for ball holder or GK to reduce clutter
+    const showName = p.cardName && (!isPortrait || st.ball.owner === p.slot + (p.team===1?11:0) || p.isGK);
+    if (showName) {
+      const nameFontScale = isPortrait ? 1.6 : 1.4;
+      const nameFontSize = Math.max(isPortrait ? 4 : 5, unit * nameFontScale);
       ctx.font = `bold ${nameFontSize}px 'DotGothic16', monospace`;
       ctx.fillStyle = isBlue ? '#88ccff' : '#ffaaaa';
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-      const displayName = p.cardName.length > 4 ? p.cardName.slice(0, 4) : p.cardName;
+      // Portrait: show up to 5 chars; landscape: 4 chars
+      const maxChars = isPortrait ? 5 : 4;
+      const displayName = p.cardName!.length > maxChars ? p.cardName!.slice(0, maxChars) : p.cardName!;
       ctx.fillText(displayName, pos.x, pos.y + unit * 3.5);
     }
   });

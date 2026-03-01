@@ -3503,17 +3503,32 @@ function runSetPiece(st: State) {
       st.ball.intendedReceiverIdx = bestReceiver;
     }
     
-    // Log
+    // ★ v11.5.0: Log with inswing/outswing label
     const crossLabel = crossType < 0.35 ? "ニアポスト" : crossType < 0.70 ? "ファーポスト" : "ペナルティエリア中央";
+    const swingLabel = isInswing ? "インスイングクロス" : "アウトスイングクロス";
+    const swingEmoji = isInswing ? "🌀" : "↪️";
     emitLog(st, {
       time: st.time,
       team: kicker.team,
       playerNum: kicker.num,
       playerRole: kicker.posLabel || "MF",
       action: "pass",
-      detail: `${kicker.cardName || '#' + kicker.num} コーナーキック！ ${crossLabel}へクロス！`,
+      detail: `${kicker.cardName || '#' + kicker.num} コーナーキック！ ${swingLabel}で${crossLabel}へ！`,
       success: true,
       excitement: 2,
+    });
+    // Second log entry for the swing type (excitement level 1)
+    emitLog(st, {
+      time: st.time,
+      team: kicker.team,
+      playerNum: kicker.num,
+      playerRole: kicker.posLabel || "MF",
+      action: "pass",
+      detail: isInswing
+        ? `→ ゴールに向かって曲がるインスイング！チャンス！`
+        : `→ 外側に流れるアウトスイングクロス`,
+      success: true,
+      excitement: isInswing ? 2 : 1,
     });
     return;
   }
@@ -3731,10 +3746,11 @@ export function update(st: State, dt: number) {
   }
   
   // ★ v9.7.0: Ball trail dots - emit when ball is in flight
+  // ★ v11.5.0: Record spinX and z for curve visualization
   if (st.ball.free && vlen(st.ball.vel) > 2.0) {
-    st.ballTrail.push({ pos: { ...st.ball.pos }, t: 0.6 });
-    // Limit trail length
-    if (st.ballTrail.length > 30) st.ballTrail.shift();
+    st.ballTrail.push({ pos: { ...st.ball.pos }, t: 0.6, spinX: st.ball.spinX, z: st.ball.z });
+    // Limit trail length (more dots for better curve visualization)
+    if (st.ballTrail.length > 45) st.ballTrail.shift();
   }
   // Decay trail dots
   for (let i = st.ballTrail.length - 1; i >= 0; i--) {
