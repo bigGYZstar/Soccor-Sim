@@ -671,14 +671,17 @@ function GoalReplayView({ replays }: { replays: GoalReplay[] }) {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const replay = replays[selectedIdx];
 
-  // Auto-play when replay changes
+  // ★ v11.7.0: Auto-play when replay changes
+  // Start ~5 seconds before goal (5s * 30fps = 150 frames before goal)
   useEffect(() => {
     if (!replay) return;
-    setPlayFrameIdx(Math.max(0, replay.goalFrameIdx - 40));
+    const startFrame = Math.max(0, replay.goalFrameIdx - 150);
+    setPlayFrameIdx(startFrame);
     setIsPlaying(true);
   }, [selectedIdx, replay]);
 
-  // Playback loop
+  // ★ v11.7.0: Playback loop at 30fps (33ms interval) - matches capture rate
+  // This is wall-clock playback, independent of game speed mode
   useEffect(() => {
     if (!isPlaying || !replay) return;
     intervalRef.current = setInterval(() => {
@@ -689,7 +692,7 @@ function GoalReplayView({ replays }: { replays: GoalReplay[] }) {
         }
         return prev + 1;
       });
-    }, 60); // ~16fps playback
+    }, 1000 / 30); // 30fps = 33.3ms per frame (matches capture rate)
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [isPlaying, replay]);
 
@@ -713,7 +716,7 @@ function GoalReplayView({ replays }: { replays: GoalReplay[] }) {
   const handlePause = () => setIsPlaying(false);
   const handleRewind = () => {
     setIsPlaying(false);
-    setPlayFrameIdx(Math.max(0, replay.goalFrameIdx - 40));
+    setPlayFrameIdx(Math.max(0, replay.goalFrameIdx - 150)); // ★ v11.7.0: 5s before goal
   };
 
   return (

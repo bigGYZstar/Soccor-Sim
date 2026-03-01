@@ -527,6 +527,7 @@ export function mkState(blueFormation: FormationId = "4-4-2", redFormation: Form
     goalReplays: [],
     replayBuffer: [],
     replayFrameCounter: 0,
+    replayWallTimeAccum: 0,  // ★ v11.7.0: Wall-clock accumulator for speed-independent capture
   };
 }
 
@@ -3895,10 +3896,15 @@ export function update(st: State, dt: number) {
     }
   }
 
-  // ★ v11.0.0: Goal replay buffer - capture lightweight frame snapshot every 2 frames
-  st.replayFrameCounter++;
-  if (st.replayFrameCounter >= 2) {
-    st.replayFrameCounter = 0;
+  // ★ v11.7.0: Goal replay buffer - capture at fixed WALL-CLOCK rate (speed-mode independent)
+  // We receive dt = rawElapsed * speedMul, so rawElapsed = dt / speedMul
+  // We want to capture ~30 frames per real second regardless of speed mode
+  const speedMulForReplay = SPEED_MULTIPLIERS[st.speed] ?? 12.0;
+  const rawElapsed = dt / speedMulForReplay;  // actual wall-clock seconds this frame
+  st.replayWallTimeAccum += rawElapsed;
+  const REPLAY_CAPTURE_INTERVAL = 1 / 30;  // capture at 30fps wall-clock
+  if (st.replayWallTimeAccum >= REPLAY_CAPTURE_INTERVAL) {
+    st.replayWallTimeAccum -= REPLAY_CAPTURE_INTERVAL;
     const frame = {
       players: st.pl.map(p => ({ x: p.pos.x, y: p.pos.y, team: p.team, num: p.num, isGK: p.isGK, face: { x: p.face.x, y: p.face.y }, act: p.act })),
       ball: { x: st.ball.pos.x, y: st.ball.pos.y, z: st.ball.z, free: st.ball.free, owner: st.ball.owner },
@@ -3908,8 +3914,8 @@ export function update(st: State, dt: number) {
       scoreRed: st.scoreRed,
     };
     st.replayBuffer.push(frame);
-    // Keep ~5 seconds at ~30fps (2 frames per capture) = 75 frames
-    const MAX_BUFFER = 80;
+    // Keep ~8 seconds at 30fps = 240 frames (enough for pre-goal buildup)
+    const MAX_BUFFER = 240;
     if (st.replayBuffer.length > MAX_BUFFER) st.replayBuffer.shift();
   }
 

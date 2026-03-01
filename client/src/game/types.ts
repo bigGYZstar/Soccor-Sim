@@ -45,21 +45,29 @@ export interface FootParams {
   ballControl: number;      // 0-10: ball control during dribble (5 = average)
 }
 
-// ★ v11.6.0: 5-stage speed modes
-// REAL = 1.0× (real football pace, ~90min real time)
-// SLOW = ~4.5× (~20min real time)
-// NORMAL = ~12× (~7-8min real time)
-// FAST = ~22× (~4min real time)
-// VFAST = ~45× (~2min real time)
+// ★ v11.7.0: 5-stage speed modes
+//
+// The game engine uses "simulation seconds" (sim-sec) internally.
+// 1 half = 120 sim-sec = 45 real minutes (2700 real seconds)
+// => 1 sim-sec = 22.5 real seconds
+//
+// speedMul is applied to dt (real elapsed seconds) before passing to physics.
+// Effective real time for 90min match = (240 sim-sec) / speedMul * 22.5 real-sec/sim-sec
+//
+// REAL:  speedMul = 1/22.5 = 0.0444 => 240/0.0444*22.5 = 121,500s = ~90min (true real-time)
+// SLOW:  speedMul = 4.5   => 240/4.5*22.5  = 1200s = 20min
+// MID:   speedMul = 12.0  => 240/12*22.5   = 450s  = 7.5min
+// FAST:  speedMul = 22.5  => 240/22.5*22.5 = 240s  = 4min
+// VFAST: speedMul = 45.0  => 240/45*22.5   = 120s  = 2min
 export type SpeedMode = "REAL" | "LOW" | "MID" | "FAST" | "VFAST";
 
-/** Speed multipliers for each mode */
+/** Speed multipliers for each mode (applied to dt in engine update) */
 export const SPEED_MULTIPLIERS: Record<SpeedMode, number> = {
-  REAL:  1.0,   // Real-time football (90min = 90min)
-  LOW:   4.5,   // Slow (~20min for 90min match)
-  MID:   12.0,  // Normal (~7-8min for 90min match)
-  FAST:  22.0,  // Fast (~4min for 90min match)
-  VFAST: 45.0,  // Very Fast (~2min for 90min match)
+  REAL:  1 / 22.5,  // ★ v11.7.0: True real-time (1 wall-sec = 1 game-sec, ~90min for full match)
+  LOW:   4.5,       // Slow (~20min for 90min match)
+  MID:   12.0,      // Normal (~7-8min for 90min match)
+  FAST:  22.5,      // Fast (~4min for 90min match)
+  VFAST: 45.0,      // Very Fast (~2min for 90min match)
 };
 
 export type SetPieceType = "throw-in" | "corner" | "free-kick" | null;
@@ -382,6 +390,8 @@ export interface State {
   goalReplays: GoalReplay[];        // Stored goal replay clips
   replayBuffer: GoalReplayFrame[];  // Rolling 5-second frame buffer (capped at ~150 frames)
   replayFrameCounter: number;       // Counter to limit buffer capture rate (every 2 frames)
+  // ★ v11.7.0: Wall-clock time accumulator for replay capture (speed-mode independent)
+  replayWallTimeAccum: number;      // Accumulated real seconds since last replay frame capture
   // ★ v9.11.0: Screen effects for dramatic moments (dribble breakthrough, goals)
   screenEffect: {
     type: "none" | "dribbleSuccess" | "goal" | "save";
