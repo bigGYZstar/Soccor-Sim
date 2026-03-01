@@ -45,29 +45,32 @@ export interface FootParams {
   ballControl: number;      // 0-10: ball control during dribble (5 = average)
 }
 
-// ★ v11.7.0: 5-stage speed modes
+// ★ v11.9.0: 5-stage speed modes - CORRECTED FORMULA
 //
 // The game engine uses "simulation seconds" (sim-sec) internally.
-// 1 half = 120 sim-sec = 45 real minutes (2700 real seconds)
-// => 1 sim-sec = 22.5 real seconds
+// matchDuration = 240 sim-sec for a full 90-min match
 //
-// speedMul is applied to dt (real elapsed seconds) before passing to physics.
-// Effective real time for 90min match = (240 sim-sec) / speedMul * 22.5 real-sec/sim-sec
+// speedMul is applied to dt (real elapsed seconds) before ALL physics/AI/timers.
+// Real time for full match = matchDuration / speedMul
+// => speedMul = matchDuration / target_real_seconds
 //
-// REAL:  speedMul = 1/22.5 = 0.0444 => 240/0.0444*22.5 = 121,500s = ~90min (true real-time)
-// SLOW:  speedMul = 4.5   => 240/4.5*22.5  = 1200s = 20min
-// MID:   speedMul = 12.0  => 240/12*22.5   = 450s  = 7.5min
-// FAST:  speedMul = 22.5  => 240/22.5*22.5 = 240s  = 4min
-// VFAST: speedMul = 45.0  => 240/45*22.5   = 120s  = 2min
+// REAL:  240/5400 = 0.0444 => 5400s = 90min  (true real-time)
+// SLOW:  240/1200 = 0.2    => 1200s = 20min
+// MID:   240/450  = 0.533  => 450s  = 7.5min
+// FAST:  240/240  = 1.0    => 240s  = 4min
+// VFAST: 240/120  = 2.0    => 120s  = 2min
+//
+// All physics (ball speed, player speed, AI decisions) scale uniformly,
+// so simulation results are IDENTICAL across all speed modes.
 export type SpeedMode = "REAL" | "LOW" | "MID" | "FAST" | "VFAST";
 
 /** Speed multipliers for each mode (applied to dt in engine update) */
 export const SPEED_MULTIPLIERS: Record<SpeedMode, number> = {
-  REAL:  1 / 22.5,  // ★ v11.7.0: True real-time (1 wall-sec = 1 game-sec, ~90min for full match)
-  LOW:   4.5,       // Slow (~20min for 90min match)
-  MID:   12.0,      // Normal (~7-8min for 90min match)
-  FAST:  22.5,      // Fast (~4min for 90min match)
-  VFAST: 45.0,      // Very Fast (~2min for 90min match)
+  REAL:  240 / 5400,  // 0.0444: 90 real minutes (true real-time)
+  LOW:   240 / 1200,  // 0.2:    20 real minutes (slow)
+  MID:   240 / 450,   // 0.533:  7.5 real minutes (normal)
+  FAST:  240 / 240,   // 1.0:    4 real minutes (fast)
+  VFAST: 240 / 120,   // 2.0:    2 real minutes (very fast)
 };
 
 export type SetPieceType = "throw-in" | "corner" | "free-kick" | null;
