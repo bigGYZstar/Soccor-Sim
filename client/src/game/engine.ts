@@ -30,7 +30,10 @@ const PExt = {
   restartPause: 1.0,
   throwInInset: 0.35,
   cornerInset: 0.25,
-  goalKickX: 10.5 - 0.92 + 0.2,
+  // ★ v11.17.0: Goal kick from INSIDE goal area (correct rule)
+  // pitchHalfW(52.5) - goalAreaW(5.5)*0.5 = 49.75m from center
+  // i.e., 2.75m inside the goal area from the goal line
+  goalKickX: 52.5 - 5.5 * 0.5,  // = 49.75m from center (goal area center)
   gkSaveEnabled: true,
   gkSaveRadius: 0.9,
   gkSaveBase: 0.55,
@@ -3402,27 +3405,38 @@ function positionForCorner(st: State, sp: { kind: string; team: number; pos: V }
 function positionForGoalKick(st: State, sp: { kind: string; team: number; pos: V }) {
   const kickTeam = sp.team;
   const goalSide = kickTeam;  // Goal kick is from own goal
+  // ★ v11.17.0: Correct goal kick positioning per rules
+  // - Kicking team: GK at ball, outfield players spread to receive
+  // - Opposing team: MUST be outside penalty area until ball is in play
+  const penAreaEdgeX = goalSide * (PExt.pitchHalfW - PExt.penAreaW);  // edge of penalty area
   
   for (const p of st.pl) {
     if (p.team === kickTeam) {
       if (p.isGK) {
-        // GK moves to ball position
+        // GK moves to ball position (inside goal area)
         p.tgt = pitchClamp(sp.pos);
       } else if (p.role === "DEF") {
-        // CBs spread wide near penalty area for short option
-        const yOffset = p.home.y > 0 ? PExt.penAreaH * 0.8 : -PExt.penAreaH * 0.8;
-        p.tgt = pitchClamp(v(goalSide * (PExt.pitchHalfW - PExt.penAreaW * 1.5), yOffset));
+        // CBs spread wide just outside penalty area for short option
+        const yOffset = p.home.y >= 0 ? PExt.penAreaH * 0.9 : -PExt.penAreaH * 0.9;
+        p.tgt = pitchClamp(v(goalSide * (PExt.pitchHalfW - PExt.penAreaW - 2.0), yOffset));
+      } else if (p.role === "MID") {
+        // MID spread in midfield to receive
+        p.tgt = pitchClamp(v(p.home.x * 0.5, p.home.y * 0.8));
       } else {
-        // MID/FWD push forward to receive long kick
-        p.tgt = pitchClamp(v(p.home.x * 0.6, p.home.y * 0.8));
+        // FWD push forward to receive long kick
+        p.tgt = pitchClamp(v(p.home.x * 0.6, p.home.y * 0.7));
       }
     } else {
-      // Opponent team pushes up to press
+      // ★ v11.17.0: Opposing team MUST stay OUTSIDE penalty area (rule)
+      // They wait at penalty area edge until ball is kicked
       if (p.isGK) {
         p.tgt = pitchClamp(v(p.home.x, p.home.y));
       } else {
-        // Push up toward halfway line
-        p.tgt = pitchClamp(v(p.home.x * 0.5, p.home.y * 0.7));
+        // All outfield opponents wait just outside penalty area
+        // penAreaEdgeX is the inner edge of the penalty area from kicking team's goal
+        const safeX = penAreaEdgeX - goalSide * 2.0;  // 2m outside penalty area
+        const spreadY = p.home.y * 0.8;
+        p.tgt = pitchClamp(v(safeX, spreadY));
       }
     }
     p.act = "move";
@@ -3480,25 +3494,31 @@ function runSetPiece(st: State) {
   }
   
   if (sp.kind === "GOALKICK") {
-    // ★ v11.3.0: Goal kick with realistic GK behavior
-    const gkIdx = findGK(st, sp.team);
+    // ★ v11.17.0: Goal kick - GK kicks directly from inside goal area (no dribble allowed)
+    // Use takerIdx from animation phase (already set to GK)
+    const gkIdx = sp.takerIdx >= 0 ? sp.takerIdx : findGK(st, sp.team);
     if (gkIdx === -1) return;
     const gk = st.pl[gkIdx];
     
-    // Position GK at ball
+    // Snap GK to ball position (inside goal area)
     gk.pos = pitchClamp(sp.pos);
     gk.tgt = { ...gk.pos };
-    gk.act = "idle";
-    gk.face = v(-sp.team, 0);
+    gk.act = "idle";  // idle = no dribble
+    gk.face = v(-sp.team, 0);  // Face toward field
     
-    // Give ball to GK
-    give(st.ball, gkIdx, st.pl, st);
+    // Place ball at GK's feet (goal area position)
+    st.ball.pos = { ...gk.pos };
+    st.ball.free = true;
+    st.ball.owner = null;
+    st.ball.vel = v(0, 0);
+    st.ball.z = 0;
+    st.ball.vz = 0;
     
     // ★ v11.3.0: GK decides: long kick (70%) or short pass to CB (30%)
     const doShortPass = Math.random() < 0.30;
     
     if (doShortPass) {
-      // Short pass to nearest CB
+      // ★ v11.17.0: Short pass to nearest DEF/CB (GK kicks directly, no dribble)
       let bestCB = -1;
       let bestDist = Infinity;
       for (let i = 0; i < st.pl.length; i++) {
@@ -3511,18 +3531,23 @@ function runSetPiece(st: State) {
       if (bestCB !== -1) {
         const cb = st.pl[bestCB];
         const tp = { ...cb.pos };
-        st.ball.intendedReceiverIdx = bestCB;
+        // GK kicks directly from goal area (no give/dribble)
         st.ball.lastPasserIdx = gkIdx;
+        st.ball.intendedReceiverIdx = bestCB;
+        st.ball.lastTouchTeam = gk.team;
+        st.ball.lastKickTeam = gk.team;
+        st.ball.lastKickType = "PASS";
         kick(st, gkIdx, Math.max(6.0, bestDist * 0.8), false, tp, false, 0.05);
         st.ball.cooldown = PExt.restartNoIntercept;
         // Log
+        const gkName = gk.cardName || `GK#${gk.num}`;
         emitLog(st, {
           time: st.time,
           team: gk.team,
           playerNum: gk.num,
           playerRole: "GK",
           action: "pass",
-          detail: `GK ゴールキック → ${cb.cardName || '#' + cb.num}(${cb.posLabel || 'CB'})へショートパス`,
+          detail: `${gkName} ゴールキック → ${cb.cardName || '#' + cb.num}(${cb.posLabel || 'CB'})へショートパス`,
           success: true,
           excitement: 0,
         });
@@ -3552,6 +3577,10 @@ function runSetPiece(st: State) {
     const dist = vdist(gk.pos, target);
     // Speed: ensure ball reaches FW (dist * 0.75 minimum, cap at 35 m/s)
     const gkKickSpd = Math.min(35.0, Math.max(20.0, dist * 0.75));
+    // ★ v11.17.0: GK kicks directly from goal area (no give/dribble)
+    st.ball.lastTouchTeam = gk.team;
+    st.ball.lastKickTeam = gk.team;
+    st.ball.lastKickType = "LONG";
     kick(st, gkIdx, gkKickSpd, false, target, true, 0.12);
     st.ball.lob = 1.0;
     st.ball.z = 0.3;
@@ -3567,13 +3596,14 @@ function runSetPiece(st: State) {
     st.ball.spinX = gkFoot * gkCurvePower * 2.5 * (0.5 + Math.random() * 0.8);
     st.ball.spinDecay = 1.5; // Moderate decay for long kick
     // Log
+    const gkNameLong = gk.cardName || `GK#${gk.num}`;
     emitLog(st, {
       time: st.time,
       team: gk.team,
       playerNum: gk.num,
       playerRole: "GK",
       action: "pass",
-      detail: `GK ゴールキック！ 大きく前方へ蹴り出す！`,
+      detail: `${gkNameLong} ゴールエリアからロングキック！ 前方へ大きく蹴り出す！`,
       success: true,
       excitement: 1,
     });
@@ -4564,9 +4594,13 @@ export function update(st: State, dt: number) {
       } else {
         // attacker touched last => goal kick for defenders
         const restartTeam = defendingTeam;
-        // ★ 修正: ハードコードされた 3.0 を廃止し、専用の定数 goalKickX を使用する
+        // ★ v11.17.0: Goal kick placed INSIDE goal area (correct rule)
+        // Ball is placed anywhere within the goal area (6-yard box)
+        // goalKickX = pitchHalfW - goalAreaW*0.5 (center of goal area depth)
         const gkX = goalSide * PExt.goalKickX;
-        stopForSetPiece(st, "GOALKICK", restartTeam, v(gkX, 0));
+        // Y: anywhere within goal area width (±goalAreaH = ±5.5m)
+        const gkY = rng(-PExt.goalAreaH * 0.8, PExt.goalAreaH * 0.8);
+        stopForSetPiece(st, "GOALKICK", restartTeam, v(gkX, gkY));
         return;
       }
     }
