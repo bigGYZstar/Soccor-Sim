@@ -8,6 +8,7 @@ import {
   clamp, rng, pitchClamp, vmove, distSegmentToPoint
 } from './math';
 import {
+  emitLog,
   logPass, logPassReceive, logShot, logDribbleAttempt, logDribbleSuccess, logDribbleFail,
   logTackle, logIntercept, logGoal, logSave, logTurnover, logTrapFail,
   updateLogTTL
@@ -3225,35 +3226,263 @@ function stopForSetPiece(st: State, kind: "THROWIN" | "CORNER" | "GOALKICK", tea
   // Debug log removed
   
   st.paused = true;
-  st.pauseT = PExt.restartPause;
-  st.setPieceRestart = { kind, team, pos };
+  // ★ v11.3.0: Longer pause for goal kicks and corners to set up positions
+  st.pauseT = kind === "GOALKICK" ? 2.0 : kind === "CORNER" ? 2.5 : PExt.restartPause;
+  st.setPieceRestart = { kind, team, pos, phase: "setup", timer: 0, takerIdx: -1, targetPos: v(0, 0), positioned: false };
   st.ball.free = false;
   st.ball.vel = v(0, 0);
   st.ball.owner = null;
   st.ball.cooldown = PExt.restartNoIntercept;
+  // ★ v11.3.0: Place ball at restart position immediately
+  st.ball.pos = { ...pos };
+  st.ball.z = 0;
+  st.ball.vz = 0;
+  st.ball.lob = 0;
+  st.ball.shot = false;
+}
+
+// ★ v11.3.0: Position players for corner kick (both teams shift toward goal)
+function positionForCorner(st: State, sp: { kind: string; team: number; pos: V }) {
+  const attackTeam = sp.team;  // Team taking the corner
+  const defTeam = -attackTeam;
+  const goalSide = -attackTeam;  // Corner is near defending team's goal
+  const goalX = goalSide * PExt.pitchHalfW;
+  const cornerY = sp.pos.y;  // Which side the corner is on
+  const cornerSide = Math.sign(cornerY);  // +1 or -1
+  
+  for (const p of st.pl) {
+    if (p.team === attackTeam) {
+      if (p.isGK) {
+        // GK stays near own goal but moves up slightly
+        p.tgt = pitchClamp(v(attackTeam * PExt.pitchHalfW * 0.7, 0));
+      } else if (p.role === "DEF") {
+        // DEF push up to halfway line area
+        p.tgt = pitchClamp(v(goalX * 0.3, p.home.y * 0.6));
+      } else if (p.role === "MID") {
+        // MID push into penalty area edge
+        const ySpread = rng(-PExt.penAreaH * 0.8, PExt.penAreaH * 0.8);
+        p.tgt = pitchClamp(v(goalX - goalSide * PExt.penAreaW * 1.2, ySpread));
+      } else {
+        // FWD go into the box for headers
+        const ySpread = rng(-PExt.goalHalfH * 2.5, PExt.goalHalfH * 2.5);
+        p.tgt = pitchClamp(v(goalX - goalSide * PExt.goalAreaW * 1.5, ySpread));
+      }
+    } else {
+      // Defending team
+      if (p.isGK) {
+        // GK stays on goal line, slightly toward near post
+        p.tgt = pitchClamp(v(goalX - goalSide * 1.0, cornerSide * PExt.goalHalfH * 0.3));
+      } else if (p.role === "DEF") {
+        // DEF mark attackers in the box
+        const ySpread = rng(-PExt.goalHalfH * 2.0, PExt.goalHalfH * 2.0);
+        p.tgt = pitchClamp(v(goalX - goalSide * PExt.goalAreaW * 1.2, ySpread));
+      } else if (p.role === "MID") {
+        // MID cover edge of box
+        const ySpread = rng(-PExt.penAreaH * 0.7, PExt.penAreaH * 0.7);
+        p.tgt = pitchClamp(v(goalX - goalSide * PExt.penAreaW * 1.0, ySpread));
+      } else {
+        // FWD stay high for counter-attack
+        p.tgt = pitchClamp(v(-goalSide * PExt.pitchHalfW * 0.3, p.home.y * 0.5));
+      }
+    }
+    p.act = "move";
+  }
+}
+
+// ★ v11.3.0: Position players for goal kick
+function positionForGoalKick(st: State, sp: { kind: string; team: number; pos: V }) {
+  const kickTeam = sp.team;
+  const goalSide = kickTeam;  // Goal kick is from own goal
+  
+  for (const p of st.pl) {
+    if (p.team === kickTeam) {
+      if (p.isGK) {
+        // GK moves to ball position
+        p.tgt = pitchClamp(sp.pos);
+      } else if (p.role === "DEF") {
+        // CBs spread wide near penalty area for short option
+        const yOffset = p.home.y > 0 ? PExt.penAreaH * 0.8 : -PExt.penAreaH * 0.8;
+        p.tgt = pitchClamp(v(goalSide * (PExt.pitchHalfW - PExt.penAreaW * 1.5), yOffset));
+      } else {
+        // MID/FWD push forward to receive long kick
+        p.tgt = pitchClamp(v(p.home.x * 0.6, p.home.y * 0.8));
+      }
+    } else {
+      // Opponent team pushes up to press
+      if (p.isGK) {
+        p.tgt = pitchClamp(v(p.home.x, p.home.y));
+      } else {
+        // Push up toward halfway line
+        p.tgt = pitchClamp(v(p.home.x * 0.5, p.home.y * 0.7));
+      }
+    }
+    p.act = "move";
+  }
 }
 
 function runSetPiece(st: State) {
   const sp = st.setPieceRestart!;
   
-  // Goal kicks must be taken by goalkeeper
-  let taker: number;
-  if (sp.kind === "GOALKICK") {
-    taker = findGK(st, sp.team);
-    if (taker === -1) return; // No GK found
-  } else {
-    // Corner kicks and throw-ins taken by nearest outfield player
-    taker = nearestOutfield(st, sp.pos, sp.team);
+  if (sp.kind === "THROWIN") {
+    // Throw-in: simple - nearest outfield player takes it
+    const taker = nearestOutfield(st, sp.pos, sp.team);
     if (taker === -1) return;
+    st.pl[taker].pos = pitchClamp(sp.pos);
+    st.pl[taker].tgt = { ...st.pl[taker].pos };
+    st.pl[taker].act = "idle";
+    st.pl[taker].face = v(-sp.team, 0);
+    give(st.ball, taker, st.pl, st);
+    st.ball.cooldown = PExt.restartNoIntercept;
+    return;
   }
-
-  st.pl[taker].pos = pitchClamp(sp.pos);
-  st.pl[taker].tgt = { ...st.pl[taker].pos };
-  st.pl[taker].act = "idle";
-  st.pl[taker].face = v(-sp.team, 0);
-
-  give(st.ball, taker, st.pl, st);
-  st.ball.cooldown = PExt.restartNoIntercept;
+  
+  if (sp.kind === "GOALKICK") {
+    // ★ v11.3.0: Goal kick with realistic GK behavior
+    const gkIdx = findGK(st, sp.team);
+    if (gkIdx === -1) return;
+    const gk = st.pl[gkIdx];
+    
+    // Position GK at ball
+    gk.pos = pitchClamp(sp.pos);
+    gk.tgt = { ...gk.pos };
+    gk.act = "idle";
+    gk.face = v(-sp.team, 0);
+    
+    // Give ball to GK
+    give(st.ball, gkIdx, st.pl, st);
+    
+    // ★ v11.3.0: GK decides: long kick (70%) or short pass to CB (30%)
+    const doShortPass = Math.random() < 0.30;
+    
+    if (doShortPass) {
+      // Short pass to nearest CB
+      let bestCB = -1;
+      let bestDist = Infinity;
+      for (let i = 0; i < st.pl.length; i++) {
+        const p = st.pl[i];
+        if (p.team !== sp.team || p.isGK) continue;
+        if (p.role !== "DEF") continue;
+        const d = vdist(gk.pos, p.pos);
+        if (d < bestDist) { bestDist = d; bestCB = i; }
+      }
+      if (bestCB !== -1) {
+        const cb = st.pl[bestCB];
+        const tp = { ...cb.pos };
+        st.ball.intendedReceiverIdx = bestCB;
+        st.ball.lastPasserIdx = gkIdx;
+        kick(st, gkIdx, Math.max(6.0, bestDist * 0.8), false, tp, false, 0.05);
+        st.ball.cooldown = PExt.restartNoIntercept;
+        // Log
+        emitLog(st, {
+          time: st.time,
+          team: gk.team,
+          playerNum: gk.num,
+          playerRole: "GK",
+          action: "pass",
+          detail: `GK ゴールキック → ${cb.cardName || '#' + cb.num}(${cb.posLabel || 'CB'})へショートパス`,
+          success: true,
+          excitement: 0,
+        });
+        return;
+      }
+    }
+    
+    // Long kick forward
+    const targetX = -sp.team * (PExt.pitchHalfW * 0.3 + rng(0, PExt.pitchHalfW * 0.3));
+    const targetY = rng(-PExt.pitchHalfH * 0.5, PExt.pitchHalfH * 0.5);
+    const target = v(targetX, targetY);
+    const dist = vdist(gk.pos, target);
+    kick(st, gkIdx, Math.min(28.0, Math.max(15.0, dist * 0.6)), false, target, true, 0.15);
+    st.ball.lob = 1.0;
+    st.ball.z = 0.5;
+    st.ball.vz = Math.min(8.0, dist * 0.1 + 2.0);
+    st.ball.cooldown = PExt.restartNoIntercept;
+    // Log
+    emitLog(st, {
+      time: st.time,
+      team: gk.team,
+      playerNum: gk.num,
+      playerRole: "GK",
+      action: "pass",
+      detail: `GK ゴールキック！ 大きく前方へ蹴り出す！`,
+      success: true,
+      excitement: 1,
+    });
+    return;
+  }
+  
+  if (sp.kind === "CORNER") {
+    // ★ v11.3.0: Corner kick with full positioning and cross
+    const taker = nearestOutfield(st, sp.pos, sp.team);
+    if (taker === -1) return;
+    const kicker = st.pl[taker];
+    
+    // Place kicker at corner
+    kicker.pos = pitchClamp(sp.pos);
+    kicker.tgt = { ...kicker.pos };
+    kicker.act = "idle";
+    
+    // Face toward goal
+    const goalSide = -sp.team;
+    const goalX = goalSide * PExt.pitchHalfW;
+    kicker.face = vnorm(vsub(v(goalX, 0), kicker.pos));
+    
+    // Give ball to kicker
+    give(st.ball, taker, st.pl, st);
+    
+    // ★ v11.3.0: Determine cross target - near post, far post, or penalty spot area
+    const crossType = Math.random();
+    let crossTarget: V;
+    const cornerSide = Math.sign(sp.pos.y);
+    
+    if (crossType < 0.35) {
+      // Near post
+      crossTarget = v(goalX - goalSide * PExt.goalAreaW * 0.8, cornerSide * PExt.goalHalfH * 1.2);
+    } else if (crossType < 0.70) {
+      // Far post
+      crossTarget = v(goalX - goalSide * PExt.goalAreaW * 0.8, -cornerSide * PExt.goalHalfH * 1.5);
+    } else {
+      // Penalty spot area
+      crossTarget = v(goalX - goalSide * PExt.penSpotDist, rng(-PExt.goalHalfH, PExt.goalHalfH));
+    }
+    
+    // Kick the cross
+    const crossDist = vdist(kicker.pos, crossTarget);
+    const crossSpeed = Math.max(14.0, Math.min(22.0, crossDist * 0.55));
+    st.ball.intendedReceiverIdx = null;
+    kick(st, taker, crossSpeed, false, crossTarget, true, 0.12);
+    st.ball.lob = 1.0;
+    st.ball.z = 0.5;
+    st.ball.vz = Math.min(7.0, crossDist * 0.1 + 2.5);
+    st.ball.cooldown = PExt.restartNoIntercept;
+    
+    // Find nearest attacker to cross target for intended receiver
+    let bestReceiver = -1;
+    let bestRecvDist = Infinity;
+    for (let i = 0; i < st.pl.length; i++) {
+      if (i === taker) continue;
+      if (st.pl[i].team !== sp.team) continue;
+      const d = vdist(st.pl[i].pos, crossTarget);
+      if (d < bestRecvDist) { bestRecvDist = d; bestReceiver = i; }
+    }
+    if (bestReceiver !== -1) {
+      st.ball.intendedReceiverIdx = bestReceiver;
+    }
+    
+    // Log
+    const crossLabel = crossType < 0.35 ? "ニアポスト" : crossType < 0.70 ? "ファーポスト" : "ペナルティエリア中央";
+    emitLog(st, {
+      time: st.time,
+      team: kicker.team,
+      playerNum: kicker.num,
+      playerRole: kicker.posLabel || "MF",
+      action: "pass",
+      detail: `${kicker.cardName || '#' + kicker.num} コーナーキック！ ${crossLabel}へクロス！`,
+      success: true,
+      excitement: 2,
+    });
+    return;
+  }
 }
 
 export function startThrowIn(st: State, throwerIdx: number, targetPos: V) {
@@ -3394,6 +3623,60 @@ export function update(st: State, dt: number) {
   // Pause
   if (st.paused) {
     st.pauseT -= dt;
+    
+    // ★ v11.3.0: During pause, move players to set piece positions
+    if (st.setPieceRestart && !st.setPieceRestart.positioned) {
+      if (st.setPieceRestart.kind === "CORNER") {
+        positionForCorner(st, st.setPieceRestart);
+      } else if (st.setPieceRestart.kind === "GOALKICK") {
+        positionForGoalKick(st, st.setPieceRestart);
+      }
+      st.setPieceRestart.positioned = true;
+      
+      // Log the set piece
+      if (st.setPieceRestart.kind === "CORNER") {
+        emitLog(st, {
+          time: st.time,
+          team: st.setPieceRestart.team,
+          playerNum: 0,
+          playerRole: "",
+          action: "pass",
+          detail: st.setPieceRestart.team === -1 ? "BLU コーナーキック！ チャンス！" : "RED コーナーキック！ チャンス！",
+          success: true,
+          excitement: 2,
+        });
+      } else if (st.setPieceRestart.kind === "GOALKICK") {
+        emitLog(st, {
+          time: st.time,
+          team: st.setPieceRestart.team,
+          playerNum: 0,
+          playerRole: "GK",
+          action: "pass",
+          detail: st.setPieceRestart.team === -1 ? "BLU ゴールキック" : "RED ゴールキック",
+          success: true,
+          excitement: 0,
+        });
+      }
+    }
+    
+    // ★ v11.3.0: During set piece pause, still move players toward their targets
+    if (st.setPieceRestart && (st.setPieceRestart.kind === "CORNER" || st.setPieceRestart.kind === "GOALKICK")) {
+      for (const p of st.pl) {
+        const desired = vsub(p.tgt, p.pos);
+        const dist = vlen(desired);
+        if (dist > 0.3) {
+          const moveSpd = P.moveSpeed * 0.8; // Slightly slower during setup
+          const step = Math.min(dist, moveSpd * dt);
+          p.pos = vadd(p.pos, vscl(vnorm(desired), step));
+          p.face = vnorm(desired);
+          // Update feet
+          updatePlayerFeet(p, dt);
+        }
+      }
+      // Keep ball at restart position
+      st.ball.pos = { ...st.setPieceRestart.pos };
+    }
+    
     if (st.pauseT <= 0) {
       st.paused = false;
 
@@ -3873,6 +4156,9 @@ export function update(st: State, dt: number) {
               b.vel = vscl(parryDir, PExt.shotSpeed * 0.4);
               b.shot = false;
               b.cooldown = PExt.gkHoldCooldown;
+              // ★ v11.3.0: GKが弾いた = GKのチームが最後に触った
+              // これによりゴールラインを割った場合にコーナーキックが正しく判定される
+              b.lastTouchTeam = gk.team;
             } else {
               // Catch
               give(b, gkIdx, st.pl, st, "gkCatch");

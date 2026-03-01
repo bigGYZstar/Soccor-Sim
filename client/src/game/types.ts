@@ -118,6 +118,12 @@ export interface SetPieceRestart {
   kind: SetPieceKind;
   team: number;  // Restarting team (-1 or +1)
   pos: V;  // Restart position (on line)
+  // ★ v11.3.0: Set piece animation phases
+  phase: "setup" | "approach" | "kick" | "done";  // Current animation phase
+  timer: number;  // Timer for current phase
+  takerIdx: number;  // Player index taking the set piece
+  targetPos: V;  // Where the ball will be kicked to
+  positioned: boolean;  // Whether players have been positioned
 }
 
 export interface Trail {
