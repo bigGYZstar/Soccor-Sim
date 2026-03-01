@@ -3555,32 +3555,25 @@ export function update(st: State, dt: number) {
     return;
   }
   
-  // ★ v11.9.0: Correct physDt/simDt separation
+  // ★ v11.11.0: REAL-based unified speed scaling
   //
-  // physDt = raw wall-clock elapsed seconds (always ~0.016s at 60fps)
-  //   -> Used for: ball physics, player movement, AI decisions, stamina, animations
-  //   -> Physics constants (moveSpeed, passSpeed etc.) are tuned for physDt
-  //   -> AI decision interval (0.25s) is in real-world seconds
+  // REAL mode is the baseline (1x). All other modes are multiples of REAL.
+  // ALL calculations (physics, AI, match clock) use the SAME scaled dt.
+  // This means: faster mode = everything moves faster proportionally.
   //
-  // simDt = physDt * speedMul
-  //   -> Used for: match timer ONLY
-  //   -> Controls how fast the match clock advances
+  // speedMul values (REAL = baseline, others are multiples):
+  //   REAL:  0.0444 (1x)  -> 90 real minutes  (real soccer pace)
+  //   SLOW:  0.2    (4.5x)-> 20 real minutes
+  //   NORMAL:0.533  (12x) -> 7.5 real minutes
+  //   FAST:  1.0    (22x) -> 4 real minutes
+  //   VFAST: 2.0    (45x) -> 2 real minutes
   //
-  // speedMul = matchDuration / target_real_seconds
-  //   REAL:  240/5400 = 0.0444 -> 90 real minutes
-  //   SLOW:  240/1200 = 0.2    -> 20 real minutes
-  //   NORMAL:240/450  = 0.533  -> 7.5 real minutes
-  //   FAST:  240/240  = 1.0    -> 4 real minutes
-  //   VFAST: 240/120  = 2.0    -> 2 real minutes
-  //
-  // KEY INSIGHT: Physics runs at the same speed regardless of speed mode.
-  // Only the match clock rate changes. This means:
-  // - Ball speed, player speed, AI decisions are always the same
-  // - The match just takes more/less real time to complete
+  // physDt = raw wall-clock time (for visual-only timers: pause, flash, log TTL)
+  // dt = physDt * speedMul (for ALL physics, AI, and match clock)
   const speedMul = SPEED_MULTIPLIERS[st.speed] ?? (240 / 450);
-  const physDt = dt;              // Raw wall-clock time: for ALL physics and AI
-  const simDt = dt * speedMul;   // Scaled time: for match clock ONLY
-  dt = physDt;                   // dt = physDt for all physics below
+  const physDt = dt;              // Raw wall-clock time (visual timers only)
+  dt = physDt * speedMul;        // ALL physics + match clock scale together
+  const simDt = dt;              // simDt == dt (kept for clarity)
   
   // ★ v9.22.0: HALFTIME SCREEN - pause game during halftime show
   if (st.halftimeShow) {
@@ -3678,23 +3671,23 @@ export function update(st: State, dt: number) {
     return;
   }
   
-  // Flash
-  if (st.flash > 0) st.flash = Math.max(0, st.flash - dt * 2);
+  // Flash - visual effect, always real-time
+  if (st.flash > 0) st.flash = Math.max(0, st.flash - physDt * 2);
   
-  // ★ v9.9.0: Update action log TTL
-  updateLogTTL(st, dt);
+  // ★ v9.9.0: Update action log TTL - visual, always real-time
+  updateLogTTL(st, physDt);
   
-  // ★ v9.11.0: Update screen effect timer
+  // ★ v9.11.0: Update screen effect timer - visual, always real-time
   if (st.screenEffect.timer > 0) {
-    st.screenEffect.timer -= dt;
+    st.screenEffect.timer -= physDt;
     if (st.screenEffect.timer <= 0) {
       st.screenEffect = { type: "none", timer: 0, text: "", playerNum: 0, team: 0 };
     }
   }
   
-  // Pause
+  // Pause - visual pause, always real-time
   if (st.paused) {
-    st.pauseT -= dt;
+    st.pauseT -= physDt;
     
     // ★ v11.3.0: During pause, move players to set piece positions
     if (st.setPieceRestart && !st.setPieceRestart.positioned) {
@@ -3864,7 +3857,7 @@ export function update(st: State, dt: number) {
   
   // Set piece animation
   if (st.setPiece) {
-    st.setPiece.timer += dt;
+    st.setPiece.timer += physDt;  // Visual animation, always real-time
     // Set piece logic omitted for brevity
     return;
   }
