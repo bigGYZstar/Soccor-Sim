@@ -377,6 +377,8 @@ export function mkCustomPlayers(
       // ★ v11.4.0: Curve parameters - based on pass/shoot stats
       curvePower: norm((s.pass + s.shoot) / 2, 0.65, 1.45),    // How much spin is applied
       curveAccuracy: norm(s.pass, 0.70, 1.30),                   // How controlled the curve is
+      // ★ v11.15.0: Technique - short pass curve/placement (based on dribble + pass)
+      technique: norm((s.dribble + s.pass) / 2, 0.60, 1.50),   // High = curved short passes to teammate's feet
     };
   }
 
@@ -798,7 +800,10 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   const pCurveAccuracy = kicker.cardMods?.curveAccuracy ?? 1.0;
   // Base spin intensity: shots and long passes get more spin
   // Increased from previous values for more visible curve effect
-  const spinIntensity = shot ? 3.5 : isLong ? 3.0 : 1.2;
+  // ★ v11.15.0: technique boosts short pass spin (high technique = curved passes to feet)
+  const pTechnique = kicker.cardMods?.technique ?? 1.0;
+  const shortPassSpinBoost = !shot && !isLong ? pTechnique : 1.0;
+  const spinIntensity = shot ? 3.5 : isLong ? 3.0 : 1.2 * shortPassSpinBoost;
   // Apply curve power: higher stat = more spin
   // Random component: curveAccuracy controls how consistent the spin is
   const spinRandRange = isLong ? 1.2 : 0.8;
@@ -3403,21 +3408,42 @@ function runSetPiece(st: State) {
       }
     }
     
-    // ★ v11.4.0: Long kick forward with natural curve
-    const targetX = -sp.team * (PExt.pitchHalfW * 0.3 + rng(0, PExt.pitchHalfW * 0.3));
-    const targetY = rng(-PExt.pitchHalfH * 0.5, PExt.pitchHalfH * 0.5);
+    // ★ v11.15.0: Long kick forward - target FW position in opponent half
+    // Find nearest FW to aim at
+    let fwTarget: V | null = null;
+    let fwBestDist = Infinity;
+    for (const p of st.pl) {
+      if (p.team !== sp.team || p.isGK) continue;
+      if (p.role === "FWD" || p.role === "MID") {
+        const d = Math.abs(p.pos.x - (-sp.team * PExt.pitchHalfW)); // distance from opp goal
+        if (d < fwBestDist) { fwBestDist = d; fwTarget = { ...p.pos }; }
+      }
+    }
+    // Target: FW position or default to deep opponent half
+    const defaultTargetX = -sp.team * (PExt.pitchHalfW * 0.55 + rng(0, PExt.pitchHalfW * 0.2));
+    const defaultTargetY = rng(-PExt.pitchHalfH * 0.4, PExt.pitchHalfH * 0.4);
+    const rawTarget = fwTarget ?? v(defaultTargetX, defaultTargetY);
+    // Add slight inaccuracy around target
+    const targetX = rawTarget.x + rng(-5.0, 5.0);
+    const targetY = rawTarget.y + rng(-4.0, 4.0);
     const target = v(targetX, targetY);
     const dist = vdist(gk.pos, target);
-    kick(st, gkIdx, Math.min(28.0, Math.max(15.0, dist * 0.6)), false, target, true, 0.15);
+    // Speed: ensure ball reaches FW (dist * 0.75 minimum, cap at 35 m/s)
+    const gkKickSpd = Math.min(35.0, Math.max(20.0, dist * 0.75));
+    kick(st, gkIdx, gkKickSpd, false, target, true, 0.12);
     st.ball.lob = 1.0;
-    st.ball.z = 0.5;
-    st.ball.vz = Math.min(8.0, dist * 0.1 + 2.0);
+    st.ball.z = 0.3;
+    // Higher vz for longer kicks (peak height ~8-12m for 50m kick)
+    st.ball.vz = Math.min(12.0, dist * 0.14 + 3.0);
     st.ball.cooldown = PExt.restartNoIntercept;
-    // ★ v11.4.0: GK long kick has natural side spin (instep kick)
-    // Instep kick: styleSign=0, but GKs tend to kick with slight inside of foot
+    // ★ v11.15.0: GK instep kick: backspin (ball floats/extends) + side spin
     const gkCurvePower = gk.cardMods?.curvePower ?? 1.0;
-    st.ball.spinX = (Math.random() < 0.5 ? 1 : -1) * gkCurvePower * 2.0 * (0.5 + Math.random() * 0.8);
-    st.ball.spinDecay = 1.8; // Moderate decay for long kick
+    // Backspin: makes ball float and extend (Magnus lift effect)
+    st.ball.spinY = -(1.5 + Math.random() * 2.0) * gkCurvePower; // Strong backspin
+    // Side spin: curves left or right based on GK's kicking foot
+    const gkFoot = gk.footParams?.dominantFoot === "L" ? -1 : 1; // +1=right foot, -1=left foot
+    st.ball.spinX = gkFoot * gkCurvePower * 2.5 * (0.5 + Math.random() * 0.8);
+    st.ball.spinDecay = 1.5; // Moderate decay for long kick
     // Log
     emitLog(st, {
       time: st.time,
@@ -3962,20 +3988,29 @@ export function update(st: State, dt: number) {
     b.pos = vadd(b.pos, vscl(b.vel, dt));
     
     // ★ v11.4.0: Apply spin curve to ball trajectory (Magnus effect)
-    // Side spin causes lateral deflection - stronger effect for more visible curves
-    if (Math.abs(b.spinX) > 0.05) {
-      // Perpendicular to velocity direction (right-hand rule)
-      const speed = vlen(b.vel);
-      if (speed > 0.5) {
+    // Side spin (spinX): lateral deflection - ball curves away from kicking foot
+    // Back spin (spinY < 0): Magnus lift - ball floats and extends in air
+    // Top spin (spinY > 0): Magnus dip - ball dips faster
+    const speed = vlen(b.vel);
+    if (speed > 0.5) {
+      // --- Side spin (spinX): lateral curve ---
+      if (Math.abs(b.spinX) > 0.05) {
         const perpX = -b.vel.y / speed;
         const perpY = b.vel.x / speed;
-        // ★ v11.4.0: Increased curve force for visible effect
-        // Magnus force = C * spin * speed (C=0.025 for realistic football curve)
-        // Airborne balls curve more (less ground friction dampening)
         const magnusFactor = b.z > 0.3 ? 0.030 : 0.018; // More curve in air
         const curveMag = b.spinX * speed * magnusFactor * dt;
         b.vel.x += perpX * curveMag;
         b.vel.y += perpY * curveMag;
+      }
+      // --- Back/top spin (spinY): vertical Magnus effect ---
+      // Backspin (spinY < 0): reduces gravity effect => ball floats/extends
+      // Topspin (spinY > 0): adds to gravity effect => ball dips faster
+      if (Math.abs(b.spinY) > 0.05 && b.z > 0) {
+        // Magnus vertical force: proportional to spin and speed
+        // Backspin on a kicked ball creates upward lift (like a slice in golf)
+        const vertMagnusFactor = 0.018; // Tuned for football
+        const vertForce = -b.spinY * speed * vertMagnusFactor; // negative spinY = upward force
+        b.vz += vertForce * dt;
       }
     }
     
@@ -3987,13 +4022,27 @@ export function update(st: State, dt: number) {
       // Ground bounce
       if (b.z <= 0 && b.vz < 0) {
         b.z = 0;
-        // Backspin reduces bounce (ball dies on landing)
-        const bounceFactor = b.spinY < -0.5 ? 0.2 : 0.4; // Backspin = less bounce
-        b.vz = -b.vz * bounceFactor;
-        // Backspin also reduces forward speed on bounce
-        if (b.spinY < -0.5) {
-          b.vel = vscl(b.vel, 0.7); // Ball slows significantly with backspin
+        // ★ v11.15.0: Backspin reduces bounce and forward speed (realistic ball behavior)
+        // Strong backspin: ball nearly stops on landing (like a slice shot)
+        // Mild backspin: reduced bounce
+        // No spin: normal bounce
+        let bounceFactor: number;
+        let groundFriction: number;
+        if (b.spinY < -1.5) {
+          bounceFactor = 0.10; // Very strong backspin: ball dies on landing
+          groundFriction = 0.50; // Significant forward speed loss
+        } else if (b.spinY < -0.5) {
+          bounceFactor = 0.20; // Moderate backspin: low bounce
+          groundFriction = 0.70;
+        } else if (b.spinY > 0.5) {
+          bounceFactor = 0.55; // Topspin: higher bounce
+          groundFriction = 1.05; // Slight speed increase on bounce (topspin)
+        } else {
+          bounceFactor = 0.40; // Normal bounce
+          groundFriction = 0.90;
         }
+        b.vz = -b.vz * bounceFactor;
+        b.vel = vscl(b.vel, groundFriction);
         
         // ★ v9.15.0: Lofted ball bounce adds lateral deviation (unpredictable bounce)
         if (b.lob > 0.2) {

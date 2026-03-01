@@ -211,6 +211,7 @@ export interface Player {
     // ★ v11.4.0: Curve / spin parameters
     curvePower: number;      // Multiplier for spin intensity (0.5=low, 1.0=normal, 1.5=high) - affects how much the ball curves
     curveAccuracy: number;   // Multiplier for curve control (0.5=wild, 1.0=normal, 1.5=precise) - affects how predictably the ball curves
+    technique: number;       // Multiplier for short pass curve/placement (0.5=basic, 1.0=normal, 1.5=technical) - high technique = curved short passes that bend to teammate's feet
   };
   jumpY: number;
   turnDebt: number;  // 0-1, turning inertia penalty
