@@ -3547,7 +3547,8 @@ export function update(st: State, dt: number) {
     // so the result screen can detect when the FULL TIME overlay fades
     // ★ v11.6.0: Use SPEED_MULTIPLIERS table
     const speedMul = SPEED_MULTIPLIERS[st.speed] ?? 12.0;
-    const adt = dt * speedMul;
+    // ★ v11.8.0: After game over, use simDt for visual timers
+    const adt = dt * speedMul;  // simDt equivalent
     if (st.screenEffect.timer > 0) {
       st.screenEffect.timer -= adt;
     }
@@ -3557,15 +3558,29 @@ export function update(st: State, dt: number) {
     return;
   }
   
-  // ★ v11.6.0: Speed multiplier - applied to dt for all game logic
-  // This scales ALL physics/timers uniformly so simulation results are identical
-  // Only the wall-clock time to complete the match changes
+  // ★ v11.8.0: Dual-dt design for realistic physics at all speed modes
+  //
+  // physDt = raw wall-clock elapsed seconds
+  //   -> Used for: ball physics, player movement, animation, trail, foot animation
+  //   -> Result: ball/player always move at real-world speeds regardless of speed mode
+  //
+  // simDt = physDt * speedMul
+  //   -> Used for: match timer, AI decision timer, pause/countdown timers, stamina,
+  //                possession tracking, stack detection, screen effects, log TTL
+  //   -> Result: match clock advances faster in FAST/VFAST, slower in REAL mode
+  //
+  // REAL mode (speedMul = 1/22.5 ≈ 0.0444):
+  //   physDt = real seconds (ball moves at real speed)
+  //   simDt = physDt/22.5 (match clock advances at 1/22.5 of real time = 90min for full match)
   const speedMul = SPEED_MULTIPLIERS[st.speed] ?? 12.0;
-  dt *= speedMul;
+  const physDt = dt;       // Wall-clock seconds: for physics (ball, player movement)
+  const simDt = dt * speedMul;  // Scaled seconds: for match timer, AI decisions, etc.
+  // Keep dt as physDt alias for backward-compatible physics code below
+  dt = physDt;
   
   // ★ v9.22.0: HALFTIME SCREEN - pause game during halftime show
   if (st.halftimeShow) {
-    st.kickoffCountdown -= dt;
+    st.kickoffCountdown -= simDt;  // ★ v11.8.0: Use simDt (speed-scaled)
     if (st.kickoffCountdown <= 0) {
       st.halftimeShow = false;
       // ★ v9.22.0: Swap sides for second half
@@ -3608,7 +3623,7 @@ export function update(st: State, dt: number) {
   
   // ★ v9.22.0: KICKOFF COUNTDOWN - brief pause before kickoff is taken
   if (st.kickoffReady) {
-    st.kickoffCountdown -= dt;
+    st.kickoffCountdown -= simDt;  // ★ v11.8.0: simDt
     if (st.kickoffCountdown <= 0) {
       st.kickoffReady = false;
       st.matchPhase = "play";
@@ -3616,8 +3631,8 @@ export function update(st: State, dt: number) {
     return;  // Don't update during kickoff countdown
   }
   
-  // Time
-  st.time += dt;
+  // Time - advance match clock using simDt (speed-scaled)
+  st.time += simDt;  // ★ v11.8.0: simDt
   
   // ★ v9.22.0: Match clock calculation (simulation time → match minutes)
   // Each half is P.halfDuration simulation seconds = 45 match minutes
@@ -3659,23 +3674,23 @@ export function update(st: State, dt: number) {
     return;
   }
   
-  // Flash
-  if (st.flash > 0) st.flash = Math.max(0, st.flash - dt * 2);
+  // Flash - visual effect, use simDt so it doesn't linger too long in slow modes
+  if (st.flash > 0) st.flash = Math.max(0, st.flash - simDt * 2);  // ★ v11.8.0: simDt
   
-  // ★ v9.9.0: Update action log TTL
-  updateLogTTL(st, dt);
+  // ★ v9.9.0: Update action log TTL (simDt: log stays visible for consistent real time)
+  updateLogTTL(st, simDt);  // ★ v11.8.0: simDt
   
-  // ★ v9.11.0: Update screen effect timer
+  // ★ v9.11.0: Update screen effect timer (simDt: effect duration is speed-relative)
   if (st.screenEffect.timer > 0) {
-    st.screenEffect.timer -= dt;
+    st.screenEffect.timer -= simDt;  // ★ v11.8.0: simDt
     if (st.screenEffect.timer <= 0) {
       st.screenEffect = { type: "none", timer: 0, text: "", playerNum: 0, team: 0 };
     }
   }
   
-  // Pause
+  // Pause - use simDt so set piece pause duration is speed-relative
   if (st.paused) {
-    st.pauseT -= dt;
+    st.pauseT -= simDt;  // ★ v11.8.0: simDt
     
     // ★ v11.3.0: During pause, move players to set piece positions
     if (st.setPieceRestart && !st.setPieceRestart.positioned) {
@@ -3762,9 +3777,9 @@ export function update(st: State, dt: number) {
     if (st.ballTrail[i].t <= 0) st.ballTrail.splice(i, 1);
   }
   
-  // ★ v8.7.4: Counter-press timer decrement
+  // ★ v8.7.4: Counter-press timer decrement (simDt: game-logic timer)
   if (st.turnoverT > 0) {
-    st.turnoverT = Math.max(0, st.turnoverT - dt);
+    st.turnoverT = Math.max(0, st.turnoverT - simDt);  // ★ v11.8.0: simDt
   }
   
   // ★ v9.10.0: Update possession push level
@@ -3780,7 +3795,7 @@ export function update(st: State, dt: number) {
     
     if (possTeam !== 0 && possTeam === st.possessionPush.team) {
       // Same team still has possession - increase push
-      st.possessionPush.duration += dt;
+      st.possessionPush.duration += simDt;  // ★ v11.8.0: simDt
       // ★ v9.13.0: Push level ramps up over 2 seconds (was 4s) for faster team advance
       st.possessionPush.pushLevel = Math.min(1.0, st.possessionPush.duration / 2.0);
     } else if (possTeam !== 0) {
@@ -3790,8 +3805,8 @@ export function update(st: State, dt: number) {
       st.possessionPush.pushLevel = 0;
     } else {
       // ★ v9.13.0: No possession - very slow decay (was dt*0.3, now dt*0.1)
-      st.possessionPush.pushLevel = Math.max(0, st.possessionPush.pushLevel - dt * 0.1);
-      st.possessionPush.duration = Math.max(0, st.possessionPush.duration - dt * 0.1);
+      st.possessionPush.pushLevel = Math.max(0, st.possessionPush.pushLevel - simDt * 0.1);  // ★ v11.8.0: simDt
+      st.possessionPush.duration = Math.max(0, st.possessionPush.duration - simDt * 0.1);  // ★ v11.8.0: simDt
     }
   }
   
@@ -3799,7 +3814,7 @@ export function update(st: State, dt: number) {
   const ballMoveDist = vdist(st.ball.pos, st.stackDetection.lastBallPos);
   if (ballMoveDist < 0.5) {
     // Ball hasn't moved much
-    st.stackDetection.stableTime += dt;
+    st.stackDetection.stableTime += simDt;  // ★ v11.8.0: simDt
     if (st.stackDetection.stableTime > 2.0) {
       // Ball stuck for 2+ seconds - stack detected
       st.stackDetection.isStacked = true;
@@ -3845,7 +3860,7 @@ export function update(st: State, dt: number) {
   
   // Set piece animation
   if (st.setPiece) {
-    st.setPiece.timer += dt;
+    st.setPiece.timer += simDt;  // ★ v11.8.0: simDt
     // Set piece logic omitted for brevity
     return;
   }
@@ -3929,7 +3944,7 @@ export function update(st: State, dt: number) {
   
   for (const i of evalOrder) {
     const p = st.pl[i];
-    p.dt -= dt;
+    p.dt -= simDt;  // ★ v11.8.0: AI decision timer uses simDt (speed-scaled)
     if (p.dt <= 0) {
       p.dt = PExt.decisionInterval;
       if (b.owner === i) {
@@ -4016,9 +4031,9 @@ export function update(st: State, dt: number) {
       b.lob = Math.max(0, b.lob - dt * 1.5);
     }
     
-    // Dead ball
+    // Dead ball (simDt: dead-ball timeout is game-logic)
     if (vlen(b.vel) < 0.1) {
-      b.dead += dt;
+      b.dead += simDt;  // ★ v11.8.0: simDt
       if (b.dead > 0.5) {
         b.vel = v(0, 0);
       }
@@ -4026,9 +4041,9 @@ export function update(st: State, dt: number) {
       b.dead = 0;
     }
     
-    // Cooldown
+    // Cooldown (simDt: intercept cooldown is game-logic, not physics)
     if (b.cooldown > 0) {
-      b.cooldown -= dt;
+      b.cooldown -= simDt;  // ★ v11.8.0: simDt
     }
     
     // Interception - find closest player within radius
@@ -4407,8 +4422,8 @@ export function update(st: State, dt: number) {
         owner.rightFoot.animType = "none";
       }
       
-      // ★ v8.7.1: Track hold time for safety valve
-      b.holdT += dt;
+      // ★ v8.7.1: Track hold time for safety valve (simDt: game-logic timer)
+      b.holdT += simDt;  // ★ v11.8.0: simDt
       
       // ★ v8.8.6: Goal detection during possession (enables dribble goals)
       const g = checkGoal(b.pos);
@@ -4489,9 +4504,9 @@ export function update(st: State, dt: number) {
     }
   }
   
-  // ★ v8.7.4: Decrement turnover timer
+  // ★ v8.7.4: Decrement turnover timer (simDt: game-logic timer)
   if (st.turnoverT > 0) {
-    st.turnoverT -= dt;
+    st.turnoverT -= simDt;  // ★ v11.8.0: simDt
     if (st.turnoverT < 0) {
       st.turnoverT = 0;
       st.turnoverTeam = 0;
@@ -4519,7 +4534,7 @@ export function update(st: State, dt: number) {
     const staminaMod = p.cardMods?.staminaDrain ?? 1.0;
     const shortDrain = 0.35 * staminaMod;
     const shortRecover = 0.55 / staminaMod; // Better physical = faster recovery
-    p.staminaShort = clamp01(p.staminaShort + (isSprinting ? -shortDrain : shortRecover) * dt);
+    p.staminaShort = clamp01(p.staminaShort + (isSprinting ? -shortDrain : shortRecover) * simDt);  // ★ v11.8.0: simDt
     
     // 2) Stamina effects
     const minAccFactor = 0.65;
@@ -4540,8 +4555,8 @@ export function update(st: State, dt: number) {
       const dot = clamp(vdot(moveDir, desiredDir), -1, 1);
       const angle = Math.acos(dot); // 0..PI
       
-      p.turnDebt = clamp01(p.turnDebt + (angle / Math.PI) * turnAdd * dt);
-      p.turnDebt = clamp01(p.turnDebt - (turnRecover * p.staminaShort) * dt);
+      p.turnDebt = clamp01(p.turnDebt + (angle / Math.PI) * turnAdd * simDt);  // ★ v11.8.0: simDt
+      p.turnDebt = clamp01(p.turnDebt - (turnRecover * p.staminaShort) * simDt);  // ★ v11.8.0: simDt
     }
     maxSpeedEff *= (1 - p.turnDebt * turnMaxPenalty);
     
