@@ -3674,8 +3674,9 @@ function runSetPiece(st: State) {
       }
     }
     
-    // ★ v11.20.0: Long feed to FWD in deep position
+    // ★ v11.22.0: Long feed to FWD in deep position
     // Find the FWD furthest into opponent half (best target for long feed)
+    // ★ v11.22.0: Safety limit - never aim within 20m of opponent goal line
     let fwTarget: V | null = null;
     let fwBestScore = -Infinity;
     for (const p of st.pl) {
@@ -3693,31 +3694,57 @@ function runSetPiece(st: State) {
         if (totalScore > fwBestScore) { fwBestScore = totalScore; fwTarget = { ...p.pos }; }
       }
     }
-    // Target: best FWD position or default to deep opponent half
-    const defaultTargetX = attackDir * (PExt.pitchHalfW * 0.55 + rng(0, PExt.pitchHalfW * 0.2));
+    // ★ v11.22.0: Clamp FWD target to safe zone (not too deep near opponent goal)
+    if (fwTarget) {
+      // Clamp X: never aim within 20m of opponent goal line
+      const safeMaxX = attackDir * (PExt.pitchHalfW - 20.0); // e.g., -32.5 for attackDir=-1
+      if (fwTarget.x * attackDir > Math.abs(safeMaxX)) {
+        fwTarget.x = safeMaxX;
+      }
+    }
+    // Target: best FWD position or default to mid-opponent half (safe zone)
+    const defaultTargetX = attackDir * (PExt.pitchHalfW * 0.40 + rng(0, PExt.pitchHalfW * 0.15));
     const defaultTargetY = rng(-PExt.pitchHalfH * 0.4, PExt.pitchHalfH * 0.4);
     const rawTarget = fwTarget ?? v(defaultTargetX, defaultTargetY);
     // Add slight inaccuracy based on GK skill
     const gkAccuracy = gk.cardMods?.passAccuracy ?? 1.0;
-    const inaccuracy = Math.max(1.0, 5.0 / gkAccuracy);
-    const targetX = rawTarget.x + rng(-inaccuracy, inaccuracy);
+    const inaccuracy = Math.max(1.5, 6.0 / gkAccuracy);
+    let targetX = rawTarget.x + rng(-inaccuracy, inaccuracy);
     const targetY = rawTarget.y + rng(-inaccuracy * 0.8, inaccuracy * 0.8);
+    // ★ v11.22.0: Hard clamp - target must be at least 18m from opponent goal line
+    const oppGoalX = attackDir * PExt.pitchHalfW;
+    const minDistFromOppGoal = 18.0;
+    if (Math.abs(targetX - oppGoalX) < minDistFromOppGoal) {
+      // Push target away from opponent goal (toward center)
+      targetX = oppGoalX - attackDir * minDistFromOppGoal;
+    }
+    // ★ v11.22.0: Also ensure target is in the FORWARD direction (not toward own goal)
+    const minForwardDist = 10.0; // Must kick at least 10m forward from GK
+    if ((targetX - gk.pos.x) * attackDir < minForwardDist) {
+      targetX = gk.pos.x + attackDir * minForwardDist;
+    }
     const target = v(targetX, targetY);
     const dist = vdist(gk.pos, target);
-    const gkKickSpd = Math.min(35.0, Math.max(22.0, dist * 0.75));
+    // ★ v11.22.0: Reduced kick speed to prevent overshoot (max 22 instead of 35)
+    // Physics: at vel=22 with ground friction, ball travels ~26m (realistic for goal kick)
+    const gkKickSpd = Math.min(22.0, Math.max(14.0, dist * 0.55));
     st.ball.lastTouchTeam = gk.team;
     st.ball.lastKickTeam = gk.team;
     st.ball.lastKickType = "LONG";
     kick(st, gkIdx, gkKickSpd, false, target, true, 0.12);
     st.ball.lob = 1.0;
     st.ball.z = 0.3;
-    st.ball.vz = Math.min(12.0, dist * 0.14 + 3.0);
+    // ★ v11.22.0: Proper launch angle (35-40 degrees)
+    // vz = vel * tan(37deg) = vel * 0.75
+    st.ball.vz = Math.min(10.0, gkKickSpd * 0.75);
     st.ball.cooldown = PExt.restartNoIntercept;
     const gkCurvePower = gk.cardMods?.curvePower ?? 1.0;
-    st.ball.spinY = -(1.5 + Math.random() * 2.0) * gkCurvePower;
+    // ★ v11.22.0: Strong backspin that persists longer
+    st.ball.spinY = -(2.0 + Math.random() * 1.5) * gkCurvePower;
     const gkFoot = gk.footParams?.dominantFoot === "L" ? -1 : 1;
     st.ball.spinX = gkFoot * gkCurvePower * 2.5 * (0.5 + Math.random() * 0.8);
-    st.ball.spinDecay = 1.5;
+    // ★ v11.22.0: Slow spin decay so backspin effect persists through flight
+    st.ball.spinDecay = 0.35;
     // Find target player name for log
     const gkNameLong = gk.cardName || `GK#${gk.num}`;
     const targetFwd = fwTarget ? st.pl.find(p => p.team === sp.team && !p.isGK &&
@@ -4651,7 +4678,10 @@ export function update(st: State, dt: number) {
     
     // v8.8.3: GK save with line-segment detection
     // ★ v11.20.0: Catch vs Punch logic based on ball speed and reach difficulty
-    if (PExt.gkSaveEnabled && b.shot) {
+    // ★ v11.22.0: Also intercept non-shot balls (e.g., goal kick long feeds) near GK's penalty area
+    const isNearOppGoal = b.free && b.lastKickType === "LONG" && !b.shot &&
+      Math.abs(b.pos.x) > PExt.pitchHalfW - PExt.penAreaW - 5.0 && b.z < 2.0;
+    if (PExt.gkSaveEnabled && (b.shot || isNearOppGoal)) {
       const defTeam = b.lastTouchTeam === -1 ? 1 : -1;
       const gkIdx = findGK(st, defTeam);
       if (gkIdx !== -1) {
