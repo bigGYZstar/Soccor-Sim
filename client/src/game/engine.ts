@@ -1816,8 +1816,9 @@ export function decideHasBall(st: State, idx: number) {
         if (score > bestFreeScore) { bestFreeScore = score; bestFreeIdx = i; }
       }
       
-      // If found a free teammate (minOppDist > 3m), pass to them
-      if (bestFreeIdx !== -1 && bestFreeScore > 6.0) {
+      // ★ v11.21.0: Lowered threshold from 6.0 to 2.0 to prevent GK freeze
+      // If found a free teammate, pass to them (even if not perfectly free)
+      if (bestFreeIdx !== -1 && bestFreeScore > 2.0) {
         const target = st.pl[bestFreeIdx];
         const dist = vdist(me.pos, target.pos);
         me.gkAnimState = "none";
@@ -3392,6 +3393,7 @@ function stopForSetPiece(st: State, kind: "THROWIN" | "CORNER" | "GOALKICK", tea
     throwArmAngle: 0,
     kickRunProgress: 0,
     logEmitted: false,
+    fwdWaitTimer: 0,
   };
   
   // Emit initial log immediately
@@ -3601,12 +3603,14 @@ function runSetPiece(st: State) {
     
     // ★ v11.20.0: Check if FWDs have reached deep position in opponent half
     // FWD is considered "ready" if they are past the center line (>5m into opponent half)
+    // ★ v11.21.0: Added timeout (3.0s) to prevent infinite freeze if FWDs can't advance
     const fwds = st.pl.filter(p => p.team === sp.team && p.role === "FWD");
     const mids = st.pl.filter(p => p.team === sp.team && p.role === "MID");
     const fwdReady = fwds.length === 0 || fwds.some(p => p.pos.x * attackDir > 5.0);
     const midReady = mids.length === 0 || mids.some(p => p.pos.x * attackDir > -10.0);
+    const waitTimeout = (sp.fwdWaitTimer || 0) >= 3.0;  // Max 3s wait
     
-    if (!fwdReady || !midReady) {
+    if (!fwdReady && !midReady && !waitTimeout) {
       // FWDs not yet in position - GK waits (keep ball frozen)
       // Keep GK at ball position, face forward
       gk.pos = pitchClamp(sp.pos);
@@ -3617,6 +3621,7 @@ function runSetPiece(st: State) {
       st.ball.free = false;
       st.ball.owner = null;
       st.ball.vel = v(0, 0);
+      // fwdWaitTimer is incremented in the update loop (where dt is available)
       // Continue the set piece animation (stay in kick phase)
       return;
     }
@@ -4122,6 +4127,10 @@ export function update(st: State, dt: number) {
         }
       }
     } else if (sp.phase === "kick") {
+      // ★ v11.21.0: Increment fwdWaitTimer for GOALKICK FWD wait (dt available here)
+      if (sp.kind === "GOALKICK") {
+        sp.fwdWaitTimer += dt;
+      }
       // Actual kick/throw - execute the set piece
       if (sp.timer >= KICK_DUR) {
         // Snap taker to ball
@@ -4131,7 +4140,16 @@ export function update(st: State, dt: number) {
           taker.act = "idle";
         }
         runSetPiece(st);
-        st.setPieceRestart = null;
+        // ★ v11.21.0: Safety guard - always clear setPieceRestart after runSetPiece
+        // (runSetPiece may return early in some cases, but we must not freeze)
+        if (st.setPieceRestart) {
+          // runSetPiece returned early (FWD wait) - only clear if timeout exceeded
+          if (sp.fwdWaitTimer > 5.0) {
+            // Force clear after 5s total - absolute safety net
+            st.setPieceRestart = null;
+          }
+          // Otherwise keep sp alive so runSetPiece is called again next frame
+        }
         return;
       }
     }

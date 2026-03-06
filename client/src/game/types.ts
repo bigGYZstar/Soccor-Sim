@@ -161,6 +161,7 @@ export interface SetPieceRestart {
   kickRunProgress: number;  // 0..1 approach run progress
   // ★ v11.16.0: Log emitted flags
   logEmitted: boolean;  // Whether the main action log has been emitted
+  fwdWaitTimer: number;  // ★ v11.21.0: Timer for FWD wait (GOALKICK) - prevents infinite freeze
 }
 
 export interface Trail {
