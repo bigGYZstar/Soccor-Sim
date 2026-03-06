@@ -4140,15 +4140,23 @@ export function update(st: State, dt: number) {
           taker.act = "idle";
         }
         runSetPiece(st);
-        // ★ v11.21.0: Safety guard - always clear setPieceRestart after runSetPiece
-        // (runSetPiece may return early in some cases, but we must not freeze)
+        // ★ v11.21.1: Safety guard - clear setPieceRestart after runSetPiece
+        // CORNER and THROWIN: always clear immediately (runSetPiece executes in one shot)
+        // GOALKICK: keep alive if FWD not yet in position, but force-clear after 5s
         if (st.setPieceRestart) {
-          // runSetPiece returned early (FWD wait) - only clear if timeout exceeded
-          if (sp.fwdWaitTimer > 5.0) {
-            // Force clear after 5s total - absolute safety net
+          if (sp.kind === "CORNER" || sp.kind === "THROWIN") {
+            // These set pieces execute immediately - always clear
+            st.setPieceRestart = null;
+          } else if (sp.kind === "GOALKICK") {
+            // FWD wait: only keep alive if within timeout
+            if (sp.fwdWaitTimer > 5.0) {
+              st.setPieceRestart = null;
+            }
+            // Otherwise keep alive for next frame
+          } else {
+            // Unknown kind - always clear to prevent freeze
             st.setPieceRestart = null;
           }
-          // Otherwise keep sp alive so runSetPiece is called again next frame
         }
         return;
       }
