@@ -3640,19 +3640,43 @@ function runSetPiece(st: State) {
     st.ball.z = 0;
     st.ball.vz = 0;
     
-    // ★ v11.20.0: GK decides: long feed to FWD (75%) or short pass to CB (25%)
-    const doShortPass = Math.random() < 0.25;
+    // ★ v11.23.0: GK decides: long feed or short pass based on PRESSURE
+    // Count opponents pressing within 12m of GK
+    let pressureCount = 0;
+    let nearestOppDist = Infinity;
+    for (const opp of st.pl) {
+      if (opp.team === sp.team) continue;
+      const d = vdist(gk.pos, opp.pos);
+      if (d < 12.0) pressureCount++;
+      if (d < nearestOppDist) nearestOppDist = d;
+    }
+    // High pressure (2+ opponents within 12m) => prefer short pass to avoid interception
+    // Low pressure => prefer long feed to FWD
+    // GK passing accuracy also influences: poor GK prefers safe short pass
+    const gkPassAccuracy = gk.cardMods?.passAccuracy ?? 1.0;
+    const pressureBonus = pressureCount >= 2 ? 0.40 : pressureCount === 1 ? 0.20 : 0.0;
+    const accuracyPenalty = Math.max(0, (1.0 - gkPassAccuracy) * 0.30); // poor GK: +30% short pass
+    const shortPassChance = Math.min(0.85, 0.15 + pressureBonus + accuracyPenalty);
+    const doShortPass = Math.random() < shortPassChance;
     
     if (doShortPass) {
       // Short pass to nearest DEF/CB (GK kicks directly, no dribble)
+      // ★ v11.23.0: Find nearest CB that is NOT tightly marked by opponent
       let bestCB = -1;
-      let bestDist = Infinity;
+      let bestScore = -Infinity;
       for (let i = 0; i < st.pl.length; i++) {
         const p = st.pl[i];
         if (p.team !== sp.team || p.isGK) continue;
         if (p.role !== "DEF") continue;
         const d = vdist(gk.pos, p.pos);
-        if (d < bestDist) { bestDist = d; bestCB = i; }
+        // Check if CB is free (no opponent within 3m)
+        let cbPressure = 0;
+        for (const opp of st.pl) {
+          if (opp.team === sp.team) continue;
+          if (vdist(p.pos, opp.pos) < 3.0) cbPressure++;
+        }
+        const score = -d * 0.5 - cbPressure * 5.0; // Prefer close AND free CB
+        if (score > bestScore) { bestScore = score; bestCB = i; }
       }
       if (bestCB !== -1) {
         const cb = st.pl[bestCB];
@@ -3662,13 +3686,17 @@ function runSetPiece(st: State) {
         st.ball.lastTouchTeam = gk.team;
         st.ball.lastKickTeam = gk.team;
         st.ball.lastKickType = "PASS";
-        kick(st, gkIdx, Math.max(6.0, bestDist * 0.8), false, tp, false, 0.05);
+        kick(st, gkIdx, Math.max(6.0, vdist(gk.pos, cb.pos) * 0.8), false, tp, false, 0.05);
         st.ball.cooldown = PExt.restartNoIntercept;
         const gkName = gk.cardName || `GK#${gk.num}`;
+        // ★ v11.23.0: Context-aware log message
+        const shortPassDetail = pressureCount >= 2
+          ? `${gkName} プレッシャーを回避、${cb.cardName || '#' + cb.num}(${cb.posLabel || 'CB'})へショートパス`
+          : `${gkName} ゴールキック → ${cb.cardName || '#' + cb.num}(${cb.posLabel || 'CB'})へショートパス`;
         emitLog(st, {
           time: st.time, team: gk.team, playerNum: gk.num, playerRole: "GK", action: "pass",
-          detail: `${gkName} ゴールキック → ${cb.cardName || '#' + cb.num}(${cb.posLabel || 'CB'})へショートパス`,
-          success: true, excitement: 0,
+          detail: shortPassDetail,
+          success: true, excitement: pressureCount >= 2 ? 1 : 0,
         });
         return;
       }
@@ -3706,9 +3734,9 @@ function runSetPiece(st: State) {
     const defaultTargetX = attackDir * (PExt.pitchHalfW * 0.40 + rng(0, PExt.pitchHalfW * 0.15));
     const defaultTargetY = rng(-PExt.pitchHalfH * 0.4, PExt.pitchHalfH * 0.4);
     const rawTarget = fwTarget ?? v(defaultTargetX, defaultTargetY);
-    // Add slight inaccuracy based on GK skill
-    const gkAccuracy = gk.cardMods?.passAccuracy ?? 1.0;
-    const inaccuracy = Math.max(1.5, 6.0 / gkAccuracy);
+    // Add slight inaccuracy based on GK skill (gkPassAccuracy already defined above)
+    // ★ v11.23.0: Inaccuracy inversely proportional to accuracy: poor GK (0.7) => 8.6m error, elite (1.3) => 4.6m
+    const inaccuracy = Math.max(1.5, 6.0 / gkPassAccuracy);
     let targetX = rawTarget.x + rng(-inaccuracy, inaccuracy);
     const targetY = rawTarget.y + rng(-inaccuracy * 0.8, inaccuracy * 0.8);
     // ★ v11.22.0: Hard clamp - target must be at least 18m from opponent goal line
@@ -3745,15 +3773,41 @@ function runSetPiece(st: State) {
     st.ball.spinX = gkFoot * gkCurvePower * 2.5 * (0.5 + Math.random() * 0.8);
     // ★ v11.22.0: Slow spin decay so backspin effect persists through flight
     st.ball.spinDecay = 0.35;
-    // Find target player name for log
+    // ★ v11.23.0: Rich context-aware log for long feed
     const gkNameLong = gk.cardName || `GK#${gk.num}`;
     const targetFwd = fwTarget ? st.pl.find(p => p.team === sp.team && !p.isGK &&
       Math.abs(p.pos.x - fwTarget!.x) < 2.0 && Math.abs(p.pos.y - fwTarget!.y) < 2.0) : null;
     const fwdName = targetFwd ? (targetFwd.cardName || `#${targetFwd.num}`) : "前線";
+    // Determine log quality based on GK accuracy and target space
+    // inaccuracy: low = accurate, high = inaccurate
+    // gkPassAccuracy: 1.0+ = high accuracy, <0.8 = low accuracy
+    const isHighAccuracy = gkPassAccuracy >= 1.1;
+    const isLowAccuracy = gkPassAccuracy < 0.85;
+    // Check if target FWD has space (spaceScore from fwBestScore)
+    const fwdHasSpace = fwBestScore > 5.0; // positive score = some space
+    const kickDist = dist;
+    let longFeedDetail: string;
+    let longFeedExcitement = 1;
+    if (isHighAccuracy && fwdHasSpace) {
+      longFeedDetail = `${gkNameLong} ゴールキック！ ${fwdName}へ精度の高いロングフィード！`;
+      longFeedExcitement = 2;
+    } else if (isLowAccuracy && kickDist > 60) {
+      longFeedDetail = `${gkNameLong} ゴールキック… ロングフィードは少しずれた！`;
+      longFeedExcitement = 0;
+    } else if (fwdHasSpace && targetFwd) {
+      longFeedDetail = `${gkNameLong} ゴールキック！ フリーの${fwdName}へロングフィード！`;
+      longFeedExcitement = 2;
+    } else if (pressureCount >= 1) {
+      longFeedDetail = `${gkNameLong} プレッシャー下でゴールキック！ ${fwdName}へロング！`;
+      longFeedExcitement = 1;
+    } else {
+      longFeedDetail = `${gkNameLong} ゴールキック！ ${fwdName}へロングフィード！`;
+      longFeedExcitement = 1;
+    }
     emitLog(st, {
       time: st.time, team: gk.team, playerNum: gk.num, playerRole: "GK", action: "pass",
-      detail: `${gkNameLong} ゴールキック！ ${fwdName}へロングフィード！`,
-      success: true, excitement: 1,
+      detail: longFeedDetail,
+      success: true, excitement: longFeedExcitement,
     });
     return;
   }
