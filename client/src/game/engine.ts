@@ -4496,8 +4496,12 @@ export function update(st: State, dt: number) {
             // FWD wait: only keep alive if within timeout
             if (sp.fwdWaitTimer > 5.0) {
               st.setPieceRestart = null;
+            } else {
+              // ★ v11.30.0: Reset timer so runSetPiece is NOT called every frame
+              // Without this reset, sp.timer stays >= KICK_DUR and runSetPiece fires
+              // 60 times/sec during FWD wait, generating massive log spam.
+              sp.timer = 0;
             }
-            // Otherwise keep alive for next frame
           } else {
             // Unknown kind - always clear to prevent freeze
             st.setPieceRestart = null;
