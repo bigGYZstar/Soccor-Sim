@@ -381,6 +381,9 @@ export function mkCustomPlayers(
       passSpeed: norm(s.pass, 0.90, 1.15),
       interceptRadius: norm(s.defense, 0.80, 1.30),
       gkSaveBase: p.isGK ? norm((s.defense + s.physical) / 2, 0.85, 1.25) : 1.0,
+      // ★ v11.25.0: GK distribution parameters
+      gkDecision: p.isGK ? norm((s.defense + s.pass) / 2, 0.80, 1.20) : 1.0,      // Situational awareness: how quickly GK reads the game
+      gkDistribution: p.isGK ? norm((s.pass + s.shoot) / 2, 0.80, 1.20) : 1.0,   // Distribution quality: accuracy/range of throws & kicks
       staminaDrain: norm(s.physical, 1.25, 0.75), // Higher physical = less drain (inverted)
       burstCooldown: norm(s.speed, 1.20, 0.70),   // Higher speed = shorter cooldown (inverted)
       // ★ v11.4.0: Curve parameters - based on pass/shoot stats
@@ -1776,9 +1779,12 @@ export function decideHasBall(st: State, idx: number) {
   //   }
   // }
   
-  // ★ v11.20.0: GK catch/hold - look for free teammate, then pass or throw
+  // ★ v11.25.0: GK catch/hold - realistic distribution with situational awareness
   if (me.isGK && me.act === "carry") {
     const carryTime = st.ball.holdT;
+    const gkDecision = me.cardMods?.gkDecision ?? 1.0;       // 0.80-1.20: situational awareness
+    const gkDistrib  = me.cardMods?.gkDistribution ?? 1.0;   // 0.80-1.20: distribution quality
+    const gkName = me.cardName || `GK#${me.num}`;
     
     // During catch animation (first 0.5s): hold ball, stand still
     if (me.gkAnimState === "catch" && me.gkAnimTimer > 0) {
@@ -1787,70 +1793,225 @@ export function decideHasBall(st: State, idx: number) {
       return;
     }
     
-    // After catch animation: transition to "hold" state to look for pass
+    // After catch animation: transition to "hold" state
     if (me.gkAnimState === "catch" && me.gkAnimTimer <= 0) {
       me.gkAnimState = "hold";
-      me.gkAnimTimer = 2.5;  // Hold for up to 2.5s looking for free teammate
+      // ★ v11.25.0: Hold time depends on gkDecision (good GK reads faster)
+      // Base: 3.0s. Elite GK (1.20): 2.5s. Poor GK (0.80): 4.0s.
+      me.gkAnimTimer = 3.0 / gkDecision;
     }
     
-    // Hold state: scan for free teammate
+    // ============================================================
+    // ★ v11.25.0: HOLD STATE - Situational awareness & distribution
+    // ============================================================
     if (me.gkAnimState === "hold" && me.gkAnimTimer > 0) {
-      // Find the most free teammate (least marked)
-      let bestFreeIdx = -1;
-      let bestFreeScore = -Infinity;
+      
+      // --- Step 1: Count pressure (opponents in own half) ---
+      let pressureCount = 0;
+      let nearestOppDist = Infinity;
+      for (const opp of st.pl) {
+        if (opp.team === me.team) continue;
+        const d = vdist(me.pos, opp.pos);
+        if (d < 20.0) pressureCount++;  // Opponents within 20m of GK
+        if (d < nearestOppDist) nearestOppDist = d;
+      }
+      const underHeavyPressure = pressureCount >= 3;
+      const underModeratePressure = pressureCount >= 1;
+      
+      // --- Step 2: Scan all teammates and classify them ---
+      let bestFWDIdx = -1,  bestFWDScore = -Infinity;   // Counter candidate (FWD/MF in space)
+      let bestCBIdx  = -1,  bestCBScore  = -Infinity;   // Safe short pass (DEF near GK)
+      let bestMFIdx  = -1,  bestMFScore  = -Infinity;   // Mid-range distribution
+      
       for (let i = 0; i < st.pl.length; i++) {
         const p = st.pl[i];
         if (p.team !== me.team || p.isGK) continue;
-        // Score: distance from nearest opponent (higher = more free)
+        const distToGK = vdist(me.pos, p.pos);
+        if (distToGK > 50.0) continue;  // Too far
+        
+        // How free is this player? (distance to nearest opponent)
         let minOppDist = Infinity;
         for (const opp of st.pl) {
           if (opp.team === me.team) continue;
           const d = vdist(p.pos, opp.pos);
           if (d < minOppDist) minOppDist = d;
         }
-        // Prefer nearby teammates for short pass, but also consider free space
-        const distToGK = vdist(me.pos, p.pos);
-        const reachable = distToGK < 40.0;  // Within throw/kick range
-        if (!reachable) continue;
-        const score = minOppDist * 2.0 - distToGK * 0.1;  // Free space is most important
-        if (score > bestFreeScore) { bestFreeScore = score; bestFreeIdx = i; }
+        const isFree = minOppDist > 3.5;  // Not closely marked
+        const isVeryFree = minOppDist > 6.0;  // Clearly open
+        
+        // Advance position (how far into opponent half)
+        const advanceX = p.pos.x * (-me.team);  // Positive = in opponent half
+        
+        // FWD/MID counter candidate: in opponent half, very free, within kick range
+        if ((p.role === "FWD" || p.role === "MID") && advanceX > 0 && isVeryFree && distToGK < 48.0) {
+          const counterScore = advanceX * 1.5 + minOppDist * 1.0 - distToGK * 0.05;
+          if (counterScore > bestFWDScore) { bestFWDScore = counterScore; bestFWDIdx = i; }
+        }
+        
+        // CB/DEF safe pass: nearby, free, in own half
+        if (p.role === "DEF" && distToGK < 20.0 && isFree) {
+          const cbScore = minOppDist * 2.0 - distToGK * 0.3;
+          if (cbScore > bestCBScore) { bestCBScore = cbScore; bestCBIdx = i; }
+        }
+        
+        // MID mid-range: moderate distance, reasonably free
+        if ((p.role === "MID" || p.role === "DEF") && distToGK > 8.0 && distToGK < 35.0 && isFree) {
+          const mfScore = minOppDist * 1.5 - distToGK * 0.1 + advanceX * 0.5;
+          if (mfScore > bestMFScore) { bestMFScore = mfScore; bestMFIdx = i; }
+        }
       }
       
-      // ★ v11.21.0: Lowered threshold from 6.0 to 2.0 to prevent GK freeze
-      // If found a free teammate, pass to them (even if not perfectly free)
-      if (bestFreeIdx !== -1 && bestFreeScore > 2.0) {
-        const target = st.pl[bestFreeIdx];
-        const dist = vdist(me.pos, target.pos);
+      // --- Step 3: Decision logic ---
+      // ★ v11.25.0: Elite GK (gkDecision=1.20) acts faster and makes better decisions
+      // Poor GK (gkDecision=0.80) may miss counter opportunities and hold too long
+      
+      // COUNTER OPPORTUNITY: FWD is free in opponent half
+      // Elite GK sees this immediately; poor GK may miss it
+      const counterVisible = bestFWDIdx !== -1 && bestFWDScore > 5.0;
+      const counterThreshold = 5.0 / gkDecision;  // Elite GK has lower threshold
+      const canSeeCounter = counterVisible && bestFWDScore > counterThreshold;
+      
+      // TIME PRESSURE: hold timer running low => must distribute
+      const holdTimeRatio = me.gkAnimTimer / (3.0 / gkDecision);  // 1.0 = just caught, 0 = must pass
+      const mustDistribute = holdTimeRatio < 0.15;  // Last 15% of hold time
+      
+      // SAFE PASS AVAILABLE: CB is free nearby
+      const safeCBAvailable = bestCBIdx !== -1 && bestCBScore > 1.0;
+      
+      // DECISION TREE:
+      // 1. If counter opportunity AND not under heavy pressure => PUNT/LONG FEED to FWD
+      // 2. If under heavy pressure AND safe CB available => SHORT THROW to CB (time-wasting)
+      // 3. If moderate pressure AND MF available => MEDIUM THROW to MF
+      // 4. If must distribute (timer expired) => best available option
+      // 5. Otherwise => keep holding (scan next frame)
+      
+      if (canSeeCounter && !underHeavyPressure) {
+        // ★ COUNTER ATTACK: Punt kick to FWD in space
+        const fwd = st.pl[bestFWDIdx];
+        const distToFWD = vdist(me.pos, fwd.pos);
         me.gkAnimState = "none";
         me.gkAnimTimer = 0;
-        if (dist < 15.0) {
-          // Short throw: place ball on ground and short pass
-          // First put ball down (simulate placing)
-          doPassTo(st, idx, bestFreeIdx);
-          const gkName = me.cardName || `GK#${me.num}`;
-          const tgtName = target.cardName || `#${target.num}`;
-          emitLog(st, {
-            time: st.time, team: me.team, playerNum: me.num, playerRole: "GK",
-            action: "pass",
-            detail: `${gkName} ボールを置いて ${tgtName}(フリー)へショートパス`,
-            success: true, excitement: 0,
-          });
-        } else {
-          // Long throw or kick: distribute to free player
-          doLongPassTo(st, idx, bestFreeIdx);
-          const gkName = me.cardName || `GK#${me.num}`;
-          const tgtName = target.cardName || `#${target.num}`;
+        
+        // Punt kick: high arc, fast, with gkDistribution affecting accuracy
+        const puntErr = Math.max(0.5, 2.5 / gkDistrib);  // Elite GK: 2.1m error, poor: 3.1m
+        const puntSpd = Math.min(28.0, Math.max(16.0, distToFWD * 0.65)) * (0.85 + gkDistrib * 0.15);
+        kick(st, idx, puntSpd, false, fwd.pos, true, puntErr);
+        st.ball.lob = 1.0;
+        if (st.ball.z < 0.3) {
+          st.ball.z = 0.3;
+          st.ball.vz = Math.min(9.0, distToFWD * 0.14 + 2.0);  // High arc punt
+        }
+        st.ball.intendedReceiverIdx = bestFWDIdx;
+        st.ball.lastPasserIdx = idx;
+        st.ball.lastKickType = "LONG";
+        const tgtName = fwd.cardName || `#${fwd.num}`;
+        const puntLog = gkDecision >= 1.1
+          ? `${gkName} カウンターチャンス！ ${tgtName}へパントキック！`
+          : `${gkName} ${tgtName}へパントキック！`;
+        emitLog(st, {
+          time: st.time, team: me.team, playerNum: me.num, playerRole: "GK",
+          action: "longPass",
+          detail: puntLog,
+          success: true, excitement: 3,
+        });
+        return;
+      }
+      
+      if (underHeavyPressure && safeCBAvailable) {
+        // ★ TIME-WASTING: Short throw to nearby CB to reorganize
+        const cb = st.pl[bestCBIdx];
+        const distToCB = vdist(me.pos, cb.pos);
+        me.gkAnimState = "none";
+        me.gkAnimTimer = 0;
+        doPassTo(st, idx, bestCBIdx);
+        const cbName = cb.cardName || `#${cb.num}`;
+        emitLog(st, {
+          time: st.time, team: me.team, playerNum: me.num, playerRole: "GK",
+          action: "pass",
+          detail: `${gkName} 陣形を整えるため ${cbName}(フリー)へショートスロー`,
+          success: true, excitement: 0,
+        });
+        return;
+      }
+      
+      if (mustDistribute) {
+        // ★ FORCED DISTRIBUTION: Timer expired, must pass now
+        me.gkAnimState = "none";
+        me.gkAnimTimer = 0;
+        
+        // Priority: counter FWD > safe CB > MF > emergency kick
+        if (bestFWDIdx !== -1) {
+          const fwd = st.pl[bestFWDIdx];
+          doLongPassTo(st, idx, bestFWDIdx);
+          const tgtName = fwd.cardName || `#${fwd.num}`;
           emitLog(st, {
             time: st.time, team: me.team, playerNum: me.num, playerRole: "GK",
             action: "longPass",
-            detail: `${gkName} ${tgtName}へロングスロー！`,
+            detail: `${gkName} 時間切れ！ ${tgtName}へロングフィード`,
+            success: true, excitement: 1,
+          });
+        } else if (bestCBIdx !== -1) {
+          doPassTo(st, idx, bestCBIdx);
+          const cb = st.pl[bestCBIdx];
+          const cbName = cb.cardName || `#${cb.num}`;
+          emitLog(st, {
+            time: st.time, team: me.team, playerNum: me.num, playerRole: "GK",
+            action: "pass",
+            detail: `${gkName} ${cbName}へショートパス`,
+            success: true, excitement: 0,
+          });
+        } else if (bestMFIdx !== -1) {
+          doLongPassTo(st, idx, bestMFIdx);
+          const mf = st.pl[bestMFIdx];
+          const mfName = mf.cardName || `#${mf.num}`;
+          emitLog(st, {
+            time: st.time, team: me.team, playerNum: me.num, playerRole: "GK",
+            action: "longPass",
+            detail: `${gkName} ${mfName}へ配球`,
+            success: true, excitement: 1,
+          });
+        } else {
+          // Emergency: kick forward
+          kick(st, idx, 14, false, v(-me.team, 0), false);
+          emitLog(st, {
+            time: st.time, team: me.team, playerNum: me.num, playerRole: "GK",
+            action: "pass",
+            detail: `${gkName} 投げ場所がなく緊急キック！`,
             success: true, excitement: 1,
           });
         }
         return;
       }
       
-      // No free teammate found yet - keep holding
+      // Not yet time to distribute - check if moderate pressure and MF available
+      if (underModeratePressure && bestMFIdx !== -1 && bestMFScore > 3.0) {
+        // Distribute to MF when pressed but no heavy pressure
+        me.gkAnimState = "none";
+        me.gkAnimTimer = 0;
+        const mf = st.pl[bestMFIdx];
+        const distToMF = vdist(me.pos, mf.pos);
+        const mfName = mf.cardName || `#${mf.num}`;
+        if (distToMF < 15.0) {
+          doPassTo(st, idx, bestMFIdx);
+          emitLog(st, {
+            time: st.time, team: me.team, playerNum: me.num, playerRole: "GK",
+            action: "pass",
+            detail: `${gkName} ${mfName}へショートスロー`,
+            success: true, excitement: 0,
+          });
+        } else {
+          doLongPassTo(st, idx, bestMFIdx);
+          emitLog(st, {
+            time: st.time, team: me.team, playerNum: me.num, playerRole: "GK",
+            action: "longPass",
+            detail: `${gkName} ${mfName}へロングスロー`,
+            success: true, excitement: 1,
+          });
+        }
+        return;
+      }
+      
+      // ★ HOLDING: Keep ball, wait for better opportunity
       me.act = "carry";
       me.tgt = { ...me.pos };
       return;

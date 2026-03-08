@@ -218,6 +218,9 @@ export interface Player {
     passSpeed: number;       // Multiplier for pass speed
     interceptRadius: number; // Multiplier for intercept radius
     gkSaveBase: number;      // Multiplier for GK save chance
+    // ★ v11.25.0: GK distribution parameters
+    gkDecision: number;      // Situational awareness: how quickly GK reads the game (0.80-1.20)
+    gkDistribution: number;  // Distribution quality: accuracy/range of throws & kicks (0.80-1.20)
     staminaDrain: number;    // Multiplier for stamina drain (lower = better)
     burstCooldown: number;   // Multiplier for burst cooldown (lower = better)
     // ★ v11.4.0: Curve / spin parameters
