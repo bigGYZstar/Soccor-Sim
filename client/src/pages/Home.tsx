@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useLocation } from 'wouter';
 
 // --- game/ モジュールから必要なものをすべてインポート ---
-import { State, V, SpeedMode } from '../game/types';
+import { State, V, SpeedMode, GoalReplay, GoalReplayFrame } from '../game/types';
 import { P, FormationId, FORMATION_IDS, FORMATIONS } from '../game/constants';
 import { v, vadd, vscl } from '../game/math';
 import { mkState, mkCustomState, doKickOff, update } from '../game/engine';
@@ -1312,6 +1312,183 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
 };
 
 // ============================================================
+// ★ v11.27.0: Goal Replay Renderer
+// Draws a GoalReplayFrame onto the canvas (same layout as render())
+// ============================================================
+const renderReplayFrame = (
+  ctx: CanvasRenderingContext2D,
+  cvs: HTMLCanvasElement,
+  frame: GoalReplayFrame,
+  replay: GoalReplay,
+  frameIdx: number,
+  replayTime: number,  // elapsed seconds for animation
+) => {
+  const w = cvs.clientWidth;
+  const h = cvs.clientHeight;
+  const isPortrait = h > w;
+  const hudReserve = Math.max(60, h * 0.10);
+  const logReserve = Math.max(50, h * 0.12);
+  const padW = isPortrait ? 1.0 : 2.5;
+  const padH = isPortrait ? 1.0 : 2.5;
+  const availH = h - hudReserve - logReserve;
+  const availW = w;
+  const sc = Math.min(availW / (P.pitchHalfW * 2 + padW), availH / (P.pitchHalfH * 2 + padH));
+  const ox = w / 2;
+  const oy = hudReserve + availH / 2;
+  const w2s = (px: number, py: number) => ({ x: ox + px * sc, y: oy - py * sc });
+  const sval = (val: number) => val * sc;
+
+  // 1. Background
+  ctx.fillStyle = "#0a0a10";
+  ctx.fillRect(0, 0, w, h);
+
+  // 2. Pitch
+  const plW = sval(P.pitchHalfW); const plH = sval(P.pitchHalfH);
+  ctx.save();
+  ctx.translate(ox, oy);
+  ctx.fillStyle = "#145e30";
+  ctx.fillRect(-plW, -plH, plW*2, plH*2);
+  ctx.fillStyle = "#1a6b3a";
+  const stripes = 12;
+  const sw = (P.pitchHalfW * 2) / stripes;
+  for (let i = 0; i < stripes; i++) {
+    if (i % 2 === 0) ctx.fillRect(sval(-P.pitchHalfW + i * sw), -plH, sval(sw), plH*2);
+  }
+  ctx.strokeStyle = "rgba(255,255,255,0.75)";
+  ctx.lineWidth = Math.max(1, sc * 0.02);
+  ctx.strokeRect(-plW, -plH, plW*2, plH*2);
+  ctx.beginPath(); ctx.moveTo(0, -plH); ctx.lineTo(0, plH); ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, 0, sval(P.centreCircleR), 0, Math.PI*2); ctx.stroke();
+  const drawAreaR = (sign: number) => {
+    const gw = sval(P.penAreaW); const gh = sval(P.penAreaH);
+    ctx.strokeRect(sign > 0 ? sval(P.pitchHalfW) - gw : sval(-P.pitchHalfW), -gh, gw, gh*2);
+    const gaw = sval(P.goalAreaW); const gah = sval(P.goalAreaH);
+    ctx.strokeRect(sign > 0 ? sval(P.pitchHalfW) - gaw : sval(-P.pitchHalfW), -gah, gaw, gah*2);
+    const goalHW = sval(P.goalHalfH); const goalD = sval(P.goalDepth);
+    ctx.strokeStyle = "rgba(255,255,255,0.5)";
+    ctx.strokeRect(sign > 0 ? sval(P.pitchHalfW) : sval(-P.pitchHalfW) - goalD, -goalHW, goalD, goalHW*2);
+    ctx.strokeStyle = "rgba(255,255,255,0.75)";
+  };
+  drawAreaR(1); drawAreaR(-1);
+  ctx.restore();
+
+  // 3. Ball trail
+  if (frame.trail && frame.trail.length > 1) {
+    for (let i = 1; i < frame.trail.length; i++) {
+      const prev = frame.trail[i-1];
+      const curr = frame.trail[i];
+      const a = (i / frame.trail.length) * 0.5;
+      const ps = w2s(prev.pos.x, prev.pos.y);
+      const cs = w2s(curr.pos.x, curr.pos.y);
+      ctx.strokeStyle = `rgba(255,200,50,${a})`;
+      ctx.lineWidth = Math.max(1, sval(0.05));
+      ctx.beginPath(); ctx.moveTo(ps.x, ps.y); ctx.lineTo(cs.x, cs.y); ctx.stroke();
+    }
+  }
+
+  // 4. Players (simplified SFC-style)
+  const px = (x: number) => Math.round(x);
+  const drawPR = (x: number, y: number, w2: number, h2: number, color: string) => {
+    ctx.fillStyle = color;
+    ctx.fillRect(px(x), px(y), Math.max(1, px(w2)), Math.max(1, px(h2)));
+  };
+  frame.players.forEach(p => {
+    const pos = w2s(p.x, p.y);
+    const r = sval(P.playerRadius);
+    const unit = Math.max(2.0, r * 0.45);
+    const isBlue = p.team === -1;
+    const shirtColor = isBlue ? (p.isGK ? "#00a0e0" : "#2060d0") : (p.isGK ? "#e0a000" : "#d02020");
+    const shortsColor = isBlue ? "#1040a0" : "#f0f0f0";
+    const skinColor = "#f0c090";
+    const hairColor = isBlue ? "#302010" : "#101010";
+    const bootColor = isBlue ? "#f0f0f0" : "#101010";
+    // Shadow
+    ctx.fillStyle = "rgba(0,0,0,0.3)";
+    ctx.beginPath(); ctx.ellipse(pos.x, pos.y + unit*3.5, unit*2.5, unit*1.0, 0, 0, Math.PI*2); ctx.fill();
+    // Boots
+    drawPR(pos.x - unit*2.5, pos.y + unit*2.5, unit*2.0, unit*1.2, bootColor);
+    drawPR(pos.x + unit*0.5, pos.y + unit*2.5, unit*2.0, unit*1.2, bootColor);
+    // Shorts
+    drawPR(pos.x - unit*1.5, pos.y + unit*1.0, unit*3.0, unit*1.8, shortsColor);
+    // Body
+    drawPR(pos.x - unit*1.5, pos.y - unit*1.5, unit*3.0, unit*2.8, shirtColor);
+    // Head
+    drawPR(pos.x - unit*1.4, pos.y - unit*3.8, unit*2.8, unit*2.5, skinColor);
+    drawPR(pos.x - unit*1.6, pos.y - unit*4.2, unit*3.2, unit*1.5, hairColor);
+    // Number
+    ctx.fillStyle = isBlue ? "#ffffff" : "#ffffff";
+    ctx.font = `bold ${Math.max(4, unit * 1.3)}px ${RETRO_FONT}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(p.num), pos.x, pos.y - unit * 0.2);
+  });
+
+  // 5. Ball
+  const ballPos = w2s(frame.ball.x, frame.ball.y);
+  const ballR = Math.max(3, sval(P.ballRadius));
+  const ballZ = frame.ball.z;
+  const shadowScale = Math.max(0.3, 1.0 - ballZ * 0.08);
+  ctx.fillStyle = `rgba(0,0,0,${0.3 * shadowScale})`;
+  ctx.beginPath(); ctx.ellipse(ballPos.x, ballPos.y + ballR * 0.5, ballR * 1.5 * shadowScale, ballR * 0.6 * shadowScale, 0, 0, Math.PI*2); ctx.fill();
+  const ballScreenY = ballPos.y - sval(ballZ * 0.3);
+  ctx.fillStyle = "#f8f8f8";
+  ctx.beginPath(); ctx.arc(ballPos.x, ballScreenY, ballR, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = "#303030"; ctx.lineWidth = Math.max(1, ballR * 0.15);
+  ctx.stroke();
+  ctx.fillStyle = "#303030";
+  ctx.beginPath(); ctx.arc(ballPos.x, ballScreenY, ballR * 0.25, 0, Math.PI*2); ctx.fill();
+
+  // 6. HUD - score and clock
+  const hudH = Math.max(28, h * 0.06);
+  ctx.fillStyle = "rgba(10,10,20,0.85)";
+  ctx.fillRect(0, 0, w, hudH);
+  const hudFontSize = Math.max(7, Math.min(14, w * 0.014));
+  ctx.font = `bold ${hudFontSize}px ${RETRO_FONT}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#60a5fa";
+  ctx.fillText(`BLU ${frame.scoreBlue}`, w * 0.35, hudH / 2);
+  ctx.fillStyle = RETRO_WHITE;
+  const mins = Math.floor(frame.matchClock);
+  const secs = Math.floor((frame.matchClock - mins) * 60);
+  ctx.fillText(`${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`, w * 0.5, hudH / 2);
+  ctx.fillStyle = "#f87171";
+  ctx.fillText(`${frame.scoreRed} RED`, w * 0.65, hudH / 2);
+
+  // 7. REPLAY overlay - top center pulsing label
+  const pulseAlpha = 0.7 + 0.3 * Math.sin(replayTime * 4.0);
+  const replayFontSize = Math.max(8, Math.min(16, w * 0.016));
+  ctx.font = `bold ${replayFontSize}px ${RETRO_FONT}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  ctx.fillStyle = `rgba(245,197,66,${pulseAlpha})`;
+  ctx.fillText("◀ REPLAY ▶", w * 0.5, hudH + 4);
+
+  // 8. Goal banner (shown near goal frame)
+  const distToGoal = Math.abs(frameIdx - replay.goalFrameIdx);
+  if (distToGoal < 20) {
+    const bannerAlpha = Math.max(0, 1.0 - distToGoal / 20);
+    const teamColor = replay.scorerTeam === -1 ? "#60a5fa" : "#f87171";
+    const bannerFontSize = Math.max(10, Math.min(22, w * 0.022));
+    ctx.font = `bold ${bannerFontSize}px ${RETRO_FONT}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = `rgba(0,0,0,${bannerAlpha * 0.7})`;
+    ctx.fillText(`⚽ GOAL!! ${replay.scorerName}`, w * 0.5 + 2, h * 0.72 + 2);
+    ctx.fillStyle = `rgba(${replay.scorerTeam === -1 ? '96,165,250' : '248,113,113'},${bannerAlpha})`;
+    ctx.fillText(`⚽ GOAL!! ${replay.scorerName}`, w * 0.5, h * 0.72);
+    ctx.strokeStyle = `rgba(245,197,66,${bannerAlpha * 0.8})`;
+    ctx.lineWidth = 1;
+    ctx.strokeText(`⚽ GOAL!! ${replay.scorerName}`, w * 0.5, h * 0.72);
+    // Score badge
+    const badgeFontSize = Math.max(7, Math.min(13, w * 0.013));
+    ctx.font = `bold ${badgeFontSize}px ${RETRO_FONT}`;
+    ctx.fillStyle = `rgba(245,197,66,${bannerAlpha})`;
+    ctx.fillText(`BLU ${replay.scoreBlue} - ${replay.scoreRed} RED`, w * 0.5, h * 0.72 + bannerFontSize * 1.4);
+  }
+};
+
+// ============================================================
 // Speed Toggle Button (SFC retro style)
 // ============================================================
 // ★ v11.18.0: 6-stage speed modes (added VSLOW)
@@ -1389,6 +1566,18 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
   const [showResult, setShowResult] = useState(false);
   const resultShownRef = useRef(false);
 
+  // ★ v11.27.0: Goal Replay state
+  const [activeReplay, setActiveReplay] = useState<GoalReplay | null>(null);
+  const [replayFrameIdx, setReplayFrameIdx] = useState(0);
+  const [replayPlaying, setReplayPlaying] = useState(true);
+  const [showReplayControls, setShowReplayControls] = useState(false);
+  const replayRef = useRef<GoalReplay | null>(null);
+  const replayFrameIdxRef = useRef(0);
+  const replayPlayingRef = useRef(true);
+  const replayTimeRef = useRef(0);  // elapsed seconds for animation
+  const replayAccumRef = useRef(0); // frame accumulator
+  const lastGoalReplayCountRef = useRef(0); // track how many replays we've shown
+
   // Sync speed to state ref
   useEffect(() => {
     stRef.current.speed = speed;
@@ -1458,11 +1647,62 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
       const speed = stRef.current.speed;
       const subSteps = speed === 'VFAST' ? 8 : speed === 'FAST' ? 4 : speed === 'MID' ? 2 : 1;
       const dt = rawDt / subSteps;
+      // ★ v11.27.0: If in replay mode, render replay frame instead of game
+      if (replayRef.current) {
+        const rep = replayRef.current;
+        replayTimeRef.current += rawDt;
+        // Advance frame at 30fps wall-clock
+        if (replayPlayingRef.current) {
+          replayAccumRef.current += rawDt;
+          const frameInterval = 1 / 30;
+          while (replayAccumRef.current >= frameInterval) {
+            replayAccumRef.current -= frameInterval;
+            const nextIdx = replayFrameIdxRef.current + 1;
+            if (nextIdx < rep.frames.length) {
+              replayFrameIdxRef.current = nextIdx;
+              setReplayFrameIdx(nextIdx);
+            } else {
+              // Replay ended - auto-skip
+              replayPlayingRef.current = false;
+              setReplayPlaying(false);
+            }
+          }
+        }
+        const frame = rep.frames[replayFrameIdxRef.current];
+        if (frame) {
+          renderReplayFrame(ctx, canvas, frame, rep, replayFrameIdxRef.current, replayTimeRef.current);
+        }
+        reqRef.current = requestAnimationFrame(loop);
+        return;
+      }
+
       if (rawDt > 0.001) {
         for (let _s = 0; _s < subSteps; _s++) {
           update(stRef.current, dt);
         }
         render(ctx, canvas, stRef.current);
+        // ★ v11.27.0: Detect new goal replay and trigger replay mode
+        // Wait for screenEffect to finish (2.5s), then show replay
+        const goalReplays = stRef.current.goalReplays;
+        const newCount = goalReplays.length;
+        if (newCount > lastGoalReplayCountRef.current) {
+          // New goal just scored - wait for screenEffect to finish then start replay
+          const latestReplay = goalReplays[newCount - 1];
+          const waitMs = 2600; // slightly after 2.5s screenEffect
+          lastGoalReplayCountRef.current = newCount;
+          setTimeout(() => {
+            // Start replay from beginning
+            replayRef.current = latestReplay;
+            replayFrameIdxRef.current = 0;
+            replayPlayingRef.current = true;
+            replayTimeRef.current = 0;
+            replayAccumRef.current = 0;
+            setActiveReplay(latestReplay);
+            setReplayFrameIdx(0);
+            setReplayPlaying(true);
+            setShowReplayControls(false);
+          }, waitMs);
+        }
         // ★ v10.2.0: Detect fulltime and show result screen after overlay fades
         if (stRef.current.matchPhase === "fulltime" && !resultShownRef.current) {
           if (stRef.current.screenEffect && stRef.current.screenEffect.timer <= 0) {
@@ -1538,6 +1778,181 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
           <SpeedToggle speed={speed} onToggle={toggleSpeed} onSetMode={setSpeedMode} />
         </div>
       </div>
+      {/* ★ v11.27.0: Replay UI Overlay */}
+      {activeReplay && (
+        <>
+          {/* LEFT-TOP: 詳細ボタン */}
+          <button
+            onClick={() => setShowReplayControls(prev => !prev)}
+            style={{
+              position: "absolute",
+              top: "clamp(6px, 1.5vh, 14px)",
+              left: "clamp(6px, 1.5vw, 14px)",
+              background: showReplayControls ? RETRO_GOLD : RETRO_DARK,
+              border: `2px solid ${RETRO_GOLD}`,
+              color: showReplayControls ? "#000" : RETRO_GOLD,
+              fontFamily: RETRO_FONT,
+              fontSize: "clamp(5px, 1vw, 9px)",
+              padding: "clamp(3px, 0.6vh, 6px) clamp(6px, 1.5vw, 12px)",
+              cursor: "pointer",
+              letterSpacing: "1px",
+              zIndex: 50,
+              lineHeight: 1.2,
+            }}
+          >
+            ▤ 詳細
+          </button>
+
+          {/* RIGHT-TOP: スキップボタン */}
+          <button
+            onClick={() => {
+              // Exit replay
+              replayRef.current = null;
+              setActiveReplay(null);
+              setShowReplayControls(false);
+            }}
+            style={{
+              position: "absolute",
+              top: "clamp(6px, 1.5vh, 14px)",
+              right: "clamp(6px, 1.5vw, 14px)",
+              background: RETRO_ACCENT,
+              border: `2px solid #ff8060`,
+              color: "#fff",
+              fontFamily: RETRO_FONT,
+              fontSize: "clamp(5px, 1vw, 9px)",
+              padding: "clamp(3px, 0.6vh, 6px) clamp(6px, 1.5vw, 12px)",
+              cursor: "pointer",
+              letterSpacing: "1px",
+              zIndex: 50,
+              lineHeight: 1.2,
+            }}
+          >
+            SKIP ▶▶|
+          </button>
+
+          {/* BOTTOM: 詳細コントロールバー */}
+          {showReplayControls && (
+            <div style={{
+              position: "absolute",
+              bottom: 0,
+              left: 0,
+              right: 0,
+              background: "rgba(10,10,20,0.92)",
+              borderTop: `2px solid ${RETRO_GOLD}`,
+              padding: "clamp(6px, 1.5vh, 12px) clamp(8px, 2vw, 16px)",
+              zIndex: 50,
+              display: "flex",
+              flexDirection: "column",
+              gap: "clamp(4px, 1vh, 8px)",
+            }}>
+              {/* Seek bar */}
+              <div style={{ display: "flex", alignItems: "center", gap: "clamp(4px, 1vw, 8px)" }}>
+                <span style={{ color: RETRO_GOLD, fontFamily: RETRO_FONT, fontSize: "clamp(4px, 0.8vw, 7px)", whiteSpace: "nowrap" }}>
+                  {String(replayFrameIdx + 1).padStart(3, '0')} / {String(activeReplay.frames.length).padStart(3, '0')}
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={activeReplay.frames.length - 1}
+                  value={replayFrameIdx}
+                  onChange={e => {
+                    const idx = Number(e.target.value);
+                    replayFrameIdxRef.current = idx;
+                    setReplayFrameIdx(idx);
+                  }}
+                  style={{
+                    flex: 1,
+                    accentColor: RETRO_GOLD,
+                    cursor: "pointer",
+                    height: "clamp(3px, 0.6vh, 6px)",
+                  }}
+                />
+                {/* Goal frame marker label */}
+                <span style={{ color: "#f87171", fontFamily: RETRO_FONT, fontSize: "clamp(4px, 0.8vw, 7px)", whiteSpace: "nowrap" }}>
+                  GOAL@{activeReplay.goalFrameIdx + 1}
+                </span>
+              </div>
+              {/* Control buttons */}
+              <div style={{ display: "flex", justifyContent: "center", gap: "clamp(4px, 1vw, 8px)", alignItems: "center" }}>
+                {/* Rewind to start */}
+                <button
+                  onClick={() => {
+                    replayFrameIdxRef.current = 0;
+                    setReplayFrameIdx(0);
+                    replayPlayingRef.current = false;
+                    setReplayPlaying(false);
+                  }}
+                  style={replayBtnStyle}
+                >
+                  ⏮
+                </button>
+                {/* Step back */}
+                <button
+                  onClick={() => {
+                    const idx = Math.max(0, replayFrameIdxRef.current - 1);
+                    replayFrameIdxRef.current = idx;
+                    setReplayFrameIdx(idx);
+                    replayPlayingRef.current = false;
+                    setReplayPlaying(false);
+                  }}
+                  style={replayBtnStyle}
+                >
+                  ◀
+                </button>
+                {/* Play / Pause */}
+                <button
+                  onClick={() => {
+                    replayPlayingRef.current = !replayPlayingRef.current;
+                    setReplayPlaying(replayPlayingRef.current);
+                  }}
+                  style={{ ...replayBtnStyle, background: replayPlaying ? RETRO_GOLD : RETRO_DARK, color: replayPlaying ? "#000" : RETRO_GOLD, minWidth: "clamp(24px, 5vw, 40px)" }}
+                >
+                  {replayPlaying ? "⏸" : "▶"}
+                </button>
+                {/* Step forward */}
+                <button
+                  onClick={() => {
+                    const idx = Math.min(activeReplay.frames.length - 1, replayFrameIdxRef.current + 1);
+                    replayFrameIdxRef.current = idx;
+                    setReplayFrameIdx(idx);
+                    replayPlayingRef.current = false;
+                    setReplayPlaying(false);
+                  }}
+                  style={replayBtnStyle}
+                >
+                  ▶
+                </button>
+                {/* Jump to goal frame */}
+                <button
+                  onClick={() => {
+                    replayFrameIdxRef.current = activeReplay.goalFrameIdx;
+                    setReplayFrameIdx(activeReplay.goalFrameIdx);
+                    replayPlayingRef.current = false;
+                    setReplayPlaying(false);
+                  }}
+                  style={{ ...replayBtnStyle, color: "#f87171", borderColor: "#f87171" }}
+                >
+                  ⚽
+                </button>
+                {/* Replay from beginning */}
+                <button
+                  onClick={() => {
+                    replayFrameIdxRef.current = 0;
+                    setReplayFrameIdx(0);
+                    replayPlayingRef.current = true;
+                    setReplayPlaying(true);
+                    replayAccumRef.current = 0;
+                  }}
+                  style={{ ...replayBtnStyle, color: RETRO_GREEN, borderColor: RETRO_GREEN }}
+                >
+                  ↺
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
       {/* ★ v10.2.0: Match Result Screen */}
       {showResult && (
         <MatchResultScreen
@@ -1549,6 +1964,18 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
     </div>
   );
 }
+
+// Replay button shared style
+const replayBtnStyle: React.CSSProperties = {
+  background: RETRO_DARK,
+  border: `2px solid ${RETRO_GOLD}`,
+  color: RETRO_GOLD,
+  fontFamily: RETRO_FONT,
+  fontSize: "clamp(8px, 1.8vw, 14px)",
+  padding: "clamp(3px, 0.6vh, 6px) clamp(6px, 1.2vw, 10px)",
+  cursor: "pointer",
+  lineHeight: 1,
+};
 
 // ============================================================
 // React コンポーネント本体
