@@ -340,6 +340,22 @@ export interface GoalReplayFrame {
   /** Score at this frame */
   scoreBlue: number;
   scoreRed: number;
+  // ★ v11.28.0: Full-fidelity snapshot for render() reuse
+  /** Full player snapshots for render() */
+  plSnap: Player[];
+  /** Full ball snapshot for render() */
+  ballSnap: Ball;
+  /** Action log at this frame (for replay commentary) */
+  actionLogSnap: ActionLogEntry[];
+  /** Match time for spin animation */
+  timeSnap: number;
+  /** Half number */
+  halfSnap: number;
+  /** Match phase */
+  matchPhaseSnap: string;
+  /** Flash overlay */
+  flashSnap: number;
+  flashTxtSnap: string;
 }
 
 /** ★ v11.0.0: Stored goal replay clip */

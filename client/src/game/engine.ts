@@ -4597,6 +4597,15 @@ export function update(st: State, dt: number) {
       matchClock: st.matchClock,
       scoreBlue: st.scoreBlue,
       scoreRed: st.scoreRed,
+      // ★ v11.28.0: Full-fidelity snapshots for render() reuse
+      plSnap: st.pl.map(p => ({ ...p, pos: { x: p.pos.x, y: p.pos.y }, vel: { x: p.vel.x, y: p.vel.y }, face: { x: p.face.x, y: p.face.y }, home: { x: p.home.x, y: p.home.y }, leftFoot: { ...p.leftFoot, pos: { x: p.leftFoot.pos.x, y: p.leftFoot.pos.y }, offset: { x: p.leftFoot.offset.x, y: p.leftFoot.offset.y }, animOffset: { x: p.leftFoot.animOffset.x, y: p.leftFoot.animOffset.y } }, rightFoot: { ...p.rightFoot, pos: { x: p.rightFoot.pos.x, y: p.rightFoot.pos.y }, offset: { x: p.rightFoot.offset.x, y: p.rightFoot.offset.y }, animOffset: { x: p.rightFoot.animOffset.x, y: p.rightFoot.animOffset.y } }, passAndMoveTarget: { x: p.passAndMoveTarget.x, y: p.passAndMoveTarget.y }, committedRunTarget: p.committedRunTarget ? { x: p.committedRunTarget.x, y: p.committedRunTarget.y } : null, gkPunchDir: p.gkPunchDir ? { x: p.gkPunchDir.x, y: p.gkPunchDir.y } : null })),
+      ballSnap: { ...st.ball, pos: { x: st.ball.pos.x, y: st.ball.pos.y }, vel: { x: st.ball.vel.x, y: st.ball.vel.y }, prevPos: { x: st.ball.prevPos.x, y: st.ball.prevPos.y } },
+      actionLogSnap: st.actionLog.map(e => ({ ...e })),
+      timeSnap: st.time,
+      halfSnap: st.half,
+      matchPhaseSnap: st.matchPhase,
+      flashSnap: st.flash,
+      flashTxtSnap: st.flashTxt,
     };
     st.replayBuffer.push(frame);
     // Keep ~8 seconds at 30fps = 240 frames (enough for pre-goal buildup)
@@ -5153,6 +5162,14 @@ export function update(st: State, dt: number) {
           matchClock: st.matchClock,
           scoreBlue: st.scoreBlue,
           scoreRed: st.scoreRed,
+          plSnap: st.pl.map(p => ({ ...p, pos: { x: p.pos.x, y: p.pos.y }, vel: { x: p.vel.x, y: p.vel.y }, face: { x: p.face.x, y: p.face.y }, home: { x: p.home.x, y: p.home.y }, leftFoot: { ...p.leftFoot, pos: { x: p.leftFoot.pos.x, y: p.leftFoot.pos.y }, offset: { x: p.leftFoot.offset.x, y: p.leftFoot.offset.y }, animOffset: { x: p.leftFoot.animOffset.x, y: p.leftFoot.animOffset.y } }, rightFoot: { ...p.rightFoot, pos: { x: p.rightFoot.pos.x, y: p.rightFoot.pos.y }, offset: { x: p.rightFoot.offset.x, y: p.rightFoot.offset.y }, animOffset: { x: p.rightFoot.animOffset.x, y: p.rightFoot.animOffset.y } }, passAndMoveTarget: { x: p.passAndMoveTarget.x, y: p.passAndMoveTarget.y }, committedRunTarget: p.committedRunTarget ? { x: p.committedRunTarget.x, y: p.committedRunTarget.y } : null, gkPunchDir: p.gkPunchDir ? { x: p.gkPunchDir.x, y: p.gkPunchDir.y } : null })),
+          ballSnap: { ...st.ball, pos: { x: st.ball.pos.x, y: st.ball.pos.y }, vel: { x: st.ball.vel.x, y: st.ball.vel.y }, prevPos: { x: st.ball.prevPos.x, y: st.ball.prevPos.y } },
+          actionLogSnap: st.actionLog.map(e => ({ ...e })),
+          timeSnap: st.time,
+          halfSnap: st.half,
+          matchPhaseSnap: st.matchPhase,
+          flashSnap: st.flash,
+          flashTxtSnap: st.flashTxt,
         };
         const frames = [...st.replayBuffer, currentFrame];
         st.goalReplays.push({
@@ -5273,6 +5290,14 @@ export function update(st: State, dt: number) {
             matchClock: st.matchClock,
             scoreBlue: st.scoreBlue,
             scoreRed: st.scoreRed,
+            plSnap: st.pl.map(p => ({ ...p, pos: { x: p.pos.x, y: p.pos.y }, vel: { x: p.vel.x, y: p.vel.y }, face: { x: p.face.x, y: p.face.y }, home: { x: p.home.x, y: p.home.y }, leftFoot: { ...p.leftFoot, pos: { x: p.leftFoot.pos.x, y: p.leftFoot.pos.y }, offset: { x: p.leftFoot.offset.x, y: p.leftFoot.offset.y }, animOffset: { x: p.leftFoot.animOffset.x, y: p.leftFoot.animOffset.y } }, rightFoot: { ...p.rightFoot, pos: { x: p.rightFoot.pos.x, y: p.rightFoot.pos.y }, offset: { x: p.rightFoot.offset.x, y: p.rightFoot.offset.y }, animOffset: { x: p.rightFoot.animOffset.x, y: p.rightFoot.animOffset.y } }, passAndMoveTarget: { x: p.passAndMoveTarget.x, y: p.passAndMoveTarget.y }, committedRunTarget: p.committedRunTarget ? { x: p.committedRunTarget.x, y: p.committedRunTarget.y } : null, gkPunchDir: p.gkPunchDir ? { x: p.gkPunchDir.x, y: p.gkPunchDir.y } : null })),
+            ballSnap: { ...st.ball, pos: { x: st.ball.pos.x, y: st.ball.pos.y }, vel: { x: st.ball.vel.x, y: st.ball.vel.y }, prevPos: { x: st.ball.prevPos.x, y: st.ball.prevPos.y } },
+            actionLogSnap: st.actionLog.map(e => ({ ...e })),
+            timeSnap: st.time,
+            halfSnap: st.half,
+            matchPhaseSnap: st.matchPhase,
+            flashSnap: st.flash,
+            flashTxtSnap: st.flashTxt,
           };
           const dribFrames = [...st.replayBuffer, dribCurrentFrame];
           st.goalReplays.push({

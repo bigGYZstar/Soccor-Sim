@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useLocation } from 'wouter';
 
 // --- game/ モジュールから必要なものをすべてインポート ---
-import { State, V, SpeedMode, GoalReplay, GoalReplayFrame } from '../game/types';
+import { State, V, SpeedMode, GoalReplay, GoalReplayFrame, Player, Ball, BallTrailDot, ActionLogEntry } from '../game/types';
 import { P, FormationId, FORMATION_IDS, FORMATIONS } from '../game/constants';
 import { v, vadd, vscl } from '../game/math';
 import { mkState, mkCustomState, doKickOff, update } from '../game/engine';
@@ -1577,6 +1577,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
   const replayTimeRef = useRef(0);  // elapsed seconds for animation
   const replayAccumRef = useRef(0); // frame accumulator
   const lastGoalReplayCountRef = useRef(0); // track how many replays we've shown
+  const replayLastInteractRef = useRef(0); // wall-clock seconds since last user interaction (for 5s auto-skip)
 
   // Sync speed to state ref
   useEffect(() => {
@@ -1647,14 +1648,26 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
       const speed = stRef.current.speed;
       const subSteps = speed === 'VFAST' ? 8 : speed === 'FAST' ? 4 : speed === 'MID' ? 2 : 1;
       const dt = rawDt / subSteps;
-      // ★ v11.27.0: If in replay mode, render replay frame instead of game
+      // ★ v11.28.0: If in replay mode, render replay frame using render() directly
       if (replayRef.current) {
         const rep = replayRef.current;
         replayTimeRef.current += rawDt;
-        // Advance frame at 30fps wall-clock
+        // 5-second no-interaction auto-skip (only after replay finishes playing)
+        if (!replayPlayingRef.current) {
+          replayLastInteractRef.current += rawDt;
+          if (replayLastInteractRef.current >= 5.0) {
+            replayRef.current = null;
+            setActiveReplay(null);
+            setShowReplayControls(false);
+            replayLastInteractRef.current = 0;
+            reqRef.current = requestAnimationFrame(loop);
+            return;
+          }
+        }
+        // Advance frame at 60fps wall-clock (matching capture rate)
         if (replayPlayingRef.current) {
           replayAccumRef.current += rawDt;
-          const frameInterval = 1 / 30;
+          const frameInterval = 1 / 60;
           while (replayAccumRef.current >= frameInterval) {
             replayAccumRef.current -= frameInterval;
             const nextIdx = replayFrameIdxRef.current + 1;
@@ -1662,15 +1675,78 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
               replayFrameIdxRef.current = nextIdx;
               setReplayFrameIdx(nextIdx);
             } else {
-              // Replay ended - auto-skip
+              // Replay ended - start 5s auto-skip countdown
               replayPlayingRef.current = false;
               setReplayPlaying(false);
+              replayLastInteractRef.current = 0;
             }
           }
         }
         const frame = rep.frames[replayFrameIdxRef.current];
-        if (frame) {
-          renderReplayFrame(ctx, canvas, frame, rep, replayFrameIdxRef.current, replayTimeRef.current);
+        if (frame && frame.plSnap && frame.ballSnap) {
+          // Build a pseudo-State from the snapshot and call render() directly
+          const pseudoSt: State = {
+            ...stRef.current,
+            pl: frame.plSnap as Player[],
+            ball: frame.ballSnap as Ball,
+            ballTrail: frame.trail as BallTrailDot[],
+            matchClock: frame.matchClock,
+            scoreBlue: frame.scoreBlue,
+            scoreRed: frame.scoreRed,
+            actionLog: frame.actionLogSnap as ActionLogEntry[],
+            time: frame.timeSnap,
+            half: frame.halfSnap as 1 | 2,
+            matchPhase: frame.matchPhaseSnap as State['matchPhase'],
+            flash: frame.flashSnap,
+            flashTxt: frame.flashTxtSnap,
+            // Suppress screenEffect in replay to avoid goal flash overlay
+            screenEffect: { type: 'none', timer: 0, text: '', playerNum: 0, team: 0 },
+            setPiece: null,
+            setPieceRestart: null,
+          };
+          render(ctx, canvas, pseudoSt);
+          // Draw REPLAY label and goal banner on top
+          const rw = canvas.clientWidth;
+          const rh = canvas.clientHeight;
+          const hudH = Math.max(28, rh * 0.06);
+          const pulseAlpha = 0.7 + 0.3 * Math.sin(replayTimeRef.current * 4.0);
+          const replayFontSize = Math.max(8, Math.min(16, rw * 0.016));
+          ctx.font = `bold ${replayFontSize}px ${RETRO_FONT}`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'top';
+          ctx.fillStyle = `rgba(245,197,66,${pulseAlpha})`;
+          ctx.fillText('◀ REPLAY ▶', rw * 0.5, hudH + 4);
+          // Goal banner near goal frame
+          const distToGoal = Math.abs(replayFrameIdxRef.current - rep.goalFrameIdx);
+          if (distToGoal < 40) {
+            const bannerAlpha = Math.max(0, 1.0 - distToGoal / 40);
+            const bannerFontSize = Math.max(10, Math.min(22, rw * 0.022));
+            ctx.font = `bold ${bannerFontSize}px ${RETRO_FONT}`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = `rgba(0,0,0,${bannerAlpha * 0.7})`;
+            ctx.fillText(`⚽ GOAL!! ${rep.scorerName}`, rw * 0.5 + 2, rh * 0.72 + 2);
+            ctx.fillStyle = `rgba(${rep.scorerTeam === -1 ? '96,165,250' : '248,113,113'},${bannerAlpha})`;
+            ctx.fillText(`⚽ GOAL!! ${rep.scorerName}`, rw * 0.5, rh * 0.72);
+            ctx.strokeStyle = `rgba(245,197,66,${bannerAlpha * 0.8})`;
+            ctx.lineWidth = 1;
+            ctx.strokeText(`⚽ GOAL!! ${rep.scorerName}`, rw * 0.5, rh * 0.72);
+            const badgeFontSize = Math.max(7, Math.min(13, rw * 0.013));
+            ctx.font = `bold ${badgeFontSize}px ${RETRO_FONT}`;
+            ctx.fillStyle = `rgba(245,197,66,${bannerAlpha})`;
+            ctx.textBaseline = 'middle';
+            ctx.fillText(`BLU ${rep.scoreBlue} - ${rep.scoreRed} RED`, rw * 0.5, rh * 0.72 + bannerFontSize * 1.4);
+          }
+          // Auto-skip countdown indicator (when replay ended)
+          if (!replayPlayingRef.current) {
+            const remaining = Math.max(0, 5.0 - replayLastInteractRef.current);
+            const skipFontSize = Math.max(6, Math.min(11, rw * 0.011));
+            ctx.font = `${skipFontSize}px ${RETRO_FONT}`;
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'top';
+            ctx.fillStyle = 'rgba(245,197,66,0.7)';
+            ctx.fillText(`AUTO SKIP ${remaining.toFixed(1)}s`, rw - 8, hudH + 4);
+          }
         }
         reqRef.current = requestAnimationFrame(loop);
         return;
@@ -1783,7 +1859,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
         <>
           {/* LEFT-TOP: 詳細ボタン */}
           <button
-            onClick={() => setShowReplayControls(prev => !prev)}
+            onClick={() => { replayLastInteractRef.current = 0; setShowReplayControls(prev => !prev); }}
             style={{
               position: "absolute",
               top: "clamp(6px, 1.5vh, 14px)",
@@ -1810,6 +1886,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
               replayRef.current = null;
               setActiveReplay(null);
               setShowReplayControls(false);
+              replayLastInteractRef.current = 0;
             }}
             style={{
               position: "absolute",
@@ -1859,6 +1936,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
                     const idx = Number(e.target.value);
                     replayFrameIdxRef.current = idx;
                     setReplayFrameIdx(idx);
+                    replayLastInteractRef.current = 0;
                   }}
                   style={{
                     flex: 1,
@@ -1881,6 +1959,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
                     setReplayFrameIdx(0);
                     replayPlayingRef.current = false;
                     setReplayPlaying(false);
+                    replayLastInteractRef.current = 0;
                   }}
                   style={replayBtnStyle}
                 >
@@ -1894,6 +1973,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
                     setReplayFrameIdx(idx);
                     replayPlayingRef.current = false;
                     setReplayPlaying(false);
+                    replayLastInteractRef.current = 0;
                   }}
                   style={replayBtnStyle}
                 >
@@ -1904,6 +1984,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
                   onClick={() => {
                     replayPlayingRef.current = !replayPlayingRef.current;
                     setReplayPlaying(replayPlayingRef.current);
+                    replayLastInteractRef.current = 0;
                   }}
                   style={{ ...replayBtnStyle, background: replayPlaying ? RETRO_GOLD : RETRO_DARK, color: replayPlaying ? "#000" : RETRO_GOLD, minWidth: "clamp(24px, 5vw, 40px)" }}
                 >
@@ -1917,6 +1998,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
                     setReplayFrameIdx(idx);
                     replayPlayingRef.current = false;
                     setReplayPlaying(false);
+                    replayLastInteractRef.current = 0;
                   }}
                   style={replayBtnStyle}
                 >
@@ -1929,6 +2011,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
                     setReplayFrameIdx(activeReplay.goalFrameIdx);
                     replayPlayingRef.current = false;
                     setReplayPlaying(false);
+                    replayLastInteractRef.current = 0;
                   }}
                   style={{ ...replayBtnStyle, color: "#f87171", borderColor: "#f87171" }}
                 >
@@ -1942,6 +2025,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
                     replayPlayingRef.current = true;
                     setReplayPlaying(true);
                     replayAccumRef.current = 0;
+                    replayLastInteractRef.current = 0;
                   }}
                   style={{ ...replayBtnStyle, color: RETRO_GREEN, borderColor: RETRO_GREEN }}
                 >
