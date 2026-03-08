@@ -283,6 +283,9 @@ export interface Ball {
   spinDecay: number; // Spin decay rate per second
   kickFoot: "L" | "R" | null;  // Which foot kicked the ball (for spin direction)
   kickStyle: "inside" | "outside" | "instep" | "toe" | null;  // Kick technique
+  // ★ v11.24.0: GK catch/punch tracking
+  recentBounceT: number;  // Time since last ground bounce (0 = just bounced, Infinity = never)
+  gkPunchedT: number;     // Countdown after GK punch (prevents immediate re-save)
 }
 
 // ★ v9.7.0: Ball trail dot for visualizing ball movement path

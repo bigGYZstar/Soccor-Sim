@@ -471,7 +471,7 @@ export function mkCustomState(
 export function mkState(blueFormation: FormationId = "4-4-2", redFormation: FormationId = "4-4-2"): State {
   return {
     pl: mkPlayers(blueFormation, redFormation),
-    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0, holdT: 0, holdAX0: 0, holdT0: 0, phaseBBlockedPassStreak: 0, kickSeq: 0, kickKind: null, kickTeam: 0, intendedReceiverIdx: null, kickActive: false, prevPos: v(0, 0), lastKickTime: 0, lastKickerIdx: -1, lastPasserIdx: -1, z: 0, vz: 0, spinX: 0, spinY: 0, spinDecay: 3.0, kickFoot: null, kickStyle: null },
+    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0, holdT: 0, holdAX0: 0, holdT0: 0, phaseBBlockedPassStreak: 0, kickSeq: 0, kickKind: null, kickTeam: 0, intendedReceiverIdx: null, kickActive: false, prevPos: v(0, 0), lastKickTime: 0, lastKickerIdx: -1, lastPasserIdx: -1, z: 0, vz: 0, spinX: 0, spinY: 0, spinDecay: 3.0, kickFoot: null, kickStyle: null, recentBounceT: Infinity, gkPunchedT: 0 },
     sL: 0, sR: 0, scoreBlue: 0, scoreRed: 0,
     time: 0, matchClock: 0, half: 1, halftimeShow: false, halftimeDone: false,
     matchPhase: "kickoff" as const,
@@ -4517,6 +4517,8 @@ export function update(st: State, dt: number) {
       // Ground bounce
       if (b.z <= 0 && b.vz < 0) {
         b.z = 0;
+        // ★ v11.24.0: Track recent bounce time for GK catch difficulty
+        b.recentBounceT = 0;  // Just bounced
         // ★ v11.15.0: Backspin reduces bounce and forward speed (realistic ball behavior)
         // Strong backspin: ball nearly stops on landing (like a slice shot)
         // Mild backspin: reduced bounce
@@ -4553,6 +4555,10 @@ export function update(st: State, dt: number) {
         }
       }
     }
+    
+    // ★ v11.24.0: Update recent bounce timer and GK punch cooldown
+    if (b.recentBounceT < Infinity) b.recentBounceT += dt;
+    if (b.gkPunchedT > 0) b.gkPunchedT = Math.max(0, b.gkPunchedT - dt);
     
     // ★ v9.4.0: Spin decay over time
     if (Math.abs(b.spinX) > 0.01 || Math.abs(b.spinY) > 0.01) {
@@ -4735,7 +4741,8 @@ export function update(st: State, dt: number) {
     // ★ v11.22.0: Also intercept non-shot balls (e.g., goal kick long feeds) near GK's penalty area
     const isNearOppGoal = b.free && b.lastKickType === "LONG" && !b.shot &&
       Math.abs(b.pos.x) > PExt.pitchHalfW - PExt.penAreaW - 5.0 && b.z < 2.0;
-    if (PExt.gkSaveEnabled && (b.shot || isNearOppGoal)) {
+    if (PExt.gkSaveEnabled && (b.shot || isNearOppGoal) && b.gkPunchedT <= 0) {
+      // ★ v11.24.0: Skip if GK just punched this ball (prevent punch loop)
       const defTeam = b.lastTouchTeam === -1 ? 1 : -1;
       const gkIdx = findGK(st, defTeam);
       if (gkIdx !== -1) {
@@ -4766,66 +4773,111 @@ export function update(st: State, dt: number) {
             if (st.stats.playerStats[gk.idx]) st.stats.playerStats[gk.idx].saves++;
             logSave(st, gk);
             
-            // ★ v11.20.0: Determine catch vs punch based on ball speed and reach difficulty
-            // Catchable: ball speed < 18 m/s AND ball is within comfortable reach (not stretched)
-            const isCatchable = ballSpd < 18.0 && directDist < PExt.gkSaveRadius * 1.5;
-            // Difficult reach: ball is at the edge of reach (stretched save)
-            const isDifficultReach = directDist > PExt.gkSaveRadius * 0.9;
-            // High speed shot: always punch
-            const isHighSpeed = ballSpd >= 22.0;
+            // ★ v11.24.0: Realistic catch vs punch decision
+            // ----------------------------------------------------------------
+            // catchChance = base * speedFactor * bounceFactor * spinFactor
+            // If catchChance >= 0.90 (adjusted by GK skill) => CATCH
+            // If catchChance >= 0.50 => PUNCH (far, controlled)
+            // If catchChance < 0.50  => PUNCH (weak, may be loose)
+            // ----------------------------------------------------------------
+            const gkSaveSkill = gk.cardMods?.gkSaveBase ?? 1.0;  // 0.85 - 1.25
             
-            const doPunch = isHighSpeed || isDifficultReach || (!isCatchable && Math.random() < PExt.gkParryChance);
+            // Speed factor: slow balls are easy to catch, fast balls are not
+            // < 5 m/s: 1.0 (easy catch), 10 m/s: 0.80, 15 m/s: 0.55, 20+ m/s: 0.20
+            const speedFactor = ballSpd < 5.0  ? 1.0 :
+                                 ballSpd < 10.0 ? 1.0 - (ballSpd - 5.0) * 0.04 :   // 5-10: 1.0->0.80
+                                 ballSpd < 15.0 ? 0.80 - (ballSpd - 10.0) * 0.05 : // 10-15: 0.80->0.55
+                                 ballSpd < 20.0 ? 0.55 - (ballSpd - 15.0) * 0.07 : // 15-20: 0.55->0.20
+                                 0.20;                                                // 20+: 0.20 (punch only)
             
-            if (doPunch) {
-              // ★ v11.20.0: Punching - GK punches ball away
-              // Direction: try to punch wide/safe, away from goal center
-              const goalCenter = v(defTeam * PExt.pitchHalfW, 0);
+            // Bounce factor: ball that just bounced is hard to catch (unpredictable)
+            // recentBounceT is in physics-seconds (dt = physDt * speedMul * PHYS_SCALE)
+            // 4.3 phys-s = 0.3 real-s, 8.6 phys-s = 0.6 real-s, 14.4 phys-s = 1.0 real-s
+            const bounceFactor = b.recentBounceT < 4.3  ? 0.30 :
+                                  b.recentBounceT < 8.6  ? 0.30 + (b.recentBounceT - 4.3) / 4.3 * 0.30 :
+                                  b.recentBounceT < 14.4 ? 0.60 + (b.recentBounceT - 8.6) / 5.8 * 0.40 :
+                                  1.0;
+            
+            // Spin factor: knuckleball (near-zero spin) is unpredictable
+            // Low spin = ball moves erratically, hard to catch
+            const totalSpin = Math.abs(b.spinX) + Math.abs(b.spinY);
+            const spinFactor = totalSpin < 0.15 ? 0.60 :  // Near-zero spin: knuckleball effect
+                               totalSpin < 0.5  ? 0.60 + (totalSpin - 0.15) / 0.35 * 0.40 :
+                               1.0;
+            
+            // Reach factor: ball at edge of reach is harder to catch
+            const reachFactor = directDist < PExt.gkSaveRadius * 0.5 ? 1.0 :
+                                 directDist < PExt.gkSaveRadius * 1.0 ? 1.0 - (directDist - PExt.gkSaveRadius * 0.5) / (PExt.gkSaveRadius * 0.5) * 0.3 :
+                                 0.70;
+            
+            // Combined catch probability
+            const baseCatch = 0.85;  // Base catch chance when conditions are ideal
+            const catchChance = baseCatch * speedFactor * bounceFactor * spinFactor * reachFactor;
+            
+            // ★ v11.24.0: Probabilistic catch decision
+            // doCatch = Math.random() < catchChance * gkSaveSkill
+            // Slow ball (5m/s): avg=85%, elite=100%
+            // Medium ball (12m/s): avg=60%, elite=74%
+            // Fast ball (18m/s): avg=29%, elite=36% (usually punch)
+            // Just bounced: avg=26% (usually punch)
+            // Knuckleball: avg=51% (50/50)
+            const doCatch = Math.random() < Math.min(1.0, catchChance * gkSaveSkill);
+            
+            if (doCatch) {
+              // ★ v11.24.0: CATCH - GK securely holds the ball
+              give(b, gkIdx, st.pl, st, "gkCatch");
+              b.cooldown = PExt.gkHoldCooldown;
+              b.gkPunchedT = 0;  // Reset punch timer
+              // Set GK catch animation
+              gk.gkAnimState = "catch";
+              gk.gkAnimTimer = 0.5;
+              gk.gkPunchDir = null;
+              const gkNameC = gk.cardName || `GK#${gk.num}`;
+              const catchQuality = catchChance > 0.95 ? '楽々とキャッチ！' :
+                                   catchChance > 0.80 ? 'キャッチ！落ち着いてパスを探す' :
+                                   'ギリギリキャッチ！';
+              emitLog(st, {
+                time: st.time, team: gk.team, playerNum: gk.num, playerRole: "GK",
+                action: "save",
+                detail: `${gkNameC} ${catchQuality}`,
+                success: true, excitement: catchChance > 0.95 ? 1 : 2,
+              });
+            } else {
+              // ★ v11.24.0: PUNCH - GK punches ball away
+              // Punch quality depends on catchChance (how close to catchable it was)
+              // catchChance >= 0.50: controlled punch far away
+              // catchChance < 0.50: desperate punch, may be weak/loose
+              const isControlledPunch = catchChance >= 0.50;
               const toBallDir = vnorm(vsub(b.pos, gk.pos));
-              // Punch direction: deflect away from goal (toward sides)
-              const gkSaveSkill = gk.cardMods?.gkSaveBase ?? 1.0;
-              // Good GK: punch wide to safety; poor GK: random direction (may stay close)
-              const punchAccuracy = gkSaveSkill * (0.6 + Math.random() * 0.4);
+              // Punch direction: deflect wide/safe, away from goal center
+              const punchAccuracy = gkSaveSkill * (isControlledPunch ? 0.7 + Math.random() * 0.3 : 0.2 + Math.random() * 0.4);
               const safeDir = Math.abs(b.pos.y) > 5.0 ? Math.sign(b.pos.y) : (Math.random() < 0.5 ? 1 : -1);
               const punchDir = punchAccuracy > 0.8
-                ? vnorm(v(toBallDir.x * 0.3 + (Math.random() - 0.5) * 0.4, safeDir * 0.8 + (Math.random() - 0.5) * 0.4))
-                : vnorm(v(toBallDir.x + rng(-0.8, 0.8), toBallDir.y + rng(-0.8, 0.8)));
-              // Punch speed: strong GK punches far, weak GK may punch weakly (loose ball)
-              const punchSpd = punchAccuracy > 0.7
-                ? PExt.shotSpeed * (0.35 + Math.random() * 0.25)  // 35-60% of shot speed = far punch
-                : PExt.shotSpeed * (0.1 + Math.random() * 0.25);  // 10-35% = weak punch (may be loose)
+                ? vnorm(v(toBallDir.x * 0.3 + (Math.random() - 0.5) * 0.3, safeDir * 0.9 + (Math.random() - 0.5) * 0.3))
+                : vnorm(v(toBallDir.x + rng(-0.9, 0.9), toBallDir.y + rng(-0.9, 0.9)));
+              // Punch speed: controlled punch goes far, desperate punch may be weak
+              const punchSpd = isControlledPunch
+                ? PExt.shotSpeed * (0.40 + Math.random() * 0.25)  // 40-65% of shot speed = far punch
+                : PExt.shotSpeed * (0.10 + Math.random() * 0.20); // 10-30% = weak punch (dangerous)
               b.vel = vscl(punchDir, punchSpd);
               b.shot = false;
-              b.cooldown = PExt.gkHoldCooldown * 0.5;
+              // ★ v11.24.0: Longer cooldown after punch to prevent immediate re-shot loop
+              b.cooldown = PExt.gkHoldCooldown * 2.0;  // 1.2s cooldown (was 0.3s)
+              b.gkPunchedT = 21.6;  // 21.6 physics-seconds = 1.5 real seconds before GK can save again
               b.lastTouchTeam = gk.team;
               // Set GK punch animation
               gk.gkAnimState = "punch";
               gk.gkAnimTimer = 0.4;
               gk.gkPunchDir = { ...punchDir };
-              // Log punch
               const gkNameP = gk.cardName || `GK#${gk.num}`;
+              const punchLog = isControlledPunch
+                ? (punchSpd > PExt.shotSpeed * 0.4 ? `${gkNameP} パンチングで強く弾き返す！` : `${gkNameP} パンチングで弾き返す`)
+                : (punchSpd > PExt.shotSpeed * 0.2 ? `${gkNameP} なんとかパンチング！ルーズボールになるか？` : `${gkNameP} 弱いパンチング…ピンチ続く！`);
               emitLog(st, {
                 time: st.time, team: gk.team, playerNum: gk.num, playerRole: "GK",
                 action: "save",
-                detail: punchSpd > PExt.shotSpeed * 0.3
-                  ? `${gkNameP} パンチングで弾き返す！`
-                  : `${gkNameP} パンチング…ルーズボールになるか？`,
-                success: true, excitement: punchSpd > PExt.shotSpeed * 0.3 ? 2 : 1,
-              });
-            } else {
-              // ★ v11.20.0: Catch - GK holds the ball
-              give(b, gkIdx, st.pl, st, "gkCatch");
-              b.cooldown = PExt.gkHoldCooldown;
-              // Set GK catch animation
-              gk.gkAnimState = "catch";
-              gk.gkAnimTimer = 0.5;
-              gk.gkPunchDir = null;
-              // After catch, GK will hold and look for pass (handled in decideHasBall)
-              const gkNameC = gk.cardName || `GK#${gk.num}`;
-              emitLog(st, {
-                time: st.time, team: gk.team, playerNum: gk.num, playerRole: "GK",
-                action: "save",
-                detail: `${gkNameC} キャッチ！ 落ち着いてパスを探す`,
-                success: true, excitement: 1,
+                detail: punchLog,
+                success: true, excitement: isControlledPunch ? 2 : 3,
               });
             }
           }
