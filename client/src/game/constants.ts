@@ -36,7 +36,7 @@ export const P = {
   // Adjusted for soccer pitch
   interceptRadius: 0.9,  // v9.3.0: Reduced from 1.5 to allow more passes through
   decisionInterval: 0.25,  // Slightly longer decision time
-  shotRange: 38.0,  // v10.0.0: Increased to allow shots from realistic distance (105m pitch, goal at x=52.5)
+  shotRange: 27.0,  // v11.31.0: Reduced from 38m to 27m to suppress excessive long shots (was 38m)
   shotAngle: 45,  // Narrower angle for longer distances
 
   looseBallDrag: 3.5,

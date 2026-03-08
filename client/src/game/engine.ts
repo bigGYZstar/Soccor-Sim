@@ -2067,14 +2067,16 @@ export function decideHasBall(st: State, idx: number) {
   if (!me.isGK) {
     const distToGoalEarly = vdist(me.pos, gc);
     const axEarly = me.pos.x * (-me.team);
-    if (distToGoalEarly < 35.0 && axEarly > 5.0) {  // In opponent half (5m+), within 35m
+    // ★ v11.31.0: Reduced from 35m to 27m; penalty area (≤16.5m) always shoots if angle OK
+    const inPenArea = distToGoalEarly <= 16.5;
+    if ((distToGoalEarly < 27.0 || inPenArea) && axEarly > 5.0) {  // In opponent half (5m+), within 27m or in pen area
       const toGoal = vsub(gc, me.pos);
       const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
       let shotAngle = 90;
       if (distToGoalEarly <= 8.0) shotAngle = 90;
-      else if (distToGoalEarly <= 14.0) shotAngle = 75;
-      else if (distToGoalEarly <= 22.0) shotAngle = 60;
-      else shotAngle = 40;  // Long range shots need narrower angle
+      else if (distToGoalEarly <= 14.0) shotAngle = 80;  // v11.31.0: Wider angle in pen area
+      else if (distToGoalEarly <= 22.0) shotAngle = 65;  // v11.31.0: Slightly wider
+      else shotAngle = 45;  // v11.31.0: Slightly wider for 22-27m range
       if (angle < shotAngle) {
         const pSA = (1 - PExt.shotAccuracy * (me.cardMods?.shotAccuracy ?? 1.0)) * 2.5;
         const t = v(gc.x, gc.y + rng(-pSA, pSA));
@@ -2326,14 +2328,16 @@ export function decideHasBall(st: State, idx: number) {
     }
     
     // v10.0.0: Extended shot range with wider angle limits
-    const shouldPrioritizeShot = distToGoal < PExt.shotRange;
+    // v11.31.0: shotRange reduced to 27m; pen area (≤16.5m) always allowed
+    const shouldPrioritizeShot = distToGoal < PExt.shotRange || distToGoal <= 16.5;
     if (shouldPrioritizeShot) {
       const toGoal = vsub(gc, me.pos);
       const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
       let allowedAngle = 45;  // v10.0.0: wider base angle
       if (distToGoal <= 5.0) allowedAngle = 90;
-      else if (distToGoal <= 10.0) allowedAngle = 75;
-      else if (distToGoal <= 18.0) allowedAngle = 60;
+      else if (distToGoal <= 10.0) allowedAngle = 80;  // v11.31.0: Wider in pen area
+      else if (distToGoal <= 16.5) allowedAngle = 70;  // v11.31.0: Pen area edge
+      else if (distToGoal <= 22.0) allowedAngle = 60;
       else if (distToGoal <= 28.0) allowedAngle = 45;
       else allowedAngle = 35;  // Long range shots
       
@@ -2437,8 +2441,16 @@ export function decideHasBall(st: State, idx: number) {
   const spaceAheadOfMe = spaceAhead(st, me);
   let carryPref: number;
   if (me.role === "FWD") {
-    // FWD: strongly prefer carry when space is available
-    carryPref = spaceAheadOfMe > 10.0 ? 0.85 : spaceAheadOfMe > 7.0 ? 0.65 : spaceAheadOfMe > 4.0 ? 0.40 : 0.12;
+    // ★ v11.31.0: In penalty area, heavily prefer shooting over carrying
+    const distToGoalForCarry = vdist(me.pos, gc);
+    const inPenAreaForCarry = distToGoalForCarry <= 16.5;
+    if (inPenAreaForCarry) {
+      // Inside penalty area: shoot first, carry only if no shot angle
+      carryPref = spaceAheadOfMe > 8.0 ? 0.20 : 0.08;
+    } else {
+      // FWD: strongly prefer carry when space is available
+      carryPref = spaceAheadOfMe > 10.0 ? 0.85 : spaceAheadOfMe > 7.0 ? 0.65 : spaceAheadOfMe > 4.0 ? 0.40 : 0.12;
+    }
   } else if (me.role === "MID" && Math.abs(me.home.y) > 15.0) {
     // Wide MF (LM/RM): aggressive carry on the wing when space exists
     carryPref = spaceAheadOfMe > 10.0 ? 0.75 : spaceAheadOfMe > 7.0 ? 0.55 : spaceAheadOfMe > 4.0 ? 0.30 : 0.08;
@@ -2691,7 +2703,8 @@ export function decideNoBall(st: State, idx: number) {
       // Pocket = between opponent MID and DEF lines
       const pocketX = (oppMidLineX + oppDefLineX) / 2;
       // Shoulder of DEF line = just behind the DEF line (stay onside)
-      const shoulderX = oppDefLineX + me.team * 2.0; // 2m behind DEF line (safe from offside)
+      // v11.31.0: Reduced safety margin from 2m to 1m to allow FWD to push deeper
+      const shoulderX = oppDefLineX + me.team * 1.0; // 1m behind DEF line (safe from offside)
       
       if (isWideFwd) {
         // ★ v9.17.0: Wide FWD (LW/RW) - space-based movement, always aggressive
@@ -2753,15 +2766,17 @@ export function decideNoBall(st: State, idx: number) {
           const pocketAx = pocketX * attackDir;
           const shoulderAx = shoulderX * attackDir;
           // Prefer shoulder (closer to DEF line) when push is high
-          const blendToShoulder = Math.min(1.0, push * 1.5); // At push=0.67, fully at shoulder
+          // v11.31.0: Increased base blend (0.4) so FWD always pushes toward DEF line
+          const blendToShoulder = Math.min(1.0, 0.4 + push * 1.5); // At push=0.4, fully at shoulder
           targetX = pocketX + (shoulderX - pocketX) * blendToShoulder;
           me.wantsBall = true;
         }
         
         // ★ v9.17.0: NO home anchor for FWD during attack!
         // FWD position is purely based on opponent lines
+        // v11.31.0: Reduced clamp from pitchHalfW-5 to pitchHalfW-3 to allow entry into penalty area
         baseTgt = v(
-          clamp(targetX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 5),
+          clamp(targetX, -PExt.pitchHalfW + 5, PExt.pitchHalfW - 3),
           clamp(lateralY, -PExt.pitchHalfH + 5, PExt.pitchHalfH - 5)
         );
         
@@ -3062,6 +3077,12 @@ export function decideNoBall(st: State, idx: number) {
             }
             if (!blocked) score += 6.0; // Open pass lane
             if (candidate.y * me.home.y > 0) score += 2.0; // Correct side
+            // ★ v11.31.0: FWD penalty area bonus - strongly prefer runs into penalty area
+            if (isFwd) {
+              const distCandToGoal = vdist(candidate, gc);
+              if (distCandToGoal <= 16.5) score += 12.0; // Strong bonus for penalty area
+              else if (distCandToGoal <= 22.0) score += 5.0; // Moderate bonus for near-pen area
+            }
             
             if (score > bestScore) {
               bestScore = score;
@@ -3078,18 +3099,19 @@ export function decideNoBall(st: State, idx: number) {
         
         if (shouldRunFwd) {
           // ★ FWD: ALWAYS try to find and commit to forward runs
-          // Only accept targets that are FORWARD of current baseTgt (don't regress)
-          const runDist = iAmBehind ? 14.0 : 10.0;
-          const target = findBestSpace(runDist, me.home.y * 0.85, 4.0, true);
+          // v11.31.0: Increased runDist to reach penalty area; penalty area bonus in findBestSpace
+          const distFwdToGoal = vdist(me.pos, gc);
+          const runDist = iAmBehind ? 18.0 : distFwdToGoal > 20.0 ? 16.0 : 12.0;
+          const target = findBestSpace(runDist, me.home.y * 0.85, 5.0, true);
           if (target) {
             // ★ v9.20.0: Only commit if target is ahead of current baseTgt
             const targetForward = (target.x - baseTgt.x) * attackDir;
             if (targetForward > -2.0) { // Allow slight backward if space is much better
               me.committedRunTarget = target;
-              me.committedRunTimer = 2.0 + rng(0, 1.0);
+              me.committedRunTimer = 2.5 + rng(0, 1.0);  // v11.31.0: Longer run timer
               baseTgt = target;
               if (me.burstT <= 0 && me.staminaShort > 0.3) {
-                me.burstT = 1.5;
+                me.burstT = 2.0;  // v11.31.0: Longer sprint to reach pen area
               }
             }
           } else if (iAmBehind) {
