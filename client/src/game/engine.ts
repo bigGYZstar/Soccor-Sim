@@ -782,14 +782,30 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   if (shot) {
     const distToGoal = vdist(kicker.pos, v(-kicker.team * PExt.pitchHalfW, 0));
     // For long-range shots (>20m), boost speed so ball reaches goal
-    // Physics: with friction 0.985^(60*t), ball travels ~15m at speed 14m/s
-    // We need speed proportional to distance to ensure arrival
-    // Minimum speed to reach goal: approx dist * 1.2 (accounting for friction)
     const minSpeedToReach = distToGoal * 0.9;
     if (finalSpd < minSpeedToReach) {
       finalSpd = Math.min(minSpeedToReach, 35.0); // Cap at 35 m/s (powerful shot)
     }
   }
+  // ★ v11.29.0: Run-up momentum bonus - same-direction dribble boosts shot power
+  // Real soccer: running toward goal while shooting adds momentum to the ball
+  const kickerSpd = vlen(kicker.vel);
+  if (shot && kickerSpd > 0.5) {
+    const shotDir = vnorm(vsub(finalTarget, kicker.pos));
+    const runDot = vdot(vnorm(kicker.vel), shotDir); // -1..1: 1=full run-up, -1=against
+    if (runDot > 0.3) {
+      // Running in shot direction: up to +25% power
+      const runBonus = runDot * 0.25 * Math.min(kickerSpd / PExt.moveSpeed, 1.0);
+      finalSpd = Math.min(finalSpd * (1.0 + runBonus), 38.0);
+    } else if (runDot < -0.2) {
+      // Running against shot direction (turning shot): up to -20% power
+      finalSpd = finalSpd * (1.0 + runDot * 0.20);
+    }
+  }
+  // Store run-up factor for DF block reaction (1.0=full run-up, 0=static)
+  const runupFactor = shot ? Math.max(0, vdot(vlen(kicker.vel) > 0.5 ? vnorm(kicker.vel) : v(0,0), vnorm(vsub(finalTarget, kicker.pos)))) : 0;
+  (kicker as any)._lastShotRunup = runupFactor;
+  (kicker as any)._lastShotSpd = shot ? finalSpd : 0;
   b.vel = vscl(dir, finalSpd); b.dead = 0;
   b.lob = isLong ? 1.0 : 0;
   // v9.2.0: Add cooldown after kick to prevent kicker from immediately re-intercepting
@@ -898,10 +914,14 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   kicker.face = dir;
   
   // ★ v8.9.1: Trigger kick swing animation on the kicking foot
+  // ★ v11.29.0: Strong shots (run-up + high speed) get larger, longer swing animation
   const kickFoot = usedFoot === "L" ? kicker.leftFoot : kicker.rightFoot;
-  kickFoot.animTimer = PExt.footKickSwingDuration;
+  const shotPower = shot ? Math.min(finalSpd / 30.0, 1.0) : 0.3; // 0..1 power scale
+  const swingDurationMul = shot ? (0.8 + shotPower * 0.8) : 1.0; // Strong shot: up to 1.6x longer
+  const swingDistMul = shot ? (0.8 + shotPower * 0.7) : 1.0;     // Strong shot: up to 1.5x wider
+  kickFoot.animTimer = PExt.footKickSwingDuration * swingDurationMul;
   kickFoot.animType = "kick";
-  kickFoot.animOffset = vscl(dir, PExt.footKickSwingDist);
+  kickFoot.animOffset = vscl(dir, PExt.footKickSwingDist * swingDistMul);
   
   // ★ v8.7.1: Kick logging (1% sample)
   if (Math.random() < 0.01) {
@@ -3229,6 +3249,50 @@ export function decideNoBall(st: State, idx: number) {
         me.face = vnorm(vsub(ballPos, me.pos));
         return;
       }
+      // ★ v11.29.0: GK positioning considers DF coverage (angle-based)
+      // GK positions to cover the side NOT covered by defenders
+      // This is modulated by gkDecision (higher = smarter positioning)
+      if (ballOwner && ballOwner.team !== me.team) {
+        const carrier = ballOwner;
+        const myGoalCenter = v(me.team * PExt.pitchHalfW, 0);
+        const goalHalfH = PExt.goalHalfH;
+        
+        // Find defenders between carrier and goal
+        const myDefs = st.pl.filter(p => p.team === me.team && !p.isGK && p.role === "DEF");
+        
+        // Calculate which side of the goal each DF is covering
+        // DF covers the angle from carrier to the goal side they're on
+        let defCoveredY = 0; // Net lateral coverage by defenders (positive = right side covered)
+        for (const df of myDefs) {
+          const carrierToGoal = vsub(myGoalCenter, carrier.pos);
+          const dfDist = vdist(df.pos, carrier.pos);
+          if (dfDist < 18.0) { // Only count nearby defenders
+            // Defender's lateral position relative to shot line
+            const shotLineNorm = vnorm(carrierToGoal);
+            const dfRelative = vsub(df.pos, carrier.pos);
+            const lateralCoverage = vdot(dfRelative, vperp(shotLineNorm));
+            defCoveredY += lateralCoverage * (1.0 / Math.max(dfDist, 1.0));
+          }
+        }
+        
+        // GK should shift OPPOSITE to where defenders are covering
+        // If defenders cover right (defCoveredY > 0), GK shifts left
+        const gkDecision = me.cardMods?.gkDecision ?? 1.0;
+        const gkShiftScale = clamp(gkDecision * 0.6, 0.3, 0.9); // 0.3-0.9 based on decision
+        const maxGKShift = goalHalfH * 0.7; // Max shift: 70% of half-goal width
+        const gkYShift = clamp(-defCoveredY * gkShiftScale * 0.15, -maxGKShift, maxGKShift);
+        
+        // Also shift toward ball's Y position (basic angle coverage)
+        const ballYCoverage = clamp(carrier.pos.y * 0.25, -goalHalfH * 0.6, goalHalfH * 0.6);
+        const finalGKY = gkYShift * 0.5 + ballYCoverage * 0.5;
+        
+        // GK stays close to goal line but adjusts Y
+        const gkHomeX = me.home.x; // Stay near goal line
+        me.act = "move";
+        me.tgt = pitchClamp(v(gkHomeX, finalGKY));
+        me.face = vnorm(vsub(carrier.pos, me.pos));
+        return;
+      }
       // Default: stay home
       me.act = "move";
       me.tgt = { ...me.home };
@@ -3290,6 +3354,45 @@ export function decideNoBall(st: State, idx: number) {
       const carrierSpeed = vlen(carrierVel);
       const carrierDir = carrierSpeed > 0.1 ? vnorm(carrierVel) : vnorm(vsub(v(-carrier.team * PExt.pitchHalfW, 0), carrier.pos));
       const myGoal = v(me.team * PExt.pitchHalfW, 0);
+      
+      // ★ v11.29.0: SHOT BLOCK REACTION - detect opponent winding up for a shot
+      // If carrier is winding up (large kick animation) and I'm close enough, dive into shot lane
+      const carrierKickFoot = carrier.leftFoot && carrier.rightFoot
+        ? (vdist(carrier.leftFoot.pos, b.pos) < vdist(carrier.rightFoot.pos, b.pos) ? carrier.leftFoot : carrier.rightFoot)
+        : null;
+      const isWindingUp = carrierKickFoot !== null &&
+        carrierKickFoot.animType === "kick" &&
+        carrierKickFoot.animTimer > PExt.footKickSwingDuration * 0.5; // Still in early swing
+      const lastShotSpd = (carrier as any)._lastShotSpd ?? 0;
+      const isStrongShot = lastShotSpd > 18.0 || isWindingUp;
+      const distToCarrier = vdist(me.pos, carrier.pos);
+      const oppGoal = v(-me.team * PExt.pitchHalfW, 0);
+      const carrierToOppGoal = vnorm(vsub(oppGoal, carrier.pos));
+      const meToOppGoal = vnorm(vsub(oppGoal, me.pos));
+      // Am I between carrier and goal? (in shot lane)
+      const inShotLane = vdot(vnorm(vsub(me.pos, carrier.pos)), carrierToOppGoal) > 0.4;
+      
+      if (!me.isGK && isStrongShot && distToCarrier < 9.0 && inShotLane) {
+        // Dive into the shot lane - position body between ball and goal
+        const blockReach = me.role === "DEF" ? 2.5 : me.role === "MID" ? 2.0 : 1.5;
+        const shotLanePoint = vadd(carrier.pos, vscl(carrierToOppGoal, blockReach));
+        // Lateral adjustment: cover the most dangerous half of the goal
+        const goalHalfY = oppGoal.y + (me.pos.y > 0 ? -1.5 : 1.5);
+        const blockTarget = v(shotLanePoint.x, shotLanePoint.y * 0.7 + goalHalfY * 0.3);
+        me.act = "move";
+        me.tgt = pitchClamp(blockTarget);
+        me.face = vnorm(vsub(carrier.pos, me.pos));
+        // Trigger tackle/lunge animation on nearest foot
+        const nearFoot = carrier.leftFoot && carrier.rightFoot
+          ? (vdist(me.leftFoot.pos, b.pos) < vdist(me.rightFoot.pos, b.pos) ? me.leftFoot : me.rightFoot)
+          : me.rightFoot;
+        if (nearFoot && nearFoot.animTimer <= 0) {
+          nearFoot.animTimer = PExt.footTackleLungeDuration * 1.2;
+          nearFoot.animType = "tackle";
+          nearFoot.animOffset = vscl(meToOppGoal, PExt.footTackleLungeDist * 1.3);
+        }
+        return;
+      }
       
       // Calculate ball separation from dribbler
       const ballSep = vdist(b.pos, carrier.pos);
@@ -4762,6 +4865,89 @@ export function update(st: State, dt: number) {
     // Cooldown
     if (b.cooldown > 0) {
       b.cooldown -= dt;
+    }
+    
+    // ★ v11.29.0: SHOT DEFLECTION by outfield defenders
+    // When a shot passes through a defender's body area, deflect it (change direction)
+    // This simulates real soccer: defenders block shots with their bodies
+    if (b.shot && b.free && b.cooldown <= 0 && b.z < 1.8) {
+      for (let i = 0; i < st.pl.length; i++) {
+        const dp = st.pl[i];
+        if (dp.isGK) continue; // GK handled separately
+        if (dp.team === b.lastTouchTeam) continue; // Don't deflect own team's shots (own goals are rare)
+        const dBody = vdist(dp.pos, b.pos);
+        if (dBody < 0.75) { // Body collision radius ~0.75m
+          const ballSpd = vlen(b.vel);
+          // Determine if it's a hand/arm area (lateral to body, above waist)
+          const toBall = vsub(b.pos, dp.pos);
+          const bodyFwd = dp.face;
+          const bodyRight = vperp(bodyFwd);
+          const lateralComponent = Math.abs(vdot(toBall, bodyRight));
+          const isHandArea = lateralComponent > 0.35 && b.z > 0.3 && b.z < 1.4;
+          
+          if (isHandArea && Math.random() < 0.35) {
+            // HANDBALL - award FK to attacking team
+            const attackTeam = b.lastTouchTeam;
+            const fkPos = { ...dp.pos };
+            // FK is not yet supported as a SetPieceKind; use GOALKICK as closest equivalent
+            // (attacking team restarts from foul position)
+            const fkTakerIdx = st.pl.findIndex(p => p.team === attackTeam && !p.isGK);
+            st.setPieceRestart = {
+              kind: "GOALKICK" as any,
+              team: attackTeam,
+              pos: fkPos,
+              phase: "walk",
+              timer: 0,
+              takerIdx: fkTakerIdx >= 0 ? fkTakerIdx : 0,
+              targetPos: v(0, 0),
+              positioned: false,
+              throwArmAngle: 0,
+              kickRunProgress: 0,
+              logEmitted: false,
+              fwdWaitTimer: 0,
+            };
+            b.free = true; b.owner = null; b.shot = false;
+            b.vel = v(0, 0); b.pos = fkPos;
+            const dpName = dp.cardName ?? `#${dp.num}`;
+            const teamStr = attackTeam === -1 ? "Blue" : "Red";
+            emitLog(st, { time: st.time, team: dp.team, playerNum: dp.num, playerRole: dp.role, action: "foul" as any, detail: `ハンド！${dpName}の手に当たる！${teamStr}にFK。`, success: false, excitement: 1 });
+            break;
+          } else {
+            // BODY BLOCK - deflect the ball
+            // Deflection direction: reflect off body surface with randomness
+            const inDir = vnorm(b.vel);
+            const normal = vnorm(toBall); // Normal from body center to ball
+            // Reflect: r = d - 2(d·n)n
+            const dot = vdot(inDir, normal);
+            const reflectDir = vsub(inDir, vscl(normal, 2 * dot));
+            // Add random scatter (blocked shots are unpredictable)
+            const scatter = v(rng(-0.4, 0.4), rng(-0.4, 0.4));
+            const deflectDir = vnorm(vadd(reflectDir, scatter));
+            const deflectSpd = ballSpd * rng(0.3, 0.65); // Loses 35-70% speed on block
+            b.vel = vscl(deflectDir, deflectSpd);
+            b.pos = vadd(dp.pos, vscl(normal, 0.8)); // Push ball away from body
+            b.z = Math.max(0, b.z * 0.5);
+            b.vz = Math.max(0, b.vz * 0.3);
+            b.shot = false; // No longer a shot after deflection
+            b.cooldown = 0.2;
+            b.lastTouchTeam = dp.team;
+            // Trigger block animation
+            const blockFoot = vdist(dp.leftFoot.pos, b.pos) < vdist(dp.rightFoot.pos, b.pos) ? dp.leftFoot : dp.rightFoot;
+            if (blockFoot.animTimer <= 0) {
+              blockFoot.animTimer = PExt.footTackleLungeDuration;
+              blockFoot.animType = "tackle";
+              blockFoot.animOffset = vscl(normal, PExt.footTackleLungeDist * 1.5);
+            }
+            const dpName = dp.cardName ?? `#${dp.num}`;
+            const blockExcitement = ballSpd > 15.0 ? 1 : 0;
+            const blockDetail = ballSpd > 15.0
+              ? `${dpName}がシュートをブロック！ボールの方向が変わった！`
+              : `${dpName}がシュートを身体でブロック。`;
+            emitLog(st, { time: st.time, team: dp.team, playerNum: dp.num, playerRole: dp.role, action: "tackle", detail: blockDetail, success: true, excitement: blockExcitement });
+            break;
+          }
+        }
+      }
     }
     
     // Interception - find closest player within radius
