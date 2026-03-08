@@ -800,22 +800,103 @@ const render = (ctx: CanvasRenderingContext2D, cvs: HTMLCanvasElement, st: State
         ctx.beginPath();
         ctx.arc(pos.x + armSpread, armY + unit * 0.5, Math.max(2, unit * 1.0), 0, Math.PI * 2);
         ctx.fill();
-        // HOLD state: show ball being held
+        // HOLD state: SFC-style scan animation (GK looks left/right for free teammate)
         if (p.gkAnimState === "hold") {
+          // ★ v11.26.0: SCAN ANIMATION
+          // Time-based oscillation for SFC-style 2-frame animation feel
+          // Use st.time for consistent animation across all GKs
+          const scanT = st.time * 1.8;  // Scan cycle speed (1.8 rad/s = ~3.5s full cycle)
+          const scanPhase = Math.sin(scanT);  // -1 to +1
+          const scanDir = scanPhase > 0 ? 1 : -1;  // Looking right or left
+          // SFC: snap to discrete positions (2-frame animation)
+          const snapPhase = Math.abs(scanPhase) > 0.5 ? scanDir : 0;  // -1, 0, or +1
+          
+          // --- HEAD TURN (shift head block left/right) ---
+          // Already drawn above; we'll overdraw the head with offset
+          const headShift = px(snapPhase * Math.max(1, unit * 0.8));  // 1-2px shift
+          const headW2 = unit * 2.8;
+          const headH2 = unit * 2.5;
+          const headTop = pos.y - unit * 3.8;
+          // Erase previous head position (redraw with team color to cover)
+          drawPixelRect(pos.x - headW2/2 - unit*0.5, headTop - unit*0.3, headW2 + unit*1.0, headH2 + unit*0.5, shirtColor);
+          // Hair (shifted)
+          drawPixelRect(pos.x - headW2/2 - unit*0.2 + headShift, headTop - unit*0.4, headW2 + unit*0.4, unit*1.5, hairColor);
+          // Face (shifted)
+          drawPixelRect(pos.x - headW2/2 + headShift, headTop, headW2, headH2, skinColor);
+          // Face shadow (shifted)
+          drawPixelRect(pos.x + headW2/2 - unit*0.8 + headShift, headTop + unit*0.8, unit*0.8, unit*1.5, skinShadow);
+          // Eye highlight: small white dot on the side being looked at
+          if (snapPhase !== 0) {
+            const eyeX = pos.x + headShift + snapPhase * unit * 0.7;
+            const eyeY = headTop + unit * 1.0;
+            drawPixelRect(eyeX, eyeY, Math.max(1, unit * 0.5), Math.max(1, unit * 0.5), "#ffffff");
+          }
+          
+          // --- ARMS: hold ball in front (both arms bent inward) ---
           const holdBallR = Math.max(3, unit * 1.8);
+          const ballHoldY = armY - unit * 0.5;  // Ball held at chest height
+          ctx.strokeStyle = skinColor;
+          ctx.lineWidth = Math.max(2, unit * 1.4);
+          ctx.lineCap = "round";
+          // Left arm bent to hold ball
+          ctx.beginPath();
+          ctx.moveTo(pos.x - unit * 1.5, armY);
+          ctx.lineTo(pos.x - unit * 1.8, ballHoldY + unit * 0.5);
+          ctx.stroke();
+          // Right arm bent to hold ball
+          ctx.beginPath();
+          ctx.moveTo(pos.x + unit * 1.5, armY);
+          ctx.lineTo(pos.x + unit * 1.8, ballHoldY + unit * 0.5);
+          ctx.stroke();
+          // Gloves at ball position
+          ctx.fillStyle = "#ffdd44";
+          ctx.beginPath();
+          ctx.arc(pos.x - unit * 1.8, ballHoldY + unit * 0.5, Math.max(2, unit * 0.9), 0, Math.PI * 2);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(pos.x + unit * 1.8, ballHoldY + unit * 0.5, Math.max(2, unit * 0.9), 0, Math.PI * 2);
+          ctx.fill();
+          // Ball held at chest
           ctx.fillStyle = "#f8f8f8";
           ctx.beginPath();
-          ctx.arc(pos.x, armY - unit * 1.0, holdBallR, 0, Math.PI * 2);
+          ctx.arc(pos.x, ballHoldY, holdBallR, 0, Math.PI * 2);
           ctx.fill();
           ctx.strokeStyle = "#303030";
           ctx.lineWidth = Math.max(1, holdBallR * 0.15);
           ctx.stroke();
-          // "HOLD" label
-          ctx.fillStyle = `rgba(255,220,50,${alpha})`;
-          ctx.font = `bold ${Math.max(5, unit * 1.6)}px monospace`;
-          ctx.textAlign = "center";
-          ctx.textBaseline = "bottom";
-          ctx.fillText("HOLD", pos.x, pos.y - unit * 6.0);
+          // Simple pentagon dot on ball (SFC-style)
+          ctx.fillStyle = "#303030";
+          ctx.beginPath();
+          ctx.arc(pos.x, ballHoldY, holdBallR * 0.25, 0, Math.PI * 2);
+          ctx.fill();
+          
+          // --- SCAN INDICATOR: SFC-style arrow above head ---
+          // Blinking left/right arrow (2-frame: show arrow for 0.5s, then switch)
+          const blinkOn = (Math.floor(scanT / Math.PI) % 2) === 0;  // Blink every half-cycle
+          if (blinkOn || Math.abs(scanPhase) > 0.3) {
+            const arrowY = pos.y - unit * 6.5;
+            const arrowColor = isBlue ? `rgba(100,200,255,${alpha * 0.9})` : `rgba(255,180,80,${alpha * 0.9})`;
+            ctx.fillStyle = arrowColor;
+            ctx.font = `bold ${Math.max(5, unit * 2.0)}px monospace`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "bottom";
+            // Show directional arrow based on scan direction
+            const arrowChar = snapPhase > 0 ? "▶" : snapPhase < 0 ? "◀" : "・";
+            ctx.fillText(arrowChar, pos.x, arrowY);
+          }
+          
+          // --- FOOT SHUFFLE: alternate foot tap (SFC 2-frame walk cycle) ---
+          // Left foot taps on odd frames, right foot on even frames
+          const footFrame = Math.floor(scanT / (Math.PI * 0.5)) % 2;  // 0 or 1
+          // Draw small shuffle indicator under feet
+          const shuffleColor = `rgba(255,255,255,${alpha * 0.3})`;
+          const shuffleY = pos.y + unit * 4.0;
+          if (footFrame === 0) {
+            drawPixelRect(pos.x - unit * 2.5, shuffleY, unit * 1.5, Math.max(1, unit * 0.4), shuffleColor);
+          } else {
+            drawPixelRect(pos.x + unit * 1.0, shuffleY, unit * 1.5, Math.max(1, unit * 0.4), shuffleColor);
+          }
+          
         } else {
           // CATCH flash
           ctx.fillStyle = `rgba(100,255,180,${alpha * 0.5})`;
