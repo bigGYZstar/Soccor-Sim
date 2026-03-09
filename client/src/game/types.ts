@@ -289,6 +289,7 @@ export interface Ball {
   // ★ v11.24.0: GK catch/punch tracking
   recentBounceT: number;  // Time since last ground bounce (0 = just bounced, Infinity = never)
   gkPunchedT: number;     // Countdown after GK punch (prevents immediate re-save)
+  shotOriginDist: number;  // ★ v11.33.0: Distance from shooter to goal at time of shot
 }
 
 // ★ v9.7.0: Ball trail dot for visualizing ball movement path
@@ -445,4 +446,6 @@ export interface State {
     playerNum: number;  // Player number involved
     team: number;       // Team involved
   };
+  // ★ scenario mode: only these player indices get AI decisions (null/undefined = all players)
+  scenarioActiveIdxs?: Set<number> | null;
 }

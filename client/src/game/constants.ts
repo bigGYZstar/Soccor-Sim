@@ -30,7 +30,7 @@ export const P = {
   shotSpeed: 30,         // 25  * 1.2 = 30
   longPassSpeed: 18,     // 15  * 1.2 = 18
   passAccuracy: 0.94,  // v9.3.0: Increased from 0.92 for better pass completion
-  shotAccuracy: 0.40,  // v9.2.0: Reduced from 0.60 for more realistic on-target rate
+  shotAccuracy: 0.58,  // v11.32.0: Increased from 0.40 for realistic on-target rate (was 0.40)
   longPassAccuracy: 0.70,  // v9.2.0: Slightly increased
   dribbleControl: 0.75,  // v9.2.0: Reduced from 0.90 to incentivize passing
   // Adjusted for soccer pitch
@@ -63,8 +63,8 @@ export const P = {
   // GK saves
   gkSaveEnabled: true,
   gkSaveRadius: 0.9,
-  gkSaveBase: 0.55,
-  gkSaveAngleBonus: 0.20,
+  gkSaveBase: 0.30,  // v11.32.1: Reduced from 0.45 for realistic goal rate (12m->~65%)
+  gkSaveAngleBonus: 0.15,  // v11.32.0: Reduced from 0.20 (was 0.20)
   gkParryChance: 0.25,
   gkHoldCooldown: 0.6,
 

@@ -36,8 +36,8 @@ const PExt = {
   goalKickX: 52.5 - 5.5 * 0.5,  // = 49.75m from center (goal area center)
   gkSaveEnabled: true,
   gkSaveRadius: 0.9,
-  gkSaveBase: 0.55,
-  gkSaveAngleBonus: 0.20,
+  gkSaveBase: 0.30,  // v11.32.1: Reduced from 0.45 for realistic goal rate (12m->~65%)
+  gkSaveAngleBonus: 0.15,  // v11.32.0: Reduced from 0.20
   gkParryChance: 0.25,
   gkHoldCooldown: 0.6,
   longPassMinDist: 8,
@@ -165,7 +165,7 @@ export function footAccuracyModifier(player: Player, usedFoot: FootSide, ballPos
  * Update foot positions for a player based on current pos and face.
  * Called every frame in update().
  */
-function updatePlayerFeet(player: Player, dt?: number): void {
+export function updatePlayerFeet(player: Player, dt?: number): void {
   const feet = calcFootPositions(player.pos, player.face);
   
   // Base foot positions
@@ -474,7 +474,7 @@ export function mkCustomState(
 export function mkState(blueFormation: FormationId = "4-4-2", redFormation: FormationId = "4-4-2"): State {
   return {
     pl: mkPlayers(blueFormation, redFormation),
-    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0, holdT: 0, holdAX0: 0, holdT0: 0, phaseBBlockedPassStreak: 0, kickSeq: 0, kickKind: null, kickTeam: 0, intendedReceiverIdx: null, kickActive: false, prevPos: v(0, 0), lastKickTime: 0, lastKickerIdx: -1, lastPasserIdx: -1, z: 0, vz: 0, spinX: 0, spinY: 0, spinDecay: 3.0, kickFoot: null, kickStyle: null, recentBounceT: Infinity, gkPunchedT: 0 },
+    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0, holdT: 0, holdAX0: 0, holdT0: 0, phaseBBlockedPassStreak: 0, kickSeq: 0, kickKind: null, kickTeam: 0, intendedReceiverIdx: null, kickActive: false, prevPos: v(0, 0), lastKickTime: 0, lastKickerIdx: -1, lastPasserIdx: -1, z: 0, vz: 0, spinX: 0, spinY: 0, spinDecay: 3.0, kickFoot: null, kickStyle: null, recentBounceT: Infinity, gkPunchedT: 0, shotOriginDist: 0 },
     sL: 0, sR: 0, scoreBlue: 0, scoreRed: 0,
     time: 0, matchClock: 0, half: 1, halftimeShow: false, halftimeDone: false,
     matchPhase: "kickoff" as const,
@@ -699,12 +699,17 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
       shotDistPenalty = (distToGoal - 20) * 0.15; // Extra error per meter beyond 20m
     }
   }
+  // ★ v11.32.0: Reduced shot error multiplier from 8.0 to 2.0 for realistic accuracy
+  // Previous: (1-0.58)*8.0 = 3.36m error was too large, causing most shots to miss
+  // New: (1-0.58)*2.0 = 0.84m error is more realistic for a player in the penalty area
   let baseErrRange = customErr !== undefined ? customErr : 
-                 (shot ? (1 - Math.min(pShotAcc, 0.95)) * 8.0 + shotDistPenalty :
+                 (shot ? (1 - Math.min(pShotAcc, 0.95)) * 2.0 + shotDistPenalty :
                   isLong ? (1 - Math.min(pLongAcc, 0.95)) * 1.5 : 
                   (1 - Math.min(pPassAcc, 0.99)) * 1.5);
   // Apply foot accuracy: footMod=1.0 means no extra error, footMod=0.5 means 2x error
-  let errRange = baseErrRange / Math.max(0.1, footMod);
+  // ★ v11.32.1: For shots, errRange=0 (accuracy controlled by pSA in decideHasBall)
+  // For passes, apply foot accuracy penalty
+  let errRange = shot ? 0 : baseErrRange / Math.max(0.1, footMod);
   
   if (!shot && kicker) {
     // Improvement 1: Detect back/lateral passes (gp <= 0)
@@ -742,7 +747,11 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
   }
   
   // Apply error to final target
-  const err = v(rng(-errRange, errRange), rng(-errRange, errRange));
+  // ★ v11.32.1: For shots, only apply Y-axis error (X-axis error amplifies angle deviation)
+  // For passes/long passes, apply both X and Y error as before
+  const err = shot
+    ? v(0, rng(-errRange, errRange))  // Shot: Y-axis only to avoid angle amplification
+    : v(rng(-errRange, errRange), rng(-errRange, errRange));  // Pass: both axes
   finalTarget = vadd(finalTarget, err);
   
   // v8.2 Fix: Calculate direction from kicker position (not ball position)
@@ -884,6 +893,8 @@ export function kick(st: State, kickerIdx: number, spd: number, shot: boolean, t
     // ★ v9.9.0: Log shot
     const shotDist = vdist(kicker.pos, v(-kicker.team * PExt.pitchHalfW, 0));
     logShot(st, kicker, shotDist);
+    // ★ v11.33.0: Record shot origin distance for GK save radius calculation
+    b.shotOriginDist = shotDist;
     
     // v8.8.3: Check if shot is on target using goalline intersection
     const goalX = -kicker.team * PExt.pitchHalfW;
@@ -958,6 +969,8 @@ export function nearestOutfield(st: State, pos: V, team: number): number {
   let bi = -1, bd = Infinity;
   for (let i = 0; i < st.pl.length; i++) {
     if (st.pl[i].team !== team || st.pl[i].isGK) continue;
+    // ★ v11.32.0: Skip non-active players in scenario mode
+    if (st.scenarioActiveIdxs != null && !st.scenarioActiveIdxs.has(i)) continue;
     const d = vdist(pos, st.pl[i].pos);
     if (d < bd) { bd = d; bi = i; }
   }
@@ -966,7 +979,11 @@ export function nearestOutfield(st: State, pos: V, team: number): number {
 
 export function findGK(st: State, team: number): number {
   for (let i = 0; i < st.pl.length; i++) {
-    if (st.pl[i].team === team && st.pl[i].isGK) return i;
+    if (st.pl[i].team === team && st.pl[i].isGK) {
+      // ★ scenario mode: only return GK if it's in the active set
+      if (st.scenarioActiveIdxs != null && !st.scenarioActiveIdxs.has(i)) continue;
+      return i;
+    }
   }
   return -1;
 }
@@ -1846,6 +1863,8 @@ export function decideHasBall(st: State, idx: number) {
       for (let i = 0; i < st.pl.length; i++) {
         const p = st.pl[i];
         if (p.team !== me.team || p.isGK) continue;
+        // ★ v11.32.0: Skip non-active players in scenario mode
+        if (st.scenarioActiveIdxs != null && !st.scenarioActiveIdxs.has(i)) continue;
         const distToGK = vdist(me.pos, p.pos);
         if (distToGK > 50.0) continue;  // Too far
         
@@ -2078,7 +2097,9 @@ export function decideHasBall(st: State, idx: number) {
       else if (distToGoalEarly <= 22.0) shotAngle = 65;  // v11.31.0: Slightly wider
       else shotAngle = 45;  // v11.31.0: Slightly wider for 22-27m range
       if (angle < shotAngle) {
-        const pSA = (1 - PExt.shotAccuracy * (me.cardMods?.shotAccuracy ?? 1.0)) * 2.5;
+        // ★ v11.33.0: Distance-scaled accuracy (farther = less accurate)
+        const pSADistScale = Math.pow(Math.max(distToGoalEarly, 8.0) / 12.0, 2.0);
+        const pSA = (1 - PExt.shotAccuracy * (me.cardMods?.shotAccuracy ?? 1.0)) * 2.5 * pSADistScale;
         const t = v(gc.x, gc.y + rng(-pSA, pSA));
         kick(st, idx, PExt.shotSpeed, true, t);
         chosenAction = "shot-priority";
@@ -2316,10 +2337,12 @@ export function decideHasBall(st: State, idx: number) {
       const toGoal = vsub(gc, me.pos);
       const angle = Math.abs(Math.atan2(toGoal.y, toGoal.x * -me.team) * (180 / Math.PI));
       if (angle < 60) {
-        const pSA = (1 - PExt.shotAccuracy * (me.cardMods?.shotAccuracy ?? 1.0)) * 2.5;
+        // ★ v11.33.0: Distance-scaled accuracy
+        const pSADistScale0 = Math.pow(Math.max(distToGoal, 8.0) / 12.0, 2.0);
+        const pSA = (1 - PExt.shotAccuracy * (me.cardMods?.shotAccuracy ?? 1.0)) * 2.5 * pSADistScale0;
         const t = v(gc.x, gc.y + rng(-pSA, pSA));
         kick(st, idx, PExt.shotSpeed, true, t);
-        if (me.team === -1) st.stats.forcedShotsFromBlocked.blue++;
+        if (me.team === -1) st.stats.forcedShotsFromBlocked.blue++
         else st.stats.forcedShotsFromBlocked.red++;
         st.ball.phaseBBlockedPassStreak = 0;
         chosenAction = "shot-forced";
@@ -2342,7 +2365,9 @@ export function decideHasBall(st: State, idx: number) {
       else allowedAngle = 35;  // Long range shots
       
       if (angle < allowedAngle) {
-        const pSA2 = (1 - PExt.shotAccuracy * (me.cardMods?.shotAccuracy ?? 1.0)) * 2.5;
+        // ★ v11.33.0: Distance-scaled accuracy
+        const pSADistScale2 = Math.pow(Math.max(distToGoal, 8.0) / 12.0, 2.0);
+        const pSA2 = (1 - PExt.shotAccuracy * (me.cardMods?.shotAccuracy ?? 1.0)) * 2.5 * pSADistScale2;
         const t = v(gc.x, gc.y + rng(-pSA2, pSA2));
         kick(st, idx, PExt.shotSpeed, true, t);
         st.ball.phaseBBlockedPassStreak = 0;
@@ -2562,7 +2587,9 @@ export function decideHasBall(st: State, idx: number) {
     else if (distToGoal <= 28.0) allowedAngle = 45;
     else allowedAngle = 35;
     if (angle < allowedAngle) {
-      const pSA3 = (1 - PExt.shotAccuracy * (me.cardMods?.shotAccuracy ?? 1.0)) * 2.5;
+      // ★ v11.33.0: Distance-scaled accuracy
+      const pSADistScale3 = Math.pow(Math.max(distToGoal, 8.0) / 12.0, 2.0);
+      const pSA3 = (1 - PExt.shotAccuracy * (me.cardMods?.shotAccuracy ?? 1.0)) * 2.5 * pSADistScale3;
       const t = v(gc.x, gc.y + rng(-pSA3, pSA3));
       kick(st, idx, PExt.shotSpeed, true, t);
       st.ball.phaseBBlockedPassStreak = 0;
@@ -3261,8 +3288,17 @@ export function decideNoBall(st: State, idx: number) {
       const isSlowBall = ballSpeed < 8.0;
       const isShotDrop = b.shot && isSlowBall;
       
+      // ★ v11.33.0: GK should NOT chase the ball during an active shot (b.shot=true && fast)
+      // GK can only save from their current position (realistic reaction time)
+      // Exception: very slow shots (< 8 m/s) where GK has time to react and move
       if (b.free && inGKZone && (distGKToBall < 12.0 || isShotDrop)) {
-        // Actively go collect the ball
+        if (b.shot && !isSlowBall) {
+          // Active fast shot: GK stays in position, save is determined by distSegmentToPoint
+          // Do NOT move toward ball - only the save radius check in physics handles this
+          me.face = vnorm(vsub(ballPos, me.pos));
+          return;
+        }
+        // Actively go collect the ball (loose ball or slow shot)
         me.act = "move";
         // Predict where ball will be
         const predictT = Math.min(distGKToBall / Math.max(PExt.moveSpeed, 1), 1.0);
@@ -3625,6 +3661,8 @@ export function doKickOff(st: State, side?: number) {
 // ★ v11.16.0: Position players for throw-in
 function positionForThrowIn(st: State, sp: { kind: string; team: number; pos: V }, takerIdx: number) {
   for (const p of st.pl) {
+    // ★ v11.32.0: Skip non-active players in scenario mode
+    if (st.scenarioActiveIdxs != null && !st.scenarioActiveIdxs.has(p.idx)) continue;
     if (p.idx === takerIdx) {
       // Taker goes to throw-in position
       p.tgt = pitchClamp(sp.pos);
@@ -3741,6 +3779,8 @@ function positionForCorner(st: State, sp: { kind: string; team: number; pos: V }
   const cornerSide = Math.sign(cornerY);  // +1 or -1
   
   for (const p of st.pl) {
+    // ★ v11.32.0: Skip non-active players in scenario mode
+    if (st.scenarioActiveIdxs != null && !st.scenarioActiveIdxs.has(p.idx)) continue;
     if (p.team === attackTeam) {
       if (p.isGK) {
         // GK stays near own goal but moves up slightly
@@ -3794,6 +3834,8 @@ function positionForGoalKick(st: State, sp: { kind: string; team: number; pos: V
   const oppHalfDeepX = attackDir * (PExt.pitchHalfW * 0.55);  // ~55% into opponent half
   
   for (const p of st.pl) {
+    // ★ v11.32.0: Skip non-active players in scenario mode
+    if (st.scenarioActiveIdxs != null && !st.scenarioActiveIdxs.has(p.idx)) continue;
     if (p.team === kickTeam) {
       if (p.isGK) {
         // GK moves to ball position (inside goal area)
@@ -4759,6 +4801,8 @@ export function update(st: State, dt: number) {
   }
   
   for (const i of evalOrder) {
+    // ★ scenario mode: skip AI for players not in active set
+    if (st.scenarioActiveIdxs != null && !st.scenarioActiveIdxs.has(i)) continue;
     const p = st.pl[i];
     p.dt -= dt;
     if (p.dt <= 0) {
@@ -4898,6 +4942,8 @@ export function update(st: State, dt: number) {
     // This simulates real soccer: defenders block shots with their bodies
     if (b.shot && b.free && b.cooldown <= 0 && b.z < 1.8) {
       for (let i = 0; i < st.pl.length; i++) {
+        // ★ scenario mode: skip inactive players from shot deflection
+        if (st.scenarioActiveIdxs != null && !st.scenarioActiveIdxs.has(i)) continue;
         const dp = st.pl[i];
         if (dp.isGK) continue; // GK handled separately
         if (dp.team === b.lastTouchTeam) continue; // Don't deflect own team's shots (own goals are rare)
@@ -4979,12 +5025,15 @@ export function update(st: State, dt: number) {
     // Interception - find closest player within radius
     // ★ v8.9.0: Use foot distance for interception (closer foot counts)
     // ★ v9.4.0: Airborne balls (z > 1.5m) cannot be intercepted on the ground
-    const canIntercept = b.z < 1.5; // Ball must be below head height
+    // ★ v11.32.1: Shot balls are handled by GK save logic only (not interception)
+    const canIntercept = b.z < 1.5 && !b.shot; // Ball must be below head height and not a shot
     if (b.cooldown <= 0 && canIntercept) {
       let closestIdx = -1;
       let minD = Infinity;
       
       for (let i = 0; i < st.pl.length; i++) {
+        // ★ scenario mode: skip inactive players from interception
+        if (st.scenarioActiveIdxs != null && !st.scenarioActiveIdxs.has(i)) continue;
         const p = st.pl[i];
         // ★ v10.2.0: Per-player intercept radius
         const pInterceptR = PExt.interceptRadius * (p.cardMods?.interceptRadius ?? 1.0);
@@ -5133,10 +5182,16 @@ export function update(st: State, dt: number) {
         const distToGK = distSegmentToPoint(b.prevPos, b.pos, gk.pos);
         const directDist = vdist(b.pos, gk.pos);
         const ballSpd = vlen(b.vel);
-        // For slow shots (<10 m/s), use wider save radius (GK can reach further)
-        const effectiveSaveRadius = ballSpd < 10.0 ? PExt.gkSaveRadius * 2.5 :
-                                     ballSpd < 15.0 ? PExt.gkSaveRadius * 1.8 :
-                                     PExt.gkSaveRadius;
+        // ★ v11.32.0: For slow shots (<10 m/s), use wider save radius (GK can reach further)
+        // ★ v11.33.0: Also scale by shooter distance (farther = GK has more time to position)
+        // ★ v11.33.0: Use shotOriginDist (recorded at kick time) for stable distance-based save radius
+        const shotDistForRadius = b.shotOriginDist > 0 ? b.shotOriginDist : (vdist(b.pos, v(defTeam * PExt.pitchHalfW, 0)) + 6.0);
+        // Distance bonus: 12m=1.0x, 16.5m=3.4x, 22m=5.7x, 27m=8.0x
+        const distRadiusBonus = 1.0 + Math.max(0, (shotDistForRadius - 12.0) / 15.0) * 7.0;
+        const baseRadius = PExt.gkSaveRadius * distRadiusBonus;
+        const effectiveSaveRadius = ballSpd < 10.0 ? baseRadius * 1.8 :
+                                     ballSpd < 15.0 ? baseRadius * 1.4 :
+                                     baseRadius;
         const canSave = distToGK < effectiveSaveRadius || (directDist < effectiveSaveRadius && ballSpd < 12.0);
         if (canSave) {
           const gc = v(defTeam * PExt.pitchHalfW, 0);
@@ -5145,7 +5200,15 @@ export function update(st: State, dt: number) {
           const angle = vang(toGoal, toBall);
           const angleBonus = (1 - angle / 180) * PExt.gkSaveAngleBonus;
           const gkSaveMod = gk.cardMods?.gkSaveBase ?? 1.0;
-          const saveChance = (PExt.gkSaveBase * gkSaveMod) + angleBonus;
+          // ★ v11.33.0: Distance-based save chance
+          // Closer shots are harder to save (less reaction time)
+          // Farther shots are easier to save (more reaction time, GK can position better)
+          // gkSaveBase scales with distance (quadratic): 12m=base, 16.5m=+0.07, 22m=+0.36, 27m=+0.80
+          // Use shotOriginDist for stable distance-based save chance
+          const shotDistForSave = b.shotOriginDist > 0 ? b.shotOriginDist : (vdist(b.pos, gc) + 6.0);
+          const distRatio = Math.max(0, (shotDistForSave - 12.0) / 15.0);
+          const distBonus = distRatio * distRatio * 0.80;
+          const saveChance = Math.min(0.95, (PExt.gkSaveBase * gkSaveMod) + angleBonus + distBonus);
           
           const gkTeam = defTeam === -1 ? 'blue' : 'red';
           st.stats.gkSaveAttempts[gkTeam]++;
@@ -5233,18 +5296,34 @@ export function update(st: State, dt: number) {
               const toBallDir = vnorm(vsub(b.pos, gk.pos));
               // Punch direction: deflect wide/safe, away from goal center
               const punchAccuracy = gkSaveSkill * (isControlledPunch ? 0.7 + Math.random() * 0.3 : 0.2 + Math.random() * 0.4);
-              const safeDir = Math.abs(b.pos.y) > 5.0 ? Math.sign(b.pos.y) : (Math.random() < 0.5 ? 1 : -1);
-              const punchDir = punchAccuracy > 0.8
-                ? vnorm(v(toBallDir.x * 0.3 + (Math.random() - 0.5) * 0.3, safeDir * 0.9 + (Math.random() - 0.5) * 0.3))
-                : vnorm(v(toBallDir.x + rng(-0.9, 0.9), toBallDir.y + rng(-0.9, 0.9)));
+              // ★ v11.34.0: Lower threshold so GK punches wide when ball is off-center (>1.5m)
+              const safeDir = Math.abs(b.pos.y) > 1.5 ? Math.sign(b.pos.y) : (Math.random() < 0.5 ? 1 : -1);
+              // ★ v11.33.0: Force punch direction away from goal (defTeam * x < 0)
+              // defTeam=1 means red team defends (goal at x=+52.5), punch must go x < 0
+              // defTeam=-1 means blue team defends (goal at x=-52.5), punch must go x > 0
+              // ★ v11.35.0: Improved punch direction - always deflect wide and away from goal
+              // Controlled punch: accurate deflection to safe zone
+              // Desperate punch: still goes away from goal and to the side (not back toward goal)
+              const punchDirRaw = punchAccuracy > 0.8
+                ? v(toBallDir.x * 0.3 + (Math.random() - 0.5) * 0.3, safeDir * 0.9 + (Math.random() - 0.5) * 0.3)
+                : v(-defTeam * (0.4 + Math.random() * 0.4), safeDir * 0.6 + (Math.random() - 0.5) * 0.4);
+              // Ensure punch goes away from goal (not toward it)
+              // defTeam=1: goal at x=+52.5, punch must go x<0 (away from goal)
+              // defTeam=-1: goal at x=-52.5, punch must go x>0 (away from goal)
+              if (punchDirRaw.x * defTeam > 0) {
+                punchDirRaw.x = -Math.abs(punchDirRaw.x) * defTeam; // Flip away from goal
+              }
+              const punchDir = vnorm(punchDirRaw);
               // Punch speed: controlled punch goes far, desperate punch may be weak
+              // ★ v11.35.0: Raised minimum punch speed to prevent ball from stopping near attacker
               const punchSpd = isControlledPunch
-                ? PExt.shotSpeed * (0.40 + Math.random() * 0.25)  // 40-65% of shot speed = far punch
-                : PExt.shotSpeed * (0.10 + Math.random() * 0.20); // 10-30% = weak punch (dangerous)
+                ? PExt.shotSpeed * (0.50 + Math.random() * 0.25)  // 50-75% of shot speed = far punch
+                : PExt.shotSpeed * (0.30 + Math.random() * 0.20); // 30-50% = weak punch (still goes far)
               b.vel = vscl(punchDir, punchSpd);
               b.shot = false;
-              // ★ v11.24.0: Longer cooldown after punch to prevent immediate re-shot loop
-              b.cooldown = PExt.gkHoldCooldown * 2.0;  // 1.2s cooldown (was 0.3s)
+              // ★ v11.35.0: Cooldown after punch - prevents immediate rebound re-shot
+              // physDt = 0.18s/frame, cooldown=1.2s = 6.7 frames = 0.11 real-seconds protection
+              b.cooldown = PExt.gkHoldCooldown * 2.0;  // 1.2s cooldown
               b.gkPunchedT = 21.6;  // 21.6 physics-seconds = 1.5 real seconds before GK can save again
               b.lastTouchTeam = gk.team;
               // Set GK punch animation
@@ -5556,6 +5635,8 @@ export function update(st: State, dt: number) {
   
   // C. Player movement (Phase 5: Replace with inertia + stamina)
   for (const p of st.pl) {
+    // ★ v11.32.0: Skip non-active players in scenario mode
+    if (st.scenarioActiveIdxs != null && !st.scenarioActiveIdxs.has(p.idx)) continue;
     const desired = vsub(p.tgt, p.pos);
     const dist = vlen(desired);
     
