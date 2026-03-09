@@ -290,6 +290,7 @@ export interface Ball {
   recentBounceT: number;  // Time since last ground bounce (0 = just bounced, Infinity = never)
   gkPunchedT: number;     // Countdown after GK punch (prevents immediate re-save)
   shotOriginDist: number;  // ★ v11.33.0: Distance from shooter to goal at time of shot
+  freezeT: number;  // ★ v11.36.0: Time ball has been frozen (stopped and unclaimed)
 }
 
 // ★ v9.7.0: Ball trail dot for visualizing ball movement path

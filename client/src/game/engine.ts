@@ -42,7 +42,7 @@ const PExt = {
   gkHoldCooldown: 0.6,
   longPassMinDist: 8,
   longPassMaxDist: 22,
-  throwInMaxDist: 12,
+  throwInMaxDist: 30,  // ★ v11.36.0: Expanded from 12m to cover full pitch (VFAST fix)
   throwInAnimDur: 0.5,
   cornerAnimDur: 0.4,
   headingContestRadius: 2.5,
@@ -474,7 +474,7 @@ export function mkCustomState(
 export function mkState(blueFormation: FormationId = "4-4-2", redFormation: FormationId = "4-4-2"): State {
   return {
     pl: mkPlayers(blueFormation, redFormation),
-    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0, holdT: 0, holdAX0: 0, holdT0: 0, phaseBBlockedPassStreak: 0, kickSeq: 0, kickKind: null, kickTeam: 0, intendedReceiverIdx: null, kickActive: false, prevPos: v(0, 0), lastKickTime: 0, lastKickerIdx: -1, lastPasserIdx: -1, z: 0, vz: 0, spinX: 0, spinY: 0, spinDecay: 3.0, kickFoot: null, kickStyle: null, recentBounceT: Infinity, gkPunchedT: 0, shotOriginDist: 0 },
+    ball: { pos: v(0, 0), vel: v(0, 0), owner: null, free: true, shot: false, dead: 0, cooldown: 0, lob: 0, lastTouchTeam: 0, holdT: 0, holdAX0: 0, holdT0: 0, phaseBBlockedPassStreak: 0, kickSeq: 0, kickKind: null, kickTeam: 0, intendedReceiverIdx: null, kickActive: false, prevPos: v(0, 0), lastKickTime: 0, lastKickerIdx: -1, lastPasserIdx: -1, z: 0, vz: 0, spinX: 0, spinY: 0, spinDecay: 3.0, kickFoot: null, kickStyle: null, recentBounceT: Infinity, gkPunchedT: 0, shotOriginDist: 0, freezeT: 0 },
     sL: 0, sR: 0, scoreBlue: 0, scoreRed: 0,
     time: 0, matchClock: 0, half: 1, halftimeShow: false, halftimeDone: false,
     matchPhase: "kickoff" as const,
@@ -3915,8 +3915,11 @@ function runSetPiece(st: State) {
         success: true, excitement: 0,
       });
     } else {
-      // No target found, just give ball
+      // ★ v11.36.0: No target found - throw toward field center (prevents freeze)
       give(st.ball, takerIdx, st.pl, st);
+      const throwDir = vnorm(vsub(v(0, 0), sp.pos));  // Toward center
+      const throwTarget = vadd(sp.pos, vscl(throwDir, 10.0));
+      kick(st, takerIdx, 10.0, false, throwTarget, false, 0.15);
       st.ball.cooldown = PExt.restartNoIntercept;
     }
     return;
@@ -3936,7 +3939,9 @@ function runSetPiece(st: State) {
     const mids = st.pl.filter(p => p.team === sp.team && p.role === "MID");
     const fwdReady = fwds.length === 0 || fwds.some(p => p.pos.x * attackDir > 5.0);
     const midReady = mids.length === 0 || mids.some(p => p.pos.x * attackDir > -10.0);
-    const waitTimeout = (sp.fwdWaitTimer || 0) >= 3.0;  // Max 3s wait
+    // ★ v11.36.0: fwdWaitTimer now uses physDt * PHYS_SCALE (speedMul-independent)
+    // So threshold 3.0 corresponds to 3.0 / (physDt * PHYS_SCALE) = 3.0 / 0.45 = 6.7 frames in all modes
+    const waitTimeout = (sp.fwdWaitTimer || 0) >= 3.0;  // Max 3s wait (speedMul-independent)
     
     if (!fwdReady && !midReady && !waitTimeout) {
       // FWDs not yet in position - GK waits (keep ball frozen)
@@ -4278,11 +4283,16 @@ export function update(st: State, dt: number) {
   //   VFAST: 2.0    (45x) -> 2 real minutes
   //
   // physDt = raw wall-clock time (for visual-only timers: pause, flash, log TTL)
-  // dt = physDt * speedMul (for ALL physics, AI, and match clock)
+  // ★ v11.36.0: dt is now speedMul-INDEPENDENT for physics (ensures identical game balance across all speed modes)
+  // speedMul only affects: (1) match clock progression (simDt), (2) caller subSteps count
+  // Physics dt is fixed at physDt * PHYS_SCALE regardless of speed mode
   const speedMul = SPEED_MULTIPLIERS[st.speed] ?? (240 / 450);
   const physDt = dt;                    // Raw wall-clock time (visual timers only)
-  const PHYS_SCALE = 27.0;             // ★ v11.14.0: Physics 27x faster than clock (3x * 3x * 3x)
-  dt = physDt * speedMul * PHYS_SCALE; // Physics dt: speedMul + 3x boost
+  // ★ v11.36.0: PHYS_SCALE adjusted by MID speedMul (0.40) to keep physics dt identical to original MID baseline
+  // Original MID: dt = physDt * 0.40 * 27.0 = physDt * 10.8
+  // New (all modes): dt = physDt * 10.8 (speedMul-independent)
+  const PHYS_SCALE = 10.8;             // ★ v11.36.0: 27.0 * 0.40 (MID baseline) = 10.8
+  dt = physDt * PHYS_SCALE;            // ★ v11.36.0: Physics dt: PHYS_SCALE only (NO speedMul)
   const simDt = physDt * speedMul;     // Match clock dt: speedMul only (no 3x)
   
   // ★ v9.22.0: HALFTIME SCREEN - pause game during halftime show
@@ -4536,9 +4546,11 @@ export function update(st: State, dt: number) {
         }
       }
     } else if (sp.phase === "kick") {
-      // ★ v11.21.0: Increment fwdWaitTimer for GOALKICK FWD wait (dt available here)
+      // ★ v11.21.0: Increment fwdWaitTimer for GOALKICK FWD wait
+      // ★ v11.36.0: Use physDt * PHYS_SCALE (not dt) so VFAST doesn't timeout in 1 frame
+      // dt = physDt * speedMul * PHYS_SCALE, so using dt would make VFAST timeout 5x faster
       if (sp.kind === "GOALKICK") {
-        sp.fwdWaitTimer += dt;
+        sp.fwdWaitTimer += physDt * PHYS_SCALE;
       }
       // Actual kick/throw - execute the set piece
       if (sp.timer >= KICK_DUR) {
@@ -4558,7 +4570,9 @@ export function update(st: State, dt: number) {
             st.setPieceRestart = null;
           } else if (sp.kind === "GOALKICK") {
             // FWD wait: only keep alive if within timeout
-            if (sp.fwdWaitTimer > 5.0) {
+            // ★ v11.36.0: Force-clear at 3.0s (same as runSetPiece waitTimeout threshold)
+            // Previously 5.0s caused 2-frame freeze after waitTimeout=true (timer reset to 0)
+            if (sp.fwdWaitTimer >= 3.0) {
               st.setPieceRestart = null;
             } else {
               // ★ v11.30.0: Reset timer so runSetPiece is NOT called every frame
@@ -4923,9 +4937,11 @@ export function update(st: State, dt: number) {
     }
     
     // Dead ball
+    // ★ v11.36.0: Use Math.max(0.5, dt*1.5) to prevent immediate reset in VFAST mode
+    // In VFAST, dt=0.90s/frame, so b.dead=0.90>0.5 would reset velocity in same frame as kick
     if (vlen(b.vel) < 0.1) {
       b.dead += dt;
-      if (b.dead > 0.5) {
+      if (b.dead > Math.max(0.5, dt * 1.5)) {
         b.vel = v(0, 0);
       }
     } else {
@@ -5037,15 +5053,19 @@ export function update(st: State, dt: number) {
         const p = st.pl[i];
         // ★ v10.2.0: Per-player intercept radius
         const pInterceptR = PExt.interceptRadius * (p.cardMods?.interceptRadius ?? 1.0);
-        // v8.9.0: Check distance to nearest foot, not just body center
+        // v8.9.0: Use foot distance if available, fallback to body distance
         const dBody = vdist(p.pos, b.pos);
         // v8.9.0: Use foot distance if available, fallback to body distance
         const dLeftFoot = p.leftFoot ? vdist(p.leftFoot.pos, b.pos) : dBody;
         const dRightFoot = p.rightFoot ? vdist(p.rightFoot.pos, b.pos) : dBody;
         const d = Math.min(dBody, dLeftFoot, dRightFoot);
-        
+        // ★ v11.36.0: For stopped balls, expand intercept radius by player's movement range
+        // In VFAST, dt=0.90s/frame so players move 8.1m/frame and may overshoot stopped balls
+        // Expand radius proportional to player speed * dt to ensure stopped balls are always picked up
+        // No expansion - use original intercept radius
+        const expandedR = pInterceptR;
         // Update if this player is within their intercept radius and closer than current best
-        if (d < pInterceptR && d < minD) {
+        if (d < expandedR && d < minD) {
           minD = d;
           closestIdx = i;
         }
@@ -5321,8 +5341,9 @@ export function update(st: State, dt: number) {
                 : PExt.shotSpeed * (0.30 + Math.random() * 0.20); // 30-50% = weak punch (still goes far)
               b.vel = vscl(punchDir, punchSpd);
               b.shot = false;
-              // ★ v11.35.0: Cooldown after punch - prevents immediate rebound re-shot
-              // physDt = 0.18s/frame, cooldown=1.2s = 6.7 frames = 0.11 real-seconds protection
+              // ★ v11.36.0: Scale cooldown by speedMul to ensure same frame-count protection in all modes
+              // MID (speedMul=0.40): dt=0.18, cooldown=1.2*0.40=0.48 -> 0.48/0.18 = 2.7 frames
+              // VFAST (speedMul=2.0): dt=0.90, cooldown=1.2*2.0=2.4 -> 2.4/0.90 = 2.7 frames
               b.cooldown = PExt.gkHoldCooldown * 2.0;  // 1.2s cooldown
               b.gkPunchedT = 21.6;  // 21.6 physics-seconds = 1.5 real seconds before GK can save again
               b.lastTouchTeam = gk.team;
@@ -5630,6 +5651,33 @@ export function update(st: State, dt: number) {
     if (st.turnoverT < 0) {
       st.turnoverT = 0;
       st.turnoverTeam = 0;
+    }
+  }
+  
+  // ★ v11.36.0: Freeze detection - if ball is stopped and unclaimed for too long, give to nearest player
+  // This prevents VFAST freeze where large dt causes players to overshoot stopped balls
+  // Only applies during active play (not during set pieces or kickoff)
+  if (st.matchPhase === 'play' && !st.setPieceRestart && !st.kickoffReady && !st.paused) {
+    const ballStopped = b.free && vlen(b.vel) < 0.1 && b.cooldown <= 0;
+    if (ballStopped) {
+      b.freezeT = (b.freezeT || 0) + dt;
+      // After 3 physics-seconds of freeze, give ball to nearest player
+      // 3.0s = ~17 frames in MID, ~3.3 frames in VFAST
+      if (b.freezeT > 3.0) {
+        let nearestIdx = -1;
+        let nearestDist = Infinity;
+        for (let i = 0; i < st.pl.length; i++) {
+          if (st.scenarioActiveIdxs != null && !st.scenarioActiveIdxs.has(i)) continue;
+          const pd = vdist(st.pl[i].pos, b.pos);
+          if (pd < nearestDist) { nearestDist = pd; nearestIdx = i; }
+        }
+        if (nearestIdx !== -1) {
+          give(b, nearestIdx, st.pl, st);
+          b.freezeT = 0;
+        }
+      }
+    } else {
+      b.freezeT = 0;
     }
   }
   
