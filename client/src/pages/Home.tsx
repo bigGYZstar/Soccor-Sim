@@ -1578,6 +1578,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
   const replayAccumRef = useRef(0); // frame accumulator
   const lastGoalReplayCountRef = useRef(0); // track how many replays we've shown
   const replayLastInteractRef = useRef(0); // wall-clock seconds since last user interaction (for 5s auto-skip)
+  const preReplaySpeedRef = useRef<SpeedMode | null>(null); // ★ v12.3.0: Save speed before replay to restore after
 
   // Sync speed to state ref
   useEffect(() => {
@@ -1673,57 +1674,127 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
             setActiveReplay(null);
             setShowReplayControls(false);
             replayLastInteractRef.current = 0;
+            // ★ v12.3.0: Restore speed after replay ends
+            if (preReplaySpeedRef.current) {
+              setSpeed(preReplaySpeedRef.current);
+              stRef.current.speed = preReplaySpeedRef.current;
+              preReplaySpeedRef.current = null;
+            }
             reqRef.current = requestAnimationFrame(loop);
             return;
           }
         }
-        // ★ v12.2.0: Advance replay frames based on MATCH-CLOCK time
-        // Replay was captured at 30 frames per match-second (simDt-based).
-        // Playback advances by match-time, scaled by speed mode:
-        //   REAL:  ~0.044 match-sec/wall-sec (real-time)
-        //   MID:   0.40 match-sec/wall-sec
-        //   FAST:  1.0 match-sec/wall-sec
-        //   VFAST: 2.0 match-sec/wall-sec
-        // Since frames are evenly spaced in match-time (1/30 match-sec apart),
-        // ALL modes get smooth playback - no frame starvation at low speeds.
+        // ★ v12.3.0: SMOOTH REPLAY with frame interpolation (lerp)
+        //
+        // Problem: At low replay speeds (REAL/V.SLOW), only 1-2 captured frames
+        // advance per wall-second, causing visible "jumping" between positions.
+        //
+        // Solution: Instead of snapping to discrete frames, we maintain a
+        // continuous fractional frame index and INTERPOLATE between the current
+        // frame and the next frame. This gives smooth 60fps motion at any speed.
+        //
+        // replayAccumRef now stores a FRACTIONAL frame index (e.g., 42.73)
+        // instead of a match-time accumulator.
         if (replayPlayingRef.current) {
           // How much match-time passes per wall-second at current speed
           const matchTimePerWallSec = currentSpeedMul;
-          // Accumulate match-time elapsed this wall-frame
-          replayAccumRef.current += rawDt * matchTimePerWallSec;
+          // Match-time elapsed this wall-frame
+          const matchTimeElapsed = rawDt * matchTimePerWallSec;
           // Each captured frame spans 1/30 match-second
           const FRAME_MATCH_INTERVAL = 1 / 30;
-          while (replayAccumRef.current >= FRAME_MATCH_INTERVAL) {
-            replayAccumRef.current -= FRAME_MATCH_INTERVAL;
-            const nextIdx = replayFrameIdxRef.current + 1;
-            if (nextIdx < rep.frames.length) {
-              replayFrameIdxRef.current = nextIdx;
-              setReplayFrameIdx(nextIdx);
-            } else {
-              // Replay ended - start 5s auto-skip countdown
-              replayPlayingRef.current = false;
-              setReplayPlaying(false);
-              replayLastInteractRef.current = 0;
-            }
+          // Convert match-time to fractional frames
+          const framesAdvanced = matchTimeElapsed / FRAME_MATCH_INTERVAL;
+          replayAccumRef.current += framesAdvanced;
+          // Clamp to valid range
+          const maxIdx = rep.frames.length - 1;
+          if (replayAccumRef.current >= maxIdx) {
+            replayAccumRef.current = maxIdx;
+            // Replay ended - start 5s auto-skip countdown
+            replayPlayingRef.current = false;
+            setReplayPlaying(false);
+            replayLastInteractRef.current = 0;
+          }
+          // Update discrete index for UI display
+          const discreteIdx = Math.min(Math.floor(replayAccumRef.current), maxIdx);
+          if (discreteIdx !== replayFrameIdxRef.current) {
+            replayFrameIdxRef.current = discreteIdx;
+            setReplayFrameIdx(discreteIdx);
           }
         }
-        const frame = rep.frames[replayFrameIdxRef.current];
-        if (frame && frame.plSnap && frame.ballSnap) {
-          // Build a pseudo-State from the snapshot and call render() directly
+        // ★ v12.3.0: Interpolated frame rendering
+        // Get the fractional position and lerp between two adjacent frames
+        const fracIdx = replayAccumRef.current;
+        const floorIdx = Math.min(Math.floor(fracIdx), rep.frames.length - 1);
+        const ceilIdx = Math.min(floorIdx + 1, rep.frames.length - 1);
+        const lerpT = fracIdx - floorIdx; // 0.0 to 1.0 between frames
+        const frameA = rep.frames[floorIdx];
+        const frameB = rep.frames[ceilIdx];
+        if (frameA && frameA.plSnap && frameA.ballSnap) {
+          // Helper: lerp a number
+          const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+          // Helper: lerp a V (vector)
+          const lerpV = (a: {x:number,y:number}, b: {x:number,y:number}, t: number) => ({
+            x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t)
+          });
+          // Interpolate player positions, feet, and face directions
+          let interpolatedPl: Player[];
+          if (frameB && frameB.plSnap && floorIdx !== ceilIdx) {
+            interpolatedPl = frameA.plSnap.map((pA: any, i: number) => {
+              const pB = (frameB.plSnap as any[])[i];
+              if (!pB) return pA;
+              return {
+                ...pA,
+                pos: lerpV(pA.pos, pB.pos, lerpT),
+                vel: lerpV(pA.vel, pB.vel, lerpT),
+                face: lerpV(pA.face, pB.face, lerpT),
+                leftFoot: {
+                  ...pA.leftFoot,
+                  pos: lerpV(pA.leftFoot.pos, pB.leftFoot.pos, lerpT),
+                  offset: lerpV(pA.leftFoot.offset, pB.leftFoot.offset, lerpT),
+                  animOffset: lerpV(pA.leftFoot.animOffset, pB.leftFoot.animOffset, lerpT),
+                },
+                rightFoot: {
+                  ...pA.rightFoot,
+                  pos: lerpV(pA.rightFoot.pos, pB.rightFoot.pos, lerpT),
+                  offset: lerpV(pA.rightFoot.offset, pB.rightFoot.offset, lerpT),
+                  animOffset: lerpV(pA.rightFoot.animOffset, pB.rightFoot.animOffset, lerpT),
+                },
+              };
+            }) as Player[];
+          } else {
+            interpolatedPl = frameA.plSnap as Player[];
+          }
+          // Interpolate ball position
+          let interpolatedBall: Ball;
+          if (frameB && frameB.ballSnap && floorIdx !== ceilIdx) {
+            interpolatedBall = {
+              ...frameA.ballSnap,
+              pos: lerpV(frameA.ballSnap.pos, frameB.ballSnap.pos, lerpT),
+              vel: lerpV(frameA.ballSnap.vel, frameB.ballSnap.vel, lerpT),
+              z: lerp(frameA.ballSnap.z ?? 0, frameB.ballSnap.z ?? 0, lerpT),
+            } as Ball;
+          } else {
+            interpolatedBall = frameA.ballSnap as Ball;
+          }
+          // Interpolate match clock for smooth timer display
+          const interpolatedClock = (frameB && floorIdx !== ceilIdx)
+            ? lerp(frameA.matchClock, frameB.matchClock, lerpT)
+            : frameA.matchClock;
+          // Build a pseudo-State from the interpolated snapshot and call render()
           const pseudoSt: State = {
             ...stRef.current,
-            pl: frame.plSnap as Player[],
-            ball: frame.ballSnap as Ball,
-            ballTrail: frame.trail as BallTrailDot[],
-            matchClock: frame.matchClock,
-            scoreBlue: frame.scoreBlue,
-            scoreRed: frame.scoreRed,
-            actionLog: frame.actionLogSnap as ActionLogEntry[],
-            time: frame.timeSnap,
-            half: frame.halfSnap as 1 | 2,
-            matchPhase: frame.matchPhaseSnap as State['matchPhase'],
-            flash: frame.flashSnap,
-            flashTxt: frame.flashTxtSnap,
+            pl: interpolatedPl,
+            ball: interpolatedBall,
+            ballTrail: frameA.trail as BallTrailDot[],
+            matchClock: interpolatedClock,
+            scoreBlue: frameA.scoreBlue,
+            scoreRed: frameA.scoreRed,
+            actionLog: frameA.actionLogSnap as ActionLogEntry[],
+            time: frameA.timeSnap,
+            half: frameA.halfSnap as 1 | 2,
+            matchPhase: frameA.matchPhaseSnap as State['matchPhase'],
+            flash: frameA.flashSnap,
+            flashTxt: frameA.flashTxtSnap,
             // Suppress screenEffect in replay to avoid goal flash overlay
             screenEffect: { type: 'none', timer: 0, text: '', playerNum: 0, team: 0 },
             setPiece: null,
@@ -1791,7 +1862,13 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
           const latestReplay = goalReplays[newCount - 1];
           const waitMs = 2600; // slightly after 2.5s screenEffect
           lastGoalReplayCountRef.current = newCount;
+          // ★ v12.3.0: Save current speed BEFORE setTimeout (avoid stale closure)
+          const savedSpeed = stRef.current.speed as SpeedMode;
           setTimeout(() => {
+            // ★ v12.3.0: Save current speed and switch to VSLOW for replay
+            preReplaySpeedRef.current = savedSpeed;
+            setSpeed("VSLOW");
+            stRef.current.speed = "VSLOW";
             // Start replay from beginning
             replayRef.current = latestReplay;
             replayFrameIdxRef.current = 0;
@@ -1912,6 +1989,12 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
               setActiveReplay(null);
               setShowReplayControls(false);
               replayLastInteractRef.current = 0;
+              // ★ v12.3.0: Restore speed after replay skip
+              if (preReplaySpeedRef.current) {
+                setSpeed(preReplaySpeedRef.current);
+                stRef.current.speed = preReplaySpeedRef.current;
+                preReplaySpeedRef.current = null;
+              }
             }}
             style={{
               position: "absolute",
@@ -1960,6 +2043,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
                   onChange={e => {
                     const idx = Number(e.target.value);
                     replayFrameIdxRef.current = idx;
+                    replayAccumRef.current = idx; // sync fractional index
                     setReplayFrameIdx(idx);
                     replayLastInteractRef.current = 0;
                   }}
@@ -1981,6 +2065,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
                 <button
                   onClick={() => {
                     replayFrameIdxRef.current = 0;
+                    replayAccumRef.current = 0; // sync fractional index
                     setReplayFrameIdx(0);
                     replayPlayingRef.current = false;
                     setReplayPlaying(false);
@@ -1995,6 +2080,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
                   onClick={() => {
                     const idx = Math.max(0, replayFrameIdxRef.current - 1);
                     replayFrameIdxRef.current = idx;
+                    replayAccumRef.current = idx; // sync fractional index
                     setReplayFrameIdx(idx);
                     replayPlayingRef.current = false;
                     setReplayPlaying(false);
@@ -2020,6 +2106,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
                   onClick={() => {
                     const idx = Math.min(activeReplay.frames.length - 1, replayFrameIdxRef.current + 1);
                     replayFrameIdxRef.current = idx;
+                    replayAccumRef.current = idx; // sync fractional index
                     setReplayFrameIdx(idx);
                     replayPlayingRef.current = false;
                     setReplayPlaying(false);
@@ -2033,6 +2120,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
                 <button
                   onClick={() => {
                     replayFrameIdxRef.current = activeReplay.goalFrameIdx;
+                    replayAccumRef.current = activeReplay.goalFrameIdx; // sync fractional index
                     setReplayFrameIdx(activeReplay.goalFrameIdx);
                     replayPlayingRef.current = false;
                     setReplayPlaying(false);
