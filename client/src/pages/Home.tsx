@@ -1677,20 +1677,24 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
             return;
           }
         }
-        // ★ v12.0.1: Advance replay frames at speed proportional to current speed mode
-        // Replay was captured at ~30fps (every 2nd physics frame at MID baseline).
-        // Base playback: 1 frame per 1/30s. Speed modes scale this:
-        //   MID:   1x playback (1 frame per 1/30s)
-        //   FAST:  2.5x playback
-        //   VFAST: 5x playback
-        //   SLOW modes: slower playback
+        // ★ v12.2.0: Advance replay frames based on MATCH-CLOCK time
+        // Replay was captured at 30 frames per match-second (simDt-based).
+        // Playback advances by match-time, scaled by speed mode:
+        //   REAL:  ~0.044 match-sec/wall-sec (real-time)
+        //   MID:   0.40 match-sec/wall-sec
+        //   FAST:  1.0 match-sec/wall-sec
+        //   VFAST: 2.0 match-sec/wall-sec
+        // Since frames are evenly spaced in match-time (1/30 match-sec apart),
+        // ALL modes get smooth playback - no frame starvation at low speeds.
         if (replayPlayingRef.current) {
-          replayAccumRef.current += rawDt;
-          const baseReplayFps = 30; // capture rate
-          const replaySpeedRatio = currentSpeedMul / MID_SPEED_MUL; // same ratio as game speed
-          const frameInterval = 1 / (baseReplayFps * replaySpeedRatio);
-          while (replayAccumRef.current >= frameInterval) {
-            replayAccumRef.current -= frameInterval;
+          // How much match-time passes per wall-second at current speed
+          const matchTimePerWallSec = currentSpeedMul;
+          // Accumulate match-time elapsed this wall-frame
+          replayAccumRef.current += rawDt * matchTimePerWallSec;
+          // Each captured frame spans 1/30 match-second
+          const FRAME_MATCH_INTERVAL = 1 / 30;
+          while (replayAccumRef.current >= FRAME_MATCH_INTERVAL) {
+            replayAccumRef.current -= FRAME_MATCH_INTERVAL;
             const nextIdx = replayFrameIdxRef.current + 1;
             if (nextIdx < rep.frames.length) {
               replayFrameIdxRef.current = nextIdx;

@@ -4762,13 +4762,24 @@ export function update(st: State, dt: number) {
     }
   }
 
-  // ★ v12.0.0: Goal replay buffer - capture at fixed WALL-CLOCK rate
-  // physDt IS the raw wall-clock dt (since v12.0.0, dt is physics-scaled, not speed-scaled)
-  // We want to capture ~30 frames per real second regardless of speed mode
-  st.replayWallTimeAccum += physDt;
-  const REPLAY_CAPTURE_INTERVAL = 1 / 30;  // capture at 30fps wall-clock
-  if (st.replayWallTimeAccum >= REPLAY_CAPTURE_INTERVAL) {
-    st.replayWallTimeAccum -= REPLAY_CAPTURE_INTERVAL;
+  // ★ v12.2.0: Goal replay buffer - capture at fixed MATCH-CLOCK rate
+  // Capture based on simDt (match clock progression) instead of wall-clock.
+  // This ensures ALL speed modes produce the SAME number of replay frames
+  // per unit of match time, so low-speed playback is always smooth.
+  //
+  // Target: ~30 frames per MID-speed second of wall time
+  //   At MID: simDt per update ≈ (1/60)/2 * 0.40 = 0.00333 match-seconds
+  //   30fps wall → capture every 1/30 wall-sec → every ~10 updates
+  //   In match-time: 10 * 0.00333 = 0.0333 match-seconds per capture
+  //   So REPLAY_SIM_INTERVAL = 1/30 (match-seconds between captures)
+  //
+  // At VFAST: simDt is the same per update (0.00333), but update() is called
+  // 5x more per wall-second → 5x more captures per wall-second → same density
+  // per match-second → smooth playback at any speed.
+  st.replayWallTimeAccum += simDt;  // ★ v12.2.0: accumulate MATCH time, not wall time
+  const REPLAY_SIM_INTERVAL = 1 / 30;  // capture every 1/30th of a match-second
+  if (st.replayWallTimeAccum >= REPLAY_SIM_INTERVAL) {
+    st.replayWallTimeAccum -= REPLAY_SIM_INTERVAL;
     const frame = {
       players: st.pl.map(p => ({ x: p.pos.x, y: p.pos.y, team: p.team, num: p.num, isGK: p.isGK, face: { x: p.face.x, y: p.face.y }, act: p.act })),
       ball: { x: st.ball.pos.x, y: st.ball.pos.y, z: st.ball.z, free: st.ball.free, owner: st.ball.owner },
@@ -4787,8 +4798,9 @@ export function update(st: State, dt: number) {
       flashTxtSnap: st.flashTxt,
     };
     st.replayBuffer.push(frame);
-    // Keep ~8 seconds at 30fps = 240 frames (enough for pre-goal buildup)
-    const MAX_BUFFER = 240;
+    // ★ v12.2.0: Buffer size in match-time seconds
+    // 30 captures per match-second × 10 match-seconds of buildup = 300 frames
+    const MAX_BUFFER = 300;
     if (st.replayBuffer.length > MAX_BUFFER) st.replayBuffer.shift();
   }
 
