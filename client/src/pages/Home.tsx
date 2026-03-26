@@ -1677,10 +1677,18 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
             return;
           }
         }
-        // Advance frame at 60fps wall-clock (matching capture rate)
+        // ★ v12.0.1: Advance replay frames at speed proportional to current speed mode
+        // Replay was captured at ~30fps (every 2nd physics frame at MID baseline).
+        // Base playback: 1 frame per 1/30s. Speed modes scale this:
+        //   MID:   1x playback (1 frame per 1/30s)
+        //   FAST:  2.5x playback
+        //   VFAST: 5x playback
+        //   SLOW modes: slower playback
         if (replayPlayingRef.current) {
           replayAccumRef.current += rawDt;
-          const frameInterval = 1 / 60;
+          const baseReplayFps = 30; // capture rate
+          const replaySpeedRatio = currentSpeedMul / MID_SPEED_MUL; // same ratio as game speed
+          const frameInterval = 1 / (baseReplayFps * replaySpeedRatio);
           while (replayAccumRef.current >= frameInterval) {
             replayAccumRef.current -= frameInterval;
             const nextIdx = replayFrameIdxRef.current + 1;

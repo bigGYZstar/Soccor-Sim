@@ -1,12 +1,47 @@
 /**
- * Headless Simulation Runner - 100 matches
+ * Headless Simulation Runner - 100 matches (v12.0.0)
+ * 
+ * ★ v12.0.0: Updated to use the same subSteps approach as the browser.
+ *   - All speed modes produce IDENTICAL simulation results.
+ *   - Speed mode only affects how many update() calls per "virtual frame".
+ *   - dt per update() call is ALWAYS rawDt / BASE_SUB_STEPS (same as browser).
+ *   - Default speed: VFAST (fastest execution, same results as MID/FAST).
+ *
+ * Usage:
+ *   npx tsx headless-sim.ts [--speed REAL|VSLOW|LOW|MID|FAST|VFAST] [--matches N]
+ *
  * Collects shot position, goal rate, GK save, deflection, and other statistics
  * for game balance analysis.
  */
 
 import { mkState, update } from './client/src/game/engine';
 import { P, FORMATION_IDS, FormationId } from './client/src/game/constants';
-import { State } from './client/src/game/types';
+import { State, SpeedMode, SPEED_MULTIPLIERS } from './client/src/game/types';
+
+// ─── CLI argument parsing ────────────────────────────────────────────────────
+
+function parseArgs(): { speed: SpeedMode; numMatches: number } {
+  const args = process.argv.slice(2);
+  let speed: SpeedMode = "VFAST";
+  let numMatches = 100;
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--speed" && args[i + 1]) {
+      const s = args[i + 1].toUpperCase() as SpeedMode;
+      if (s in SPEED_MULTIPLIERS) {
+        speed = s;
+      } else {
+        console.warn(`Unknown speed mode "${args[i + 1]}", using VFAST`);
+      }
+      i++;
+    } else if (args[i] === "--matches" && args[i + 1]) {
+      numMatches = Math.max(1, parseInt(args[i + 1], 10) || 100);
+      i++;
+    }
+  }
+
+  return { speed, numMatches };
+}
 
 // ─── Data collection structures ──────────────────────────────────────────────
 
@@ -34,6 +69,7 @@ interface MatchResult {
   matchId: number;
   blueFormation: string;
   redFormation: string;
+  speedMode: string;
   scoreBlue: number;
   scoreRed: number;
   shotsBlue: number;
@@ -55,6 +91,8 @@ interface MatchResult {
   cornersBlue: number;
   cornersRed: number;
   ownGoals: number;
+  totalFrames: number;
+  totalSubStepCalls: number;
   durationMs: number;     // wall-clock ms
 }
 
@@ -70,76 +108,68 @@ const allMatches: MatchResult[] = [];
 
 const PITCH_HALF_W = 52.5;
 const PITCH_HALF_H = 34.0;
-const GOAL_HALF_H = 3.66;
 
 function normalizeX(x: number): number {
-  // 0 = own goal side (left), 1 = opponent goal side (right)
   return (x + PITCH_HALF_W) / (PITCH_HALF_W * 2);
 }
 function normalizeY(y: number): number {
   return (y + PITCH_HALF_H) / (PITCH_HALF_H * 2);
 }
 
-function runMatch(matchId: number, blueFormation: FormationId, redFormation: FormationId): MatchResult {
+// ─── v12.0.0: SubSteps calculation (mirrors Home.tsx exactly) ────────────────
+
+const BASE_SUB_STEPS = 2;
+const MID_SPEED_MUL = 0.40;
+
+function getSubStepsForSpeed(speedMode: SpeedMode): { totalSubSteps: number; dtPerCall: number } {
+  const currentSpeedMul = SPEED_MULTIPLIERS[speedMode] ?? MID_SPEED_MUL;
+  const speedRatio = currentSpeedMul / MID_SPEED_MUL;
+  const totalSubSteps = Math.max(1, Math.round(BASE_SUB_STEPS * speedRatio));
+  // dt per update() call is ALWAYS rawDt / BASE_SUB_STEPS (same as browser)
+  const RAW_DT = 1 / 60;  // 60fps virtual frame
+  const dtPerCall = RAW_DT / BASE_SUB_STEPS;
+  return { totalSubSteps, dtPerCall };
+}
+
+function runMatch(matchId: number, blueFormation: FormationId, redFormation: FormationId, speedMode: SpeedMode): MatchResult {
   const st = mkState(blueFormation, redFormation);
-  st.speed = "VFAST";
-
-  // Track shot positions by hooking into heatmap events
-  // We'll snapshot heatmap onBall events before and after each update step
-  // to detect new shot events.
-
-  // Instead, we collect shot data from heatmaps after match ends.
-  // Each heatmap.onBall entry with type='shot' is a shot event.
+  st.speed = speedMode;
 
   const t0 = Date.now();
-  const SIM_DT = 1 / 60;  // 60fps simulation
+  const { totalSubSteps, dtPerCall } = getSubStepsForSpeed(speedMode);
 
   // Run until match is over
-  let maxFrames = 60 * 60 * 20;  // Safety: 20 real-minutes max
+  // Safety limit: 20 real-minutes max
+  const maxFrames = 60 * 60 * 20;
   let frames = 0;
+  let totalCalls = 0;
+
   while (!st.over && frames < maxFrames) {
-    update(st, SIM_DT);
+    // Each "virtual frame" calls update() totalSubSteps times
+    // This mirrors exactly what Home.tsx does per requestAnimationFrame
+    for (let s = 0; s < totalSubSteps; s++) {
+      update(st, dtPerCall);
+      totalCalls++;
+    }
     frames++;
   }
   const durationMs = Date.now() - t0;
 
   // Collect shot events from heatmaps
-  // heatmap.onBall entries with type='shot' contain normalized positions
-  // We need to reconstruct world coordinates and additional info
-  // Unfortunately heatmaps only store normalized x/y, not raw world coords or speed.
-  // We'll use what's available.
-
-  const totalPossFrames = st.stats.possessionFrames.blue + st.stats.possessionFrames.red;
-  const possBlue = totalPossFrames > 0 ? st.stats.possessionFrames.blue / totalPossFrames : 0.5;
-  const possRed = totalPossFrames > 0 ? st.stats.possessionFrames.red / totalPossFrames : 0.5;
-
-  // Collect per-player shot heatmap data
   for (const hm of st.heatmaps) {
     for (const ev of hm.onBall) {
       if (ev.type !== 'shot') continue;
-      // ev.x, ev.y are normalized 0-1 (always attacking right = x increases toward opp goal)
-      // In 1st half: team=-1 (blue) attacks right (+x), so normalized x=1 is opp goal
-      // Heatmap is already side-normalized (2nd half flipped)
-      // So for all shots: x=1 means "near opponent goal"
-
-      // Convert normalized to world-like coordinates (attacker's perspective)
-      const worldX = ev.x * PITCH_HALF_W * 2 - PITCH_HALF_W;  // -52.5 to +52.5
-      const worldY = ev.y * PITCH_HALF_H * 2 - PITCH_HALF_H;  // -34 to +34
-
-      // Distance to opponent goal (at x=+52.5 in attacker's perspective)
+      const worldX = ev.x * PITCH_HALF_W * 2 - PITCH_HALF_W;
+      const worldY = ev.y * PITCH_HALF_H * 2 - PITCH_HALF_H;
       const distToGoal = Math.sqrt(Math.pow(PITCH_HALF_W - worldX, 2) + Math.pow(worldY, 2));
-
-      // Angle to goal (0=straight on, 90=side)
       const angleToGoal = Math.abs(Math.atan2(Math.abs(worldY), PITCH_HALF_W - worldX) * 180 / Math.PI);
-
-      // Find player info
       const player = st.pl[hm.playerIdx];
       const role = player ? player.role : "UNK";
       const posLabel = hm.posLabel || role;
 
       allShots.push({
         matchId,
-        half: 1,  // heatmap is side-normalized, half info not stored per event
+        half: 1,
         matchClock: 0,
         team: hm.team,
         role,
@@ -148,9 +178,9 @@ function runMatch(matchId: number, blueFormation: FormationId, redFormation: For
         y: ev.y,
         distToGoal,
         angleToGoal,
-        shotSpeed: 0,  // not available in heatmap
-        onTarget: false,  // will be derived from stats
-        isGoal: false,    // will be derived from stats
+        shotSpeed: 0,
+        onTarget: false,
+        isGoal: false,
         savedByGK: false,
         deflected: false,
         blueFormation,
@@ -159,14 +189,16 @@ function runMatch(matchId: number, blueFormation: FormationId, redFormation: For
     }
   }
 
-  // Count corners per team from stats (corners is a single number, not per-team)
-  // We'll use total corners / 2 as approximation
+  const totalPossFrames = st.stats.possessionFrames.blue + st.stats.possessionFrames.red;
+  const possBlue = totalPossFrames > 0 ? st.stats.possessionFrames.blue / totalPossFrames : 0.5;
+  const possRed = totalPossFrames > 0 ? st.stats.possessionFrames.red / totalPossFrames : 0.5;
   const cornersTotal = st.stats.corners;
 
   const result: MatchResult = {
     matchId,
     blueFormation,
     redFormation,
+    speedMode,
     scoreBlue: st.scoreBlue,
     scoreRed: st.scoreRed,
     shotsBlue: st.stats.shotsTotal.blue,
@@ -188,6 +220,8 @@ function runMatch(matchId: number, blueFormation: FormationId, redFormation: For
     cornersBlue: Math.round(cornersTotal / 2),
     cornersRed: cornersTotal - Math.round(cornersTotal / 2),
     ownGoals: st.stats.ownGoals,
+    totalFrames: frames,
+    totalSubStepCalls: totalCalls,
     durationMs,
   };
 
@@ -196,27 +230,65 @@ function runMatch(matchId: number, blueFormation: FormationId, redFormation: For
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
-const NUM_MATCHES = 100;
+const { speed, numMatches } = parseArgs();
 const formations: FormationId[] = ["4-4-2", "4-2-3-1", "3-4-3"];
 
-console.log(`Starting ${NUM_MATCHES} headless matches...`);
+const { totalSubSteps, dtPerCall } = getSubStepsForSpeed(speed);
+console.log(`\n╔══════════════════════════════════════════════════════╗`);
+console.log(`║  Headless Simulation Runner v12.0.0                  ║`);
+console.log(`╠══════════════════════════════════════════════════════╣`);
+console.log(`║  Speed mode:    ${speed.padEnd(8)} (speedMul=${(SPEED_MULTIPLIERS[speed]).toFixed(4)})   ║`);
+console.log(`║  SubSteps/frame: ${String(totalSubSteps).padEnd(6)} (dt/call=${dtPerCall.toFixed(6)})  ║`);
+console.log(`║  Matches:       ${String(numMatches).padEnd(37)}║`);
+console.log(`╚══════════════════════════════════════════════════════╝\n`);
+
+console.log(`Starting ${numMatches} headless matches...`);
 const simStart = Date.now();
 
-for (let i = 0; i < NUM_MATCHES; i++) {
+for (let i = 0; i < numMatches; i++) {
   const blueF = formations[i % formations.length] as FormationId;
   const redF = formations[(i + 1) % formations.length] as FormationId;
-  const result = runMatch(i + 1, blueF, redF);
+  const result = runMatch(i + 1, blueF, redF, speed);
   allMatches.push(result);
 
   if ((i + 1) % 10 === 0) {
     const elapsed = ((Date.now() - simStart) / 1000).toFixed(1);
-    console.log(`  [${i + 1}/${NUM_MATCHES}] ${elapsed}s elapsed`);
+    const avgGoals = allMatches.reduce((s, m) => s + m.scoreBlue + m.scoreRed, 0) / allMatches.length;
+    const avgShots = allMatches.reduce((s, m) => s + m.shotsBlue + m.shotsRed, 0) / allMatches.length;
+    console.log(`  [${String(i + 1).padStart(3)}/${numMatches}] ${elapsed}s | avg goals=${avgGoals.toFixed(1)} shots=${avgShots.toFixed(1)}`);
   }
 }
 
 const totalMs = Date.now() - simStart;
-console.log(`\nCompleted ${NUM_MATCHES} matches in ${(totalMs/1000).toFixed(1)}s`);
-console.log(`Total shots collected: ${allShots.length}`);
+
+// ─── Summary statistics ──────────────────────────────────────────────────────
+
+const n = allMatches.length;
+const avgGoals = allMatches.reduce((s, m) => s + m.scoreBlue + m.scoreRed, 0) / n;
+const avgShots = allMatches.reduce((s, m) => s + m.shotsBlue + m.shotsRed, 0) / n;
+const avgOnTarget = allMatches.reduce((s, m) => s + m.shotsOnTargetBlue + m.shotsOnTargetRed, 0) / n;
+const avgGKSaves = allMatches.reduce((s, m) => s + m.gkSavesBlue + m.gkSavesRed, 0) / n;
+const avgPassPct = allMatches.reduce((s, m) => {
+  const total = m.passAttemptsBlue + m.passAttemptsRed;
+  const success = m.passSuccessBlue + m.passSuccessRed;
+  return s + (total > 0 ? success / total : 0);
+}, 0) / n;
+const avgFrames = allMatches.reduce((s, m) => s + m.totalFrames, 0) / n;
+const avgCalls = allMatches.reduce((s, m) => s + m.totalSubStepCalls, 0) / n;
+
+console.log(`\n╔══════════════════════════════════════════════════════╗`);
+console.log(`║  RESULTS SUMMARY                                     ║`);
+console.log(`╠══════════════════════════════════════════════════════╣`);
+console.log(`║  Completed:     ${n} matches in ${(totalMs/1000).toFixed(1)}s                  `);
+console.log(`║  Speed mode:    ${speed}`);
+console.log(`║  Avg goals:     ${avgGoals.toFixed(1)} / match`);
+console.log(`║  Avg shots:     ${avgShots.toFixed(1)} / match`);
+console.log(`║  Avg on-target: ${avgOnTarget.toFixed(1)} / match`);
+console.log(`║  Avg GK saves:  ${avgGKSaves.toFixed(1)} / match`);
+console.log(`║  Avg pass%:     ${(avgPassPct * 100).toFixed(1)}%`);
+console.log(`║  Avg frames:    ${avgFrames.toFixed(0)} (update calls: ${avgCalls.toFixed(0)})`);
+console.log(`║  Total shots:   ${allShots.length}`);
+console.log(`╚══════════════════════════════════════════════════════╝`);
 
 // ─── Output JSON ──────────────────────────────────────────────────────────────
 
