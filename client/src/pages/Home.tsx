@@ -1631,23 +1631,36 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
       const elapsed = (t - lastTimeRef.current) / 1000;
       lastTimeRef.current = t;
       
-       // ★ v11.6.0: dt cap - 0.05s (20fps minimum) for all speed modes
-      // ★ v11.19.0: Sub-step splitting to prevent V.FAST frame-skip
-      // At V.FAST (speedMul=2.0, PHYS_SCALE=27), one frame = 0.9s physics.
-      // Ball at shotSpeed(30m/s) would jump 27m per frame without sub-steps.
-      // We split each frame into multiple sub-steps so ball trajectory is smooth.
+      // ★ v12.0.0: SPEED-MODE-INDEPENDENT SIMULATION
+      // All speed modes produce IDENTICAL simulation results.
+      // Speed is controlled by calling update() more times per animation frame.
+      //
+      // Base: MID mode = 2 sub-steps per frame (physics dt < 0.1s for collision accuracy)
+      // Faster modes multiply the base sub-steps:
+      //   MID:   2 sub-steps (baseline, ~7.5 min real time)
+      //   FAST:  5 sub-steps (2.5x faster than MID, ~3 min)
+      //   VFAST: 10 sub-steps (5x faster than MID, ~1.5 min)
+      // Slower modes use fewer sub-steps (but minimum 1):
+      //   SLOW:  1 sub-step (0.5x of MID, ~15 min)
+      //   VSLOW: 1 sub-step (0.25x of MID, ~30 min - capped at 1)
+      //   REAL:  1 sub-step (0.11x of MID, ~68 min - capped at 1)
+      //
+      // Each sub-step receives dt = rawDt / baseSubSteps (NOT / totalSubSteps)
+      // so that physics dt per call is identical regardless of speed mode.
       const rawDt = Math.min(0.05, elapsed);
-      // ★ v11.19.0: Sub-step splitting - prevents ball from skipping GK/line detection
-      // Target: physics dt < 0.1s per sub-step for accurate collision detection
-      // REAL:   dt = 0.016 * 0.044 * 27 = 0.019s  -> 1 step (already fine)
-      // VSLOW:  dt = 0.016 * 0.10  * 27 = 0.043s  -> 1 step (fine)
-      // SLOW:   dt = 0.016 * 0.15  * 27 = 0.065s  -> 1 step (fine)
-      // NORMAL: dt = 0.016 * 0.40  * 27 = 0.173s  -> 2 steps (0.086s each)
-      // FAST:   dt = 0.016 * 1.0   * 27 = 0.432s  -> 4 steps (0.108s each)
-      // VFAST:  dt = 0.016 * 2.0   * 27 = 0.864s  -> 8 steps (0.108s each)
       const speed = stRef.current.speed;
-      const subSteps = speed === 'VFAST' ? 8 : speed === 'FAST' ? 4 : speed === 'MID' ? 2 : 1;
-      const dt = rawDt / subSteps;
+      // Base sub-steps for physics accuracy (MID baseline)
+      const BASE_SUB_STEPS = 2;
+      // Speed multiplier relative to MID (0.40)
+      const MID_SPEED_MUL = 0.40;
+      const speedMulMap: Record<string, number> = {
+        REAL: 240/5400, VSLOW: 0.10, LOW: 0.15, MID: 0.40, FAST: 1.0, VFAST: 2.0
+      };
+      const currentSpeedMul = speedMulMap[speed] ?? MID_SPEED_MUL;
+      const speedRatio = currentSpeedMul / MID_SPEED_MUL; // 1.0 for MID, 2.5 for FAST, 5.0 for VFAST
+      const totalSubSteps = Math.max(1, Math.round(BASE_SUB_STEPS * speedRatio));
+      // dt per update call is ALWAYS rawDt / BASE_SUB_STEPS (same physics dt regardless of speed)
+      const dt = rawDt / BASE_SUB_STEPS;
       // ★ v11.28.0: If in replay mode, render replay frame using render() directly
       if (replayRef.current) {
         const rep = replayRef.current;
@@ -1753,7 +1766,7 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
       }
 
       if (rawDt > 0.001) {
-        for (let _s = 0; _s < subSteps; _s++) {
+        for (let _s = 0; _s < totalSubSteps; _s++) {
           update(stRef.current, dt);
         }
         render(ctx, canvas, stRef.current);

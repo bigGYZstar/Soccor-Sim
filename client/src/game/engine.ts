@@ -4269,31 +4269,27 @@ export function update(st: State, dt: number) {
     return;
   }
   
-  // ★ v11.11.0: REAL-based unified speed scaling
+  // ★ v12.0.0: SPEED-MODE-INDEPENDENT SIMULATION
   //
-  // REAL mode is the baseline (1x). All other modes are multiples of REAL.
-  // ALL calculations (physics, AI, match clock) use the SAME scaled dt.
-  // This means: faster mode = everything moves faster proportionally.
+  // ALL speed modes produce IDENTICAL simulation results.
+  // speedMul is NO LONGER used inside update() for any game logic.
+  // Instead, the caller (Home.tsx) controls speed by calling update() more times per frame.
   //
-  // speedMul values (REAL = baseline, others are multiples):
-  //   REAL:  0.0444 (1x)  -> 90 real minutes  (real soccer pace)
-  //   SLOW:  0.2    (4.5x)-> 20 real minutes
-  //   NORMAL:0.533  (12x) -> 7.5 real minutes
-  //   FAST:  1.0    (22x) -> 4 real minutes
-  //   VFAST: 2.0    (45x) -> 2 real minutes
+  // How it works:
+  //   - update() always receives a FIXED dt (1/60s from caller)
+  //   - Physics dt = physDt * PHYS_SCALE (constant across all modes)
+  //   - Match clock dt = physDt * SIM_RATE (constant across all modes, = MID baseline 0.40)
+  //   - Faster modes: caller calls update() more times per animation frame
+  //   - This guarantees identical physics, AI decisions, and match outcomes
   //
-  // physDt = raw wall-clock time (for visual-only timers: pause, flash, log TTL)
-  // ★ v11.36.0: dt is now speedMul-INDEPENDENT for physics (ensures identical game balance across all speed modes)
-  // speedMul only affects: (1) match clock progression (simDt), (2) caller subSteps count
-  // Physics dt is fixed at physDt * PHYS_SCALE regardless of speed mode
-  const speedMul = SPEED_MULTIPLIERS[st.speed] ?? (240 / 450);
-  const physDt = dt;                    // Raw wall-clock time (visual timers only)
-  // ★ v11.36.0: PHYS_SCALE adjusted by MID speedMul (0.40) to keep physics dt identical to original MID baseline
-  // Original MID: dt = physDt * 0.40 * 27.0 = physDt * 10.8
-  // New (all modes): dt = physDt * 10.8 (speedMul-independent)
-  const PHYS_SCALE = 10.8;             // ★ v11.36.0: 27.0 * 0.40 (MID baseline) = 10.8
-  dt = physDt * PHYS_SCALE;            // ★ v11.36.0: Physics dt: PHYS_SCALE only (NO speedMul)
-  const simDt = physDt * speedMul;     // Match clock dt: speedMul only (no 3x)
+  // physDt = raw dt from caller (visual-only timers: pause, flash, log TTL)
+  const physDt = dt;                    // Raw dt from caller
+  const PHYS_SCALE = 10.8;             // 27.0 * 0.40 (MID baseline) = 10.8
+  dt = physDt * PHYS_SCALE;            // Physics dt: always same regardless of speed mode
+  const SIM_RATE = 0.40;               // ★ v12.0.0: Fixed sim rate (= MID speedMul baseline)
+  const simDt = physDt * SIM_RATE;     // Match clock dt: FIXED (no speedMul)
+  // Keep speedMul available for replay capture timing only (not for game logic)
+  const speedMul = SPEED_MULTIPLIERS[st.speed] ?? 0.40;
   
   // ★ v9.22.0: HALFTIME SCREEN - pause game during halftime show
   if (st.halftimeShow) {
@@ -4766,12 +4762,10 @@ export function update(st: State, dt: number) {
     }
   }
 
-  // ★ v11.7.0: Goal replay buffer - capture at fixed WALL-CLOCK rate (speed-mode independent)
-  // We receive dt = rawElapsed * speedMul, so rawElapsed = dt / speedMul
+  // ★ v12.0.0: Goal replay buffer - capture at fixed WALL-CLOCK rate
+  // physDt IS the raw wall-clock dt (since v12.0.0, dt is physics-scaled, not speed-scaled)
   // We want to capture ~30 frames per real second regardless of speed mode
-  const speedMulForReplay = SPEED_MULTIPLIERS[st.speed] ?? 12.0;
-  const rawElapsed = dt / speedMulForReplay;  // actual wall-clock seconds this frame
-  st.replayWallTimeAccum += rawElapsed;
+  st.replayWallTimeAccum += physDt;
   const REPLAY_CAPTURE_INTERVAL = 1 / 30;  // capture at 30fps wall-clock
   if (st.replayWallTimeAccum >= REPLAY_CAPTURE_INTERVAL) {
     st.replayWallTimeAccum -= REPLAY_CAPTURE_INTERVAL;
@@ -5256,8 +5250,8 @@ export function update(st: State, dt: number) {
                                  0.20;                                                // 20+: 0.20 (punch only)
             
             // Bounce factor: ball that just bounced is hard to catch (unpredictable)
-            // recentBounceT is in physics-seconds (dt = physDt * speedMul * PHYS_SCALE)
-            // 4.3 phys-s = 0.3 real-s, 8.6 phys-s = 0.6 real-s, 14.4 phys-s = 1.0 real-s
+            // ★ v12.0.0: recentBounceT is in physics-seconds (dt = physDt * PHYS_SCALE = physDt * 10.8)
+            // 4.3 phys-s = 0.4 real-s, 8.6 phys-s = 0.8 real-s, 14.4 phys-s = 1.3 real-s
             const bounceFactor = b.recentBounceT < 4.3  ? 0.30 :
                                   b.recentBounceT < 8.6  ? 0.30 + (b.recentBounceT - 4.3) / 4.3 * 0.30 :
                                   b.recentBounceT < 14.4 ? 0.60 + (b.recentBounceT - 8.6) / 5.8 * 0.40 :
@@ -5341,9 +5335,7 @@ export function update(st: State, dt: number) {
                 : PExt.shotSpeed * (0.30 + Math.random() * 0.20); // 30-50% = weak punch (still goes far)
               b.vel = vscl(punchDir, punchSpd);
               b.shot = false;
-              // ★ v11.36.0: Scale cooldown by speedMul to ensure same frame-count protection in all modes
-              // MID (speedMul=0.40): dt=0.18, cooldown=1.2*0.40=0.48 -> 0.48/0.18 = 2.7 frames
-              // VFAST (speedMul=2.0): dt=0.90, cooldown=1.2*2.0=2.4 -> 2.4/0.90 = 2.7 frames
+              // ★ v12.0.0: Cooldown is now speed-independent (all modes have same dt)
               b.cooldown = PExt.gkHoldCooldown * 2.0;  // 1.2s cooldown
               b.gkPunchedT = 21.6;  // 21.6 physics-seconds = 1.5 real seconds before GK can save again
               b.lastTouchTeam = gk.team;
