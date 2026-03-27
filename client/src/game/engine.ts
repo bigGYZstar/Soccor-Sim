@@ -4777,7 +4777,7 @@ export function update(st: State, dt: number) {
   // 5x more per wall-second → 5x more captures per wall-second → same density
   // per match-second → smooth playback at any speed.
   st.replayWallTimeAccum += simDt;  // ★ v12.2.0: accumulate MATCH time, not wall time
-  const REPLAY_SIM_INTERVAL = 1 / 30;  // capture every 1/30th of a match-second
+  const REPLAY_SIM_INTERVAL = 1 / 60;  // ★ v12.4.0: capture every 1/60th of a match-second (doubled density for smooth low-speed replay)
   if (st.replayWallTimeAccum >= REPLAY_SIM_INTERVAL) {
     st.replayWallTimeAccum -= REPLAY_SIM_INTERVAL;
     const frame = {
@@ -4798,9 +4798,9 @@ export function update(st: State, dt: number) {
       flashTxtSnap: st.flashTxt,
     };
     st.replayBuffer.push(frame);
-    // ★ v12.2.0: Buffer size in match-time seconds
-    // 30 captures per match-second × 10 match-seconds of buildup = 300 frames
-    const MAX_BUFFER = 300;
+    // ★ v12.4.0: Buffer size in match-time seconds
+    // 60 captures per match-second × 10 match-seconds of buildup = 600 frames
+    const MAX_BUFFER = 600;
     if (st.replayBuffer.length > MAX_BUFFER) st.replayBuffer.shift();
   }
 

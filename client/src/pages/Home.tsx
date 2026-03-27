@@ -1700,8 +1700,8 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
           const matchTimePerWallSec = currentSpeedMul;
           // Match-time elapsed this wall-frame
           const matchTimeElapsed = rawDt * matchTimePerWallSec;
-          // Each captured frame spans 1/30 match-second
-          const FRAME_MATCH_INTERVAL = 1 / 30;
+          // ★ v12.4.0: Each captured frame spans 1/60 match-second (doubled density)
+          const FRAME_MATCH_INTERVAL = 1 / 60;
           // Convert match-time to fractional frames
           const framesAdvanced = matchTimeElapsed / FRAME_MATCH_INTERVAL;
           replayAccumRef.current += framesAdvanced;
@@ -1721,24 +1721,70 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
             setReplayFrameIdx(discreteIdx);
           }
         }
-        // ★ v12.3.0: Interpolated frame rendering
-        // Get the fractional position and lerp between two adjacent frames
+        // ★ v12.4.0: Catmull-Rom spline interpolated frame rendering
+        // Uses 4 frames (p0, p1, p2, p3) for smooth curve interpolation
+        // instead of 2-frame linear lerp, eliminating visible direction changes
         const fracIdx = replayAccumRef.current;
         const floorIdx = Math.min(Math.floor(fracIdx), rep.frames.length - 1);
         const ceilIdx = Math.min(floorIdx + 1, rep.frames.length - 1);
         const lerpT = fracIdx - floorIdx; // 0.0 to 1.0 between frames
-        const frameA = rep.frames[floorIdx];
-        const frameB = rep.frames[ceilIdx];
+        // Get 4 surrounding frames for Catmull-Rom: [prev, current, next, next+1]
+        const idx0 = Math.max(0, floorIdx - 1);
+        const idx1 = floorIdx;
+        const idx2 = ceilIdx;
+        const idx3 = Math.min(rep.frames.length - 1, ceilIdx + 1);
+        const frame0 = rep.frames[idx0];
+        const frameA = rep.frames[idx1];
+        const frameB = rep.frames[idx2];
+        const frame3 = rep.frames[idx3];
         if (frameA && frameA.plSnap && frameA.ballSnap) {
-          // Helper: lerp a number
+          // Catmull-Rom spline: f(t) = 0.5 * ((2*p1) + (-p0+p2)*t + (2*p0-5*p1+4*p2-p3)*t^2 + (-p0+3*p1-3*p2+p3)*t^3)
+          const catmull = (p0: number, p1: number, p2: number, p3: number, t: number) => {
+            const t2 = t * t;
+            const t3 = t2 * t;
+            return 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
+          };
+          // Catmull-Rom for vectors
+          const catmullV = (v0: {x:number,y:number}, v1: {x:number,y:number}, v2: {x:number,y:number}, v3: {x:number,y:number}, t: number) => ({
+            x: catmull(v0.x, v1.x, v2.x, v3.x, t),
+            y: catmull(v0.y, v1.y, v2.y, v3.y, t)
+          });
+          // Fallback linear lerp for when we don't have 4 valid frames
           const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-          // Helper: lerp a V (vector)
           const lerpV = (a: {x:number,y:number}, b: {x:number,y:number}, t: number) => ({
             x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t)
           });
+          // Check if we have all 4 frames with valid snapshots for Catmull-Rom
+          const hasFourFrames = frame0?.plSnap && frameA.plSnap && frameB?.plSnap && frame3?.plSnap && idx1 !== idx2;
           // Interpolate player positions, feet, and face directions
           let interpolatedPl: Player[];
-          if (frameB && frameB.plSnap && floorIdx !== ceilIdx) {
+          if (hasFourFrames) {
+            interpolatedPl = frameA.plSnap.map((p1: any, i: number) => {
+              const p0 = (frame0!.plSnap as any[])[i];
+              const p2 = (frameB!.plSnap as any[])[i];
+              const p3 = (frame3!.plSnap as any[])[i];
+              if (!p0 || !p2 || !p3) return p1;
+              return {
+                ...p1,
+                pos: catmullV(p0.pos, p1.pos, p2.pos, p3.pos, lerpT),
+                vel: lerpV(p1.vel, p2.vel, lerpT), // vel: linear is fine
+                face: lerpV(p1.face, p2.face, lerpT), // face: linear is fine
+                leftFoot: {
+                  ...p1.leftFoot,
+                  pos: catmullV(p0.leftFoot.pos, p1.leftFoot.pos, p2.leftFoot.pos, p3.leftFoot.pos, lerpT),
+                  offset: lerpV(p1.leftFoot.offset, p2.leftFoot.offset, lerpT),
+                  animOffset: lerpV(p1.leftFoot.animOffset, p2.leftFoot.animOffset, lerpT),
+                },
+                rightFoot: {
+                  ...p1.rightFoot,
+                  pos: catmullV(p0.rightFoot.pos, p1.rightFoot.pos, p2.rightFoot.pos, p3.rightFoot.pos, lerpT),
+                  offset: lerpV(p1.rightFoot.offset, p2.rightFoot.offset, lerpT),
+                  animOffset: lerpV(p1.rightFoot.animOffset, p2.rightFoot.animOffset, lerpT),
+                },
+              };
+            }) as Player[];
+          } else if (frameB && frameB.plSnap && idx1 !== idx2) {
+            // Fallback to linear lerp
             interpolatedPl = frameA.plSnap.map((pA: any, i: number) => {
               const pB = (frameB.plSnap as any[])[i];
               if (!pB) return pA;
@@ -1747,26 +1793,24 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
                 pos: lerpV(pA.pos, pB.pos, lerpT),
                 vel: lerpV(pA.vel, pB.vel, lerpT),
                 face: lerpV(pA.face, pB.face, lerpT),
-                leftFoot: {
-                  ...pA.leftFoot,
-                  pos: lerpV(pA.leftFoot.pos, pB.leftFoot.pos, lerpT),
-                  offset: lerpV(pA.leftFoot.offset, pB.leftFoot.offset, lerpT),
-                  animOffset: lerpV(pA.leftFoot.animOffset, pB.leftFoot.animOffset, lerpT),
-                },
-                rightFoot: {
-                  ...pA.rightFoot,
-                  pos: lerpV(pA.rightFoot.pos, pB.rightFoot.pos, lerpT),
-                  offset: lerpV(pA.rightFoot.offset, pB.rightFoot.offset, lerpT),
-                  animOffset: lerpV(pA.rightFoot.animOffset, pB.rightFoot.animOffset, lerpT),
-                },
+                leftFoot: { ...pA.leftFoot, pos: lerpV(pA.leftFoot.pos, pB.leftFoot.pos, lerpT), offset: lerpV(pA.leftFoot.offset, pB.leftFoot.offset, lerpT), animOffset: lerpV(pA.leftFoot.animOffset, pB.leftFoot.animOffset, lerpT) },
+                rightFoot: { ...pA.rightFoot, pos: lerpV(pA.rightFoot.pos, pB.rightFoot.pos, lerpT), offset: lerpV(pA.rightFoot.offset, pB.rightFoot.offset, lerpT), animOffset: lerpV(pA.rightFoot.animOffset, pB.rightFoot.animOffset, lerpT) },
               };
             }) as Player[];
           } else {
             interpolatedPl = frameA.plSnap as Player[];
           }
-          // Interpolate ball position
+          // Interpolate ball position (Catmull-Rom for position, linear for vel)
           let interpolatedBall: Ball;
-          if (frameB && frameB.ballSnap && floorIdx !== ceilIdx) {
+          const hasFourBall = frame0?.ballSnap && frameA.ballSnap && frameB?.ballSnap && frame3?.ballSnap && idx1 !== idx2;
+          if (hasFourBall) {
+            interpolatedBall = {
+              ...frameA.ballSnap,
+              pos: catmullV(frame0!.ballSnap!.pos, frameA.ballSnap.pos, frameB!.ballSnap!.pos, frame3!.ballSnap!.pos, lerpT),
+              vel: lerpV(frameA.ballSnap.vel, frameB!.ballSnap!.vel, lerpT),
+              z: catmull(frame0!.ballSnap!.z ?? 0, frameA.ballSnap.z ?? 0, frameB!.ballSnap!.z ?? 0, frame3!.ballSnap!.z ?? 0, lerpT),
+            } as Ball;
+          } else if (frameB && frameB.ballSnap && idx1 !== idx2) {
             interpolatedBall = {
               ...frameA.ballSnap,
               pos: lerpV(frameA.ballSnap.pos, frameB.ballSnap.pos, lerpT),
@@ -1776,8 +1820,8 @@ function GameScreen({ blueFormation, redFormation, onBack, blueCards, redCards, 
           } else {
             interpolatedBall = frameA.ballSnap as Ball;
           }
-          // Interpolate match clock for smooth timer display
-          const interpolatedClock = (frameB && floorIdx !== ceilIdx)
+          // Interpolate match clock (linear is fine for clock)
+          const interpolatedClock = (frameB && idx1 !== idx2)
             ? lerp(frameA.matchClock, frameB.matchClock, lerpT)
             : frameA.matchClock;
           // Build a pseudo-State from the interpolated snapshot and call render()
